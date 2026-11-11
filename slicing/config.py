@@ -10,16 +10,23 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 # ---------------- bed ----------------
 BED_SIZE = (250.0, 220.0)      # Core One print area (X, Y)
+# The stops on the rods keep the head out of the front and back 60 mm of the bed (seen from the
+# door), so only this part of it is used: ((x min, x max), (y min, y max)) in bed mm.
+USABLE_AREA = ((0.0, 250.0), (60.0, 160.0))
 MAX_HEIGHT = 50.0              # mm, refuse taller parts (the sensor has to reach over them later)
 
 # ---------------- raster ----------------
-MARGIN = 20.0                  # mm kept free along every bed edge; the fiducials stand in it
-CELL_PITCH = 25.0              # mm between neighbouring cell centres
+# Free strips inside the usable area: left and right wide enough for the fiducials, front and
+# back only a small edge so the short Y range still holds several rows.
+MARGIN_X = 20.0
+MARGIN_Y = 5.0
+CELL_PITCH = 20.0              # mm between neighbouring cell centres (10 x 4 = 40 cells)
 MIN_GAP = 5.0                  # mm free between a part and the edge of the next cell
 
 # ---------------- fiducials ----------------
-# Three cones in an L (front-left, front-right, back-left), so the plate can't be read rotated.
-FIDUCIAL_INSET = MARGIN / 2    # mm from the bed edges to the cone axis
+# Three cones in an L in the side strips (front-left, front-right, back-left of the usable area),
+# so the plate can't be read rotated.
+FIDUCIAL_INSET = MARGIN_X / 2  # mm from the usable area's edges to the cone axis
 FIDUCIAL_BASE_D = 8.0          # mm
 FIDUCIAL_HEIGHT = 5.0          # mm
 

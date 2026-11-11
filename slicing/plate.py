@@ -76,6 +76,7 @@ def build_plate(parts, grid, number, out_dir):
         "coordinates": "bed mm: origin front-left of the print area, +X right, +Y back, "
                        "z = 0 on the bed; x/y are the centre of a part's bounding box",
         "bed_size": list(cfg.BED_SIZE),
+        "usable_area": [list(r) for r in cfg.USABLE_AREA],
         "grid": {"cols": grid.cols, "rows": grid.rows, "pitch": grid.pitch,
                  "x0": grid.x0, "y0": grid.y0, "cell_order": "row by row from the front-left"},
         "fiducials": fids,

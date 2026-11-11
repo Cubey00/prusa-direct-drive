@@ -12,19 +12,39 @@ from slicing.slicer import SlicerError, check_compatible, read_profile
 from slicing.testset import write_testset
 
 
-def test_grid_fits_inside_margin_and_is_centred():
-    g = make_grid(bed=(250, 220), margin=20, pitch=25)
-    assert (g.cols, g.rows, g.capacity) == (8, 7, 56)
+AREA = ((0.0, 250.0), (60.0, 160.0))      # front and back 60 mm blocked by the stops
+
+
+def test_grid_fits_inside_margins_of_usable_area_and_is_centred():
+    g = make_grid(area=AREA, margin=(20, 5), pitch=20)
+    assert (g.cols, g.rows, g.capacity) == (10, 4, 40)
     xs = [g.centre(c, 0)[0] for c in range(g.cols)]
     ys = [g.centre(0, r)[1] for r in range(g.rows)]
     assert xs[0] - g.cell_free / 2 >= 20 and xs[-1] + g.cell_free / 2 <= 230
-    assert ys[0] - g.cell_free / 2 >= 20 and ys[-1] + g.cell_free / 2 <= 200
+    assert ys[0] - g.cell_free / 2 >= 65 and ys[-1] + g.cell_free / 2 <= 155
     assert xs[0] + xs[-1] == pytest.approx(250) and ys[0] + ys[-1] == pytest.approx(220)
+
+
+def test_default_grid_stays_out_of_blocked_strips_and_holds_the_testset():
+    g = make_grid()
+    (ax0, ax1), (ay0, ay1) = cfg.USABLE_AREA
+    for i in range(g.capacity):
+        x, y = g.centre(*g.cell(i))
+        assert ax0 <= x - g.cell_free / 2 and x + g.cell_free / 2 <= ax1
+        assert ay0 <= y - g.cell_free / 2 and y + g.cell_free / 2 <= ay1
+    assert g.capacity >= 30
 
 
 def test_grid_too_coarse_raises():
     with pytest.raises(ValueError):
-        make_grid(bed=(50, 50), margin=20, pitch=25)
+        make_grid(area=((0, 50), (0, 50)), margin=(20, 20), pitch=25)
+
+
+def test_fiducials_inside_usable_area():
+    (ax0, ax1), (ay0, ay1) = cfg.USABLE_AREA
+    r = cfg.FIDUCIAL_BASE_D / 2
+    for p in fiducials():
+        assert ax0 + r <= p["x"] <= ax1 - r and ay0 + r <= p["y"] <= ay1 - r
 
 
 def test_cell_order_row_by_row_from_front_left():
@@ -84,7 +104,7 @@ def test_split_plates():
 def test_build_plates_positions_roundtrip(tmp_path):
     write_testset(tmp_path / "set")
     trimesh.creation.box((40, 40, 2)).export(tmp_path / "set" / "99_te_groot.3mf")
-    grid = make_grid(pitch=25)
+    grid = make_grid()
     manifests, rejected = build_plates(tmp_path / "set", tmp_path / "out", grid)
     assert [r["file"] for r in rejected] == ["99_te_groot.3mf"]
     assert len(manifests) == 1
@@ -110,9 +130,9 @@ def test_many_parts_fill_several_plates(tmp_path):
     src.mkdir()
     for i in range(60):
         trimesh.creation.box((3, 3, 2)).export(src / f"{i:03d}.3mf")
-    grid = make_grid(pitch=25)
+    grid = make_grid()
     manifests, _ = build_plates(src, tmp_path / "out", grid)
-    assert [len(m["parts"]) for m in manifests] == [56, 4]
+    assert [len(m["parts"]) for m in manifests] == [grid.capacity, 60 - grid.capacity]
 
 
 def test_profile_missing_and_old_slicer(tmp_path):

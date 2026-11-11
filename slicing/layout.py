@@ -33,23 +33,27 @@ class Grid:
         return self.x0 + col * self.pitch, self.y0 + row * self.pitch
 
 
-def make_grid(bed=cfg.BED_SIZE, margin=cfg.MARGIN, pitch=cfg.CELL_PITCH):
-    """As many cells as fit inside the margin, the raster centred on the bed."""
-    cols = int((bed[0] - 2 * margin) // pitch)
-    rows = int((bed[1] - 2 * margin) // pitch)
-    if cols < 1 or rows < 1:
-        raise ValueError(f"No cell of {pitch:g} mm fits inside a {margin:g} mm margin")
-    x0 = (bed[0] - (cols - 1) * pitch) / 2
-    y0 = (bed[1] - (rows - 1) * pitch) / 2
+def make_grid(area=cfg.USABLE_AREA, margin=(cfg.MARGIN_X, cfg.MARGIN_Y), pitch=cfg.CELL_PITCH):
+    """As many cells as fit inside the margins of the usable area, the raster centred in it.
+    A cell's whole width (pitch - MIN_GAP) stays inside the margins."""
+    (ax0, ax1), (ay0, ay1) = area
+    free = pitch - cfg.MIN_GAP
+    cols = int((ax1 - ax0 - 2 * margin[0] - free) // pitch) + 1
+    rows = int((ay1 - ay0 - 2 * margin[1] - free) // pitch) + 1
+    if free <= 0 or cols < 1 or rows < 1:
+        raise ValueError(f"No cell of {pitch:g} mm fits inside the usable area and margins")
+    x0 = (ax0 + ax1 - (cols - 1) * pitch) / 2
+    y0 = (ay0 + ay1 - (rows - 1) * pitch) / 2
     return Grid(cols, rows, pitch, x0, y0)
 
 
-def fiducials(bed=cfg.BED_SIZE, inset=cfg.FIDUCIAL_INSET, height=cfg.FIDUCIAL_HEIGHT):
+def fiducials(area=cfg.USABLE_AREA, inset=cfg.FIDUCIAL_INSET, height=cfg.FIDUCIAL_HEIGHT):
     """Tip positions of the three cones: F1 front-left, F2 front-right, F3 back-left."""
+    (x0, x1), (y0, y1) = area
     return [
-        {"name": "F1", "x": inset, "y": inset, "z": height},
-        {"name": "F2", "x": bed[0] - inset, "y": inset, "z": height},
-        {"name": "F3", "x": inset, "y": bed[1] - inset, "z": height},
+        {"name": "F1", "x": x0 + inset, "y": y0 + inset, "z": height},
+        {"name": "F2", "x": x1 - inset, "y": y0 + inset, "z": height},
+        {"name": "F3", "x": x0 + inset, "y": y1 - inset, "z": height},
     ]
 
 
