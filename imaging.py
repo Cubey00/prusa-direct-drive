@@ -6,6 +6,8 @@ import numpy as np
 from pathlib import Path
 import threading, queue
 import tifffile
+import os
+import sys
 
 from ids_camera import IDS_Camera
 camera = IDS_Camera()
@@ -19,7 +21,10 @@ def set_photo_folder(folder):
     PHOTO_FOLDER = Path(folder)
     PHOTO_FOLDER.mkdir(parents=True, exist_ok=True)
 
-set_photo_folder(r"C:\Users\Cubefish\Desktop\printerproject\fototest")
+if sys.platform == "darwin":
+    set_photo_folder(os.environ.get("PRUSA_PHOTO_DIR", "photos"))
+else:
+    set_photo_folder(r"C:\Users\Cubefish\Desktop\printerproject\fototest")
 
 
 save_queue = queue.Queue()

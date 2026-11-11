@@ -1,0 +1,60 @@
+name: macOS compatibility
+
+on:
+  push:
+    branches: [main, feat/macos-support]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PRUSA_CAMERA_BACKEND: simulated
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-macos.txt
+      - name: Report architecture
+        run: |
+          sw_vers
+          uname -m
+          python -c 'import platform; print(platform.python_version(), platform.machine())'
+      - run: python -m pip install -r requirements-macos.txt
+      - run: python -m pip check
+      - run: python -m pytest -q
+
+  existing-platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Qt runtime library on Ubuntu
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -q

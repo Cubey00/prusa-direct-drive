@@ -21,6 +21,8 @@ import numpy as np
 from pathlib import Path
 
 import tifffile
+import os
+import sys
 
 #from pycromanager import Core
 #core = Core()
@@ -29,7 +31,8 @@ from ids_camera import IDS_Camera
 camera = IDS_Camera()
 camera.set_exposure(10e3)
 
-PHOTO_FOLDER = Path(r"C:\Users\Cubefish\Desktop\fototest")
+PHOTO_FOLDER = (Path(os.environ.get("PRUSA_PHOTO_DIR", "fototest")) if sys.platform == "darwin"
+                else Path(r"C:\Users\Cubefish\Desktop\fototest"))
 PHOTO_FOLDER.mkdir(parents=True, exist_ok=True)
 
 N_TRIALS = 20  # how many snap+save cycles to time
