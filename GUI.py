@@ -12,7 +12,7 @@ from PIL import Image, ImageTk
 #from playsound3 import playsound
 
 #from imaging import single_image, set_photo_folder
-from gantry_controls import MotionController, force_guard, home, motionstop, _stop, enable_metrics, read_position
+from gantry_controls import MotionController, force_guard, home, motionstop, _stop, enable_metrics
 from strain_gauge import StrainGauge
 
 script_folder = Path(__file__).resolve().parent
@@ -239,7 +239,12 @@ class App:
     def send_position(self, point):
         def work():
             try:
-                x, y, z = read_position()
+                # actual position from the metrics stream (what the "Current" label shows);
+                # M114 only reports the commanded position, i.e. the target
+                p = self.gauge.pos
+                if None in (p["x"], p["y"], p["z"]):
+                    raise RuntimeError("no live position from the printer yet")
+                x, y, z = p["x"], p["y"], p["z"]
                 ok = self.link.send_position(point, x, y, z)
                 text = f"Sent {point.replace('_', ' ')}: X{x:.2f} Y{y:.2f}" if ok else "Path programmer not connected"
             except Exception as e:
