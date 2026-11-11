@@ -1,3 +1,0 @@
-# Optional simulator/API dependency. Native Aravis and IDS peak are not installed.
-# Package 0.1.0; pin the inspected integration API until hardware validation.
-scientific-camera-capture @ git+https://github.com/stefberends/scientific-camera-capture.git@38e691be39bf13bd3578f8a1afcbf6ead090fe96

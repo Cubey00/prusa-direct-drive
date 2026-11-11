@@ -1,4 +1,4 @@
-name: macOS software checks
+name: macOS compatibility
 
 on:
   push:
@@ -9,11 +9,16 @@ permissions:
   contents: read
 
 jobs:
-  software:
-    runs-on: macos-latest
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-15]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     env:
       QT_QPA_PLATFORM: offscreen
+      PRUSA_CAMERA_BACKEND: simulated
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,17 +27,29 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements.txt
-            requirements-camera.txt
-      - name: Install printer-only environment
-        run: python -m pip install -r requirements.txt
-      - name: Check printer-only environment
+            requirements-macos.txt
+      - name: Report architecture
         run: |
-          python -m pip check
-          python -m pytest -q
-      - name: Install optional camera simulator
-        run: python -m pip install -r requirements-camera.txt
-      - name: Check simulator integration and raw readback
-        run: |
-          python -m pip check
-          python -m pytest -q
-          python -m pathprogrammer.camera --camera-id simulated --output "$RUNNER_TEMP/camera-smoke.scc"
+          sw_vers
+          uname -m
+          python -c 'import platform; print(platform.python_version(), platform.machine())'
+      - run: python -m pip install -r requirements-macos.txt
+      - run: python -m pip check
+      - run: python -m pytest -q
+
+  existing-platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -q

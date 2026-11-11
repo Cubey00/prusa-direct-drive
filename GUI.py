@@ -29,7 +29,7 @@ class State(Enum):
 
 
 class App:
-    def __init__(self, root, link=None, *, start_metrics=True):
+    def __init__(self, root, link=None):
         self.root = root
         self.link = link              # CalibratorClient when started by the path programmer
         self.root.title("PRUSA Core One load cell and control tool")
@@ -158,8 +158,7 @@ class App:
         self.progress_label.pack()
 
         # start the strain gauge display when everything is in place
-        if start_metrics:
-            root.after_idle(self.start_gauge)
+        root.after_idle(self.start_gauge)
 
     # --- Motion ---
 
@@ -506,24 +505,14 @@ class App:
         self.root.destroy()
 
 
-def main(argv=None):
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--link", type=int, help="path programmer port (set by pathprogrammer)")
-    mode.add_argument("--smoke-test", action="store_true",
-                      help="build and close the UI without connecting to a printer or camera")
-    args = parser.parse_args(argv)
+    parser.add_argument("--link", type=int, help="path programmer port (set by pathprogrammer)")
+    args = parser.parse_args()
     link = None
     if args.link:
         from pathprogrammer.ipc import CalibratorClient
         link = CalibratorClient(args.link)
     root = tk.Tk()
-    App(root, link, start_metrics=not args.smoke_test)
-    if args.smoke_test:
-        # Destroy directly: the normal close callback intentionally sends printer STOP.
-        root.after(100, root.destroy)
+    App(root, link)
     root.mainloop()
-
-
-if __name__ == "__main__":
-    main()
