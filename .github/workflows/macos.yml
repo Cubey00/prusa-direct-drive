@@ -1,0 +1,38 @@
+name: macOS software checks
+
+on:
+  push:
+    branches: [main, feat/macos-support]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  software:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-camera.txt
+      - name: Install printer-only environment
+        run: python -m pip install -r requirements.txt
+      - name: Check printer-only environment
+        run: |
+          python -m pip check
+          python -m pytest -q
+      - name: Install optional camera simulator
+        run: python -m pip install -r requirements-camera.txt
+      - name: Check simulator integration and raw readback
+        run: |
+          python -m pip check
+          python -m pytest -q
+          python -m pathprogrammer.camera --camera-id simulated --output "$RUNNER_TEMP/camera-smoke.scc"
