@@ -11,9 +11,12 @@ from .layout import check_part, fiducials, make_grid, on_bed, split_plates
 from .shapes import fiducial
 
 
+MODEL_SUFFIXES = (".3mf", ".stl")      # STL has no units: read as mm
+
+
 @dataclass
 class Part:
-    id: str              # file stem, unique in the dataset
+    id: str              # file stem (whole file name if two files share a stem), unique in the dataset
     source: Path
     sha256: str
     mesh: trimesh.Trimesh    # centred on x = y = 0, lowest point at z = 0
@@ -21,13 +24,21 @@ class Part:
     warnings: list
 
 
+def dataset_files(folder):
+    """The .3mf and .stl files in `folder` (any case), sorted by name."""
+    return sorted((f for f in Path(folder).iterdir() if f.is_file() and f.suffix.lower() in MODEL_SUFFIXES),
+                  key=lambda f: f.name.lower())
+
+
 def load_dataset(folder, grid):
-    """All .3mf files in `folder` (sorted by name) -> (accepted parts, rejected [{file, reasons}])."""
-    files = sorted(Path(folder).glob("*.3mf"))
+    """All .3mf/.stl files in `folder` -> (accepted parts, rejected [{file, reasons}])."""
+    files = dataset_files(folder)
     if not files:
-        raise ValueError(f"No .3mf files in {folder}")
+        raise ValueError(f"No .3mf or .stl files in {folder}")
+    stems = [f.stem.lower() for f in files]
     parts, rejected = [], []
     for f in files:
+        part_id = f.name if stems.count(f.stem.lower()) > 1 else f.stem
         try:
             model = load_model(f)
         except Exception as e:
@@ -37,7 +48,7 @@ def load_dataset(folder, grid):
         chk = check_part(mesh, grid)
         warnings = chk.warnings + ([model.units_note] if model.units_note else [])
         if chk.ok:
-            parts.append(Part(f.stem, f, model.sha256, mesh, chk.size, warnings))
+            parts.append(Part(part_id, f, model.sha256, mesh, chk.size, warnings))
         else:
             rejected.append({"file": f.name, "reasons": chk.reasons})
     return parts, rejected

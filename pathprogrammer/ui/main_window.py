@@ -1,4 +1,4 @@
-"""Main window: left panel | face view + rotate controls | point list + run controls."""
+"""Main window: print plates + left panel | face view + rotate controls | point list + run controls."""
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
@@ -14,6 +14,7 @@ from ..model_io import Orientation, face_size, load_model, oriented_mesh
 from ..program import Program, RunSettings, TouchMode
 from .face_view import FaceView
 from .left_panel import LeftPanel
+from .plates_panel import PlatesPanel
 from .point_model import PointTableModel
 from .point_table import PointTable
 from .force_graph import ForceGraph
@@ -39,6 +40,7 @@ class MainWindow(QMainWindow):
 
         self.points = PointTableModel(self.program.points)
         self.left = LeftPanel()
+        self.plates = PlatesPanel(self.settings)
         self.view = FaceView(self.points)
         self.table = PointTable(self.points)
         self.run = RunControls()
@@ -80,8 +82,13 @@ class MainWindow(QMainWindow):
         rl.addWidget(self.graph)
         rl.addWidget(self.run)
 
+        left_col = QWidget()
+        lcl = QVBoxLayout(left_col)
+        lcl.setContentsMargins(0, 0, 0, 0)
+        lcl.addWidget(self.plates)
+        lcl.addWidget(self.left)
         left_scroll = QScrollArea()
-        left_scroll.setWidget(self.left)
+        left_scroll.setWidget(left_col)
         left_scroll.setWidgetResizable(True)
         split = QSplitter(Qt.Horizontal)
         for w in (left_scroll, centre, right):
@@ -144,7 +151,9 @@ class MainWindow(QMainWindow):
 
     def open_model_dialog(self):
         start = self.settings.value("model_folder", str(config.PROJECT_DIR))
-        path, _ = QFileDialog.getOpenFileName(self, "Open model", start, "3MF models (*.3mf);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open model", start,
+                                              "Models (*.3mf *.stl);;3MF models (*.3mf);;"
+                                              "STL models (*.stl);;All files (*)")
         if path:
             self.settings.setValue("model_folder", str(Path(path).parent))
             self.open_model(path)
@@ -411,6 +420,12 @@ class MainWindow(QMainWindow):
             self.worker.abort()
             self.thread.quit()
             self.thread.wait(5000)
+        if self.plates.is_busy():
+            if QMessageBox.question(self, "Quit", "Plates are still being sliced. Wait for it and quit?"
+                                    ) != QMessageBox.Yes:
+                e.ignore()
+                return
+            self.plates.shutdown()
         self.settings.setValue("geometry", self.saveGeometry())
         self.server.close()
         super().closeEvent(e)

@@ -23,6 +23,29 @@ def find_slicer():
     raise SlicerError("PrusaSlicer not found. Install it or set SLICER_EXE in slicing/config.py.")
 
 
+def viewer_command(gcode):
+    """Command that opens a (b)gcode file in PrusaSlicer's 3D G-code viewer."""
+    folder = find_slicer().parent
+    viewer = folder / "prusa-gcodeviewer.exe"
+    if viewer.exists():
+        return [str(viewer), str(gcode)]
+    gui = folder / "prusa-slicer.exe"
+    if gui.exists():
+        return [str(gui), "--gcodeviewer", str(gcode)]
+    found = shutil.which("prusa-gcodeviewer")
+    if found:
+        return [found, str(gcode)]
+    raise SlicerError("PrusaSlicer's G-code viewer was not found next to the slicer.")
+
+
+def open_in_viewer(gcode):
+    """Start the viewer without waiting for it."""
+    gcode = Path(gcode)
+    if not gcode.exists():
+        raise SlicerError(f"{gcode.name} does not exist; slice the plate first.")
+    subprocess.Popen(viewer_command(gcode))
+
+
 def slicer_version(exe):
     """(major, minor, patch) from the first line of --help, e.g. 'PrusaSlicer-2.6.1+win64-...'."""
     out = subprocess.run([str(exe), "--help"], capture_output=True, text=True, timeout=60).stdout
@@ -47,8 +70,25 @@ def read_profile(path):
     return values
 
 
+def _bed_extent(bed_shape):
+    """'0x0,250x0,250x220,0x220' -> (250.0, 220.0)."""
+    pts = [tuple(float(v) for v in p.split("x")) for p in bed_shape.split(",") if "x" in p]
+    xs, ys = zip(*pts)
+    return max(xs) - min(xs), max(ys) - min(ys)
+
+
 def check_compatible(version, profile):
+    """Refuse a profile for another printer or bed, and a slicer too old for the Core One."""
     model = profile.get("printer_model", "")
+    if model and model.upper() != cfg.PRINTER_MODEL:
+        raise SlicerError(f"The profile is for printer model {model} "
+                          f"({profile.get('printer_settings_id', '?')}), not {cfg.PRINTER_MODEL}. "
+                          f"Select the Core One (not the Core One L) in PrusaSlicer and export again.")
+    if profile.get("bed_shape"):
+        extent = _bed_extent(profile["bed_shape"])
+        if any(abs(a - b) > 0.5 for a, b in zip(extent, cfg.BED_SIZE)):
+            raise SlicerError(f"The profile's bed is {extent[0]:g} x {extent[1]:g} mm, expected "
+                              f"{cfg.BED_SIZE[0]:g} x {cfg.BED_SIZE[1]:g} mm.")
     if model.upper().startswith("COREONE") and version[:2] < cfg.MIN_SLICER_VERSION:
         need = ".".join(map(str, cfg.MIN_SLICER_VERSION))
         raise SlicerError(f"PrusaSlicer {'.'.join(map(str, version))} does not know the Core One; "

@@ -145,3 +145,28 @@ def test_profile_missing_and_old_slicer(tmp_path):
     with pytest.raises(SlicerError, match="Core One"):
         check_compatible((2, 6, 1), profile)
     check_compatible((2, 9, 2), profile)
+
+
+def test_profile_for_other_printer_or_bed_is_refused():
+    with pytest.raises(SlicerError, match="not the Core One L"):
+        check_compatible((2, 9, 7), {"printer_model": "COREONEL",
+                                     "printer_settings_id": "Prusa CORE One L HF0.4 nozzle"})
+    with pytest.raises(SlicerError, match="300 x 300"):
+        check_compatible((2, 9, 7), {"printer_model": "COREONE", "bed_shape": "0x0,300x0,300x300,0x300"})
+    check_compatible((2, 9, 7), {"printer_model": "COREONE", "bed_shape": "0x0,250x0,250x220,0x220"})
+
+
+def test_dataset_mixes_stl_and_3mf_and_keeps_ids_unique(tmp_path):
+    src = tmp_path / "set"
+    src.mkdir()
+    trimesh.creation.box((3, 3, 2)).export(src / "a.stl")
+    trimesh.creation.box((4, 4, 2)).export(src / "B.STL")
+    trimesh.creation.box((5, 5, 2)).export(src / "a.3mf")        # same stem as a.stl
+    (src / "notes.txt").write_text("not a model")
+    manifests, rejected = build_plates(src, tmp_path / "out", make_grid())
+    ids = sorted(p["id"] for p in manifests[0]["parts"])
+    assert ids == ["B", "a.3mf", "a.stl"] and rejected == []
+    sizes = {p["id"]: p["size"][0] for p in manifests[0]["parts"]}
+    assert sizes == {"a.3mf": 5, "a.stl": 3, "B": 4}
+    scene = trimesh.load(tmp_path / "out" / "plate_01.3mf")
+    assert {"a.3mf", "a.stl", "B"} <= set(scene.graph.nodes_geometry)

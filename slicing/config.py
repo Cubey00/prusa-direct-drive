@@ -43,5 +43,6 @@ SLICER_SEARCH = [
 # the print settings and the filament selected. Every plate is sliced with exactly this file.
 SLICER_PROFILE = PROJECT_DIR / "slicing" / "profiles" / "coreone.ini"
 SLICER_OVERRIDES = ["--support-material=0", "--support-material-auto=0"]   # never supports
+PRINTER_MODEL = "COREONE"      # printer_model the profile must have (COREONEL is the bigger L)
 MIN_SLICER_VERSION = (2, 9)    # first PrusaSlicer that knows the Core One
 SLICER_TIMEOUT = 600           # s per plate
