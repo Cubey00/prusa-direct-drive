@@ -38,6 +38,8 @@ OVERHANG_MAX_AREA = 0.5        # mm^2 of such faces (above the bed) that is stil
 SLICER_EXE = None              # None = search the PrusaSlicer install and PATH
 SLICER_SEARCH = [
     Path(r"C:\Program Files\Prusa3D\PrusaSlicer\prusa-slicer-console.exe"),
+    Path("/Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer"),
+    Path.home() / "Applications/PrusaSlicer.app/Contents/MacOS/PrusaSlicer",
 ]
 # Export once from the PrusaSlicer GUI (File > Export > Export Config) with the Core One printer,
 # the print settings and the filament selected. Every plate is sliced with exactly this file.

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -13,6 +14,36 @@ from slicing.testset import write_testset
 
 
 AREA = ((0.0, 250.0), (60.0, 160.0))      # front and back 60 mm blocked by the stops
+
+
+@pytest.mark.parametrize("install", [Path("/Applications"), Path.home() / "Applications"])
+def test_find_slicer_in_macos_application_folders(monkeypatch, install):
+    from slicing import slicer
+    exe = install / "PrusaSlicer.app/Contents/MacOS/PrusaSlicer"
+    monkeypatch.setattr(cfg, "SLICER_EXE", None)
+    monkeypatch.setattr(Path, "exists", lambda self: self == exe)
+    monkeypatch.setattr(slicer.shutil, "which", lambda name: None)
+    assert slicer.find_slicer() == exe
+
+
+def test_macos_viewer_uses_selected_slicer_and_preserves_path_arguments(monkeypatch, tmp_path):
+    from slicing import slicer
+    exe = tmp_path / "Custom Apps/PrusaSlicer.app/Contents/MacOS/PrusaSlicer"
+    gcode = tmp_path / "Print plates/plate_01.bgcode"
+    monkeypatch.setattr(cfg, "SLICER_EXE", exe)
+    monkeypatch.setattr(slicer.sys, "platform", "darwin")
+    assert slicer.viewer_command(gcode) == [str(exe), "--gcodeviewer", str(gcode)]
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_existing_viewer_selection_on_other_platforms(monkeypatch, tmp_path, platform):
+    from slicing import slicer
+    exe = tmp_path / "prusa-slicer-console.exe"
+    viewer = tmp_path / "prusa-gcodeviewer.exe"
+    viewer.touch()
+    monkeypatch.setattr(cfg, "SLICER_EXE", exe)
+    monkeypatch.setattr(slicer.sys, "platform", platform)
+    assert slicer.viewer_command("plate.bgcode") == [str(viewer), "plate.bgcode"]
 
 
 def test_grid_fits_inside_margins_of_usable_area_and_is_centred():

@@ -2,6 +2,7 @@
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from . import config as cfg
@@ -25,7 +26,10 @@ def find_slicer():
 
 def viewer_command(gcode):
     """Command that opens a (b)gcode file in PrusaSlicer's 3D G-code viewer."""
-    folder = find_slicer().parent
+    exe = find_slicer()
+    if sys.platform == "darwin":
+        return [str(exe), "--gcodeviewer", str(gcode)]
+    folder = exe.parent
     viewer = folder / "prusa-gcodeviewer.exe"
     if viewer.exists():
         return [str(viewer), str(gcode)]

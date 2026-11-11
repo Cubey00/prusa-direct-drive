@@ -1,9 +1,11 @@
 import numpy as np
+import sys
 
-from ids_peak import ids_peak as peak
-from ids_peak import ids_peak_ipl_extension
+if sys.platform != "darwin":
+    from ids_peak import ids_peak as peak
+    from ids_peak import ids_peak_ipl_extension
 
-from ids_peak_ipl import ids_peak_ipl
+    from ids_peak_ipl import ids_peak_ipl
 
 
 class IDS_Camera:
@@ -573,3 +575,7 @@ class IDS_Camera:
 
         except Exception:
             pass
+
+
+if sys.platform == "darwin":
+    from macos_camera import IDS_Camera

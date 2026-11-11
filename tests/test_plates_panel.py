@@ -13,6 +13,8 @@ from slicing import pipeline
 def panel(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(plates_panel, "TESTSET_DIR", tmp_path / "testset")
     monkeypatch.setattr(plates_panel, "PLATES_DIR", tmp_path / "plates")
+    monkeypatch.setattr(pipeline, "find_slicer", lambda: tmp_path / "PrusaSlicer")
+    monkeypatch.setattr(pipeline, "slicer_version", lambda exe: (2, 9, 3))
     # no profile, so the run stops at "not sliced" instead of slicing for real
     monkeypatch.setattr(plates_panel.pipeline, "run",
                         partial(pipeline.run, profile=tmp_path / "missing.ini"))
