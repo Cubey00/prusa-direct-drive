@@ -82,7 +82,7 @@ def test_template_sets_new_points(win):
 
 
 def test_single_click_replaces_placeholder(win, qtbot):
-    x, _ = win.left.face_fields["back_left"]
+    x, _ = win.left.face_fields["F1"]
     assert x.text() == "--"
     qtbot.mouseClick(x.lineEdit(), Qt.LeftButton)
     qtbot.wait(20)

@@ -210,7 +210,7 @@ class FaceView(QGraphicsView):
             self.scene_.removeItem(old)
         if xy is None or self.face_rect is None:
             return
-        m = CalMarker({"back_left": "back left", "front_right": "front right"}[name])
+        m = CalMarker(name)
         m.setPos(*xy)
         self.scene_.addItem(m)
         self.cal_markers[name] = m

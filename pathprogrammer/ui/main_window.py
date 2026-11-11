@@ -15,6 +15,7 @@ from ..program import Program, RunSettings, TouchMode
 from .face_view import FaceView
 from .left_panel import LeftPanel
 from .plates_panel import PlatesPanel
+from .printer_box import PrinterBox
 from .point_model import PointTableModel
 from .point_table import PointTable
 from .force_graph import ForceGraph
@@ -41,6 +42,7 @@ class MainWindow(QMainWindow):
         self.points = PointTableModel(self.program.points)
         self.left = LeftPanel()
         self.plates = PlatesPanel(self.settings)
+        self.printer = PrinterBox(self._selected_plate, self.settings)
         self.view = FaceView(self.points)
         self.table = PointTable(self.points)
         self.run = RunControls()
@@ -86,6 +88,7 @@ class MainWindow(QMainWindow):
         lcl = QVBoxLayout(left_col)
         lcl.setContentsMargins(0, 0, 0, 0)
         lcl.addWidget(self.plates)
+        lcl.addWidget(self.printer)
         lcl.addWidget(self.left)
         left_scroll = QScrollArea()
         left_scroll.setWidget(left_col)
@@ -114,6 +117,8 @@ class MainWindow(QMainWindow):
         self.run.load_btn.clicked.connect(self.load_program_dialog)
         self.run.save_btn.clicked.connect(self.save_program_dialog)
         self.calibratorMessage.connect(self.on_calibrator_message)
+        self.plates.openPlateRequested.connect(self.open_model)
+        self.plates.plate_list.currentRowChanged.connect(lambda _: self.printer.refresh())
         self.run_settings.changed.connect(self.update_graph_lines)
         self.table.selection_model().selectionChanged.connect(self.update_graph_lines)
         self.points.pointsChanged.connect(self.update_graph_lines)
@@ -129,6 +134,14 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geo)
         else:
             self.resize(1600, 900)
+
+    def _selected_plate(self):
+        """(G-code path or None, label) of the plate selected in the Print plates box."""
+        item = self.plates.plate_list.currentItem()
+        if item is None or self.plates.result is None:
+            return None, ""
+        dataset = Path(self.plates.result["out"]).name
+        return self.plates.selected_gcode(), f"{dataset} {item.text().split(':')[0].lower()}"
 
     # ---------------- model ----------------
     def save_folder(self):
@@ -169,6 +182,23 @@ class MainWindow(QMainWindow):
         self.left.file_label.setText(self.model.filename)
         self.left.units_label.setText(self.model.units_note)
         self.update_face()
+        if self.orientation == Orientation():
+            self.fill_fiducials_from_manifest(path)
+        return True
+
+    def fill_fiducials_from_manifest(self, model_path):
+        """A plate 3MF with its manifest next to it: put the fiducial tips in as face points
+        (machine points are kept). Returns True if it did."""
+        manifest = calibration.manifest_for(model_path)
+        if manifest is None:
+            return False
+        face = calibration.face_points_from_manifest(manifest, self.model.mesh.bounds)
+        cal = self.left.cal_points()
+        cal.face.update(face)
+        self.left.set_cal_points(cal)
+        self.left.link_label.setText(f"Fiducials {', '.join(sorted(face))} filled in from "
+                                     f"{Path(model_path).with_suffix('.json').name}; "
+                                     "now send each one's machine position from the calibrator")
         return True
 
     def update_face(self):
@@ -205,7 +235,10 @@ class MainWindow(QMainWindow):
             return
         self.transform = calibration.fit(cal)
         t = self.transform
-        text = f"Scale {t.scale:.4f}\nFace origin -> X{t.b.real:.2f} Y{t.b.imag:.2f}"
+        res = calibration.residuals(cal, t)
+        text = (f"Scale {t.scale:.4f}, rotation {t.rotation_deg:.2f} deg\n"
+                f"Face origin -> X{t.b.real:.2f} Y{t.b.imag:.2f}\n"
+                "Residuals: " + ", ".join(f"{p} {r:.2f} mm" for p, r in res.items()))
         if issues:
             text += "\n" + "\n".join(i.msg for i in issues)
         self.left.set_diagnostics(text, "warning" if issues else "ok")
@@ -227,12 +260,13 @@ class MainWindow(QMainWindow):
     def on_calibrator_message(self, msg):
         kind = msg.get("type")
         if kind == "hello":
-            self.left.link_label.setText("Calibrator connected: jog to a point, then use 'Send position as'")
+            self.left.link_label.setText("Calibrator connected: centre the camera on each fiducial tip (F1, F2, F3), "
+                                         "then use 'Send position as'")
         elif kind == "bye":
             self.left.link_label.setText("Calibrator closed")
         elif kind == "position" and msg.get("point") in calibration.POINTS:
             self.left.set_machine_point(msg["point"], msg["x"], msg["y"])
-            self.left.link_label.setText(f"Received {msg['point'].replace('_', ' ')}: "
+            self.left.link_label.setText(f"Received {msg['point']}: "
                                          f"X{msg['x']:.2f} Y{msg['y']:.2f} Z{msg['z']:.2f}")
 
     # ---------------- points ----------------
@@ -426,6 +460,7 @@ class MainWindow(QMainWindow):
                 e.ignore()
                 return
             self.plates.shutdown()
+        self.printer.shutdown()
         self.settings.setValue("geometry", self.saveGeometry())
         self.server.close()
         super().closeEvent(e)

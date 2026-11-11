@@ -5,7 +5,7 @@ starts `GUI.py --link <port>` with a random authkey in PRINTERPROJECT_LINK_KEY (
 
 Message contract (dicts, all with "v": 1):
     {"v": 1, "type": "hello"}                                   calibrator connected
-    {"v": 1, "type": "position", "point": "back_left" | "front_right",
+    {"v": 1, "type": "position", "point": "F1" | "F2" | "F3",
      "x": float, "y": float, "z": float, "t": iso timestamp}    absolute head position (mm)
     {"v": 1, "type": "bye"}                                     calibrator closing
 Unknown types are ignored by the receiver, so either side can add messages.
@@ -18,9 +18,10 @@ import threading
 from datetime import datetime
 from multiprocessing.connection import Client, Listener
 
+from .calibration import POINTS   # pure module, no Qt
+
 VERSION = 1
 KEY_ENV = "PRINTERPROJECT_LINK_KEY"
-POINTS = ("back_left", "front_right")
 
 
 def position_msg(point, x, y, z):

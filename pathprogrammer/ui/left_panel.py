@@ -3,9 +3,7 @@ from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QDoubleSpinBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
                                QLabel, QPushButton, QVBoxLayout, QWidget)
 
-from ..calibration import POINTS, CalPoints
-
-NAMES = {"back_left": "back left", "front_right": "front right"}
+from ..calibration import LABELS, POINTS, CalPoints
 
 
 class SelectAllSpinBox(QDoubleSpinBox):
@@ -81,11 +79,14 @@ class LeftPanel(QWidget):
         # --- calibration ---
         cal_box = QGroupBox("Calibration")
         cl = QGridLayout(cal_box)
-        cl.addWidget(QLabel("Location of points (from <b>back left corner</b> of the face):"), 0, 0, 1, 5)
+        intro = QLabel("Fiducial tips on the face (from its <b>back left corner</b>; "
+                       "filled in from the plate manifest):")
+        intro.setWordWrap(True)
+        cl.addWidget(intro, 0, 0, 1, 5)
         self.face_fields, self.machine_fields = {}, {}
         r = 1
         for p in POINTS:
-            cl.addWidget(QLabel(f"{NAMES[p]} point"), r, 0)
+            cl.addWidget(QLabel(LABELS[p]), r, 0)
             self.face_fields[p] = self._xy_row(cl, r)
             r += 1
         self.calib_btn = QPushButton("Open visual calibrator")
@@ -93,13 +94,14 @@ class LeftPanel(QWidget):
         cl.addWidget(self.calib_btn, r, 0, 1, 5)
         r += 1
         self.link_label = QLabel("Calibrator not running")
+        self.link_label.setWordWrap(True)
         self.link_label.setStyleSheet("color: gray;")
         cl.addWidget(self.link_label, r, 0, 1, 5)
         r += 1
         cl.addWidget(QLabel("Absolute locations (machine):"), r, 0, 1, 5)
         r += 1
         for p in POINTS:
-            cl.addWidget(QLabel(f"{NAMES[p]} point"), r, 0)
+            cl.addWidget(QLabel(LABELS[p]), r, 0)
             self.machine_fields[p] = self._xy_row(cl, r)
             r += 1
         line = QFrame()

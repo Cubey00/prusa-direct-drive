@@ -145,10 +145,10 @@ class App:
         if self.link is not None:
             link_frame = tk.Frame(root, pady=5)
             tk.Label(link_frame, text="Send position as:").pack(side="left")
-            tk.Button(link_frame, text="Back-left point",
-                      command=lambda: self.send_position("back_left")).pack(side="left", padx=5)
-            tk.Button(link_frame, text="Front-right point",
-                      command=lambda: self.send_position("front_right")).pack(side="left", padx=5)
+            from pathprogrammer.calibration import LABELS, POINTS
+            for point in POINTS:          # fiducial cones F1/F2/F3 on the printed plate
+                tk.Button(link_frame, text=LABELS[point],
+                          command=lambda p=point: self.send_position(p)).pack(side="left", padx=5)
             link_frame.pack()
 
         # --- Bulk capture ---

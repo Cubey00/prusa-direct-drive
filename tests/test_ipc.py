@@ -10,9 +10,9 @@ def test_roundtrip():
         cli = CalibratorClient(srv.port, srv.key)
         assert cli.connected
         assert q.get(timeout=5)["type"] == "hello"
-        cli.send_position("back_left", 1.5, 2.5, 3.5)
+        cli.send_position("F1", 1.5, 2.5, 3.5)
         m = q.get(timeout=5)
-        assert (m["type"], m["point"], m["x"], m["y"], m["z"]) == ("position", "back_left", 1.5, 2.5, 3.5)
+        assert (m["type"], m["point"], m["x"], m["y"], m["z"]) == ("position", "F1", 1.5, 2.5, 3.5)
         cli.close()
         assert q.get(timeout=5)["type"] == "bye"
     finally:

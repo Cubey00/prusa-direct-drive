@@ -33,6 +33,7 @@ MACHINE_XY_BOUNDS = ((0.0, 250.0), (0.0, 220.0))   # placeholder, confirm agains
 # ---------------- calibration ----------------
 CAL_MIN_DISTANCE = 10.0                # mm
 CAL_SCALE_TOL = 0.02                   # warn if |scale - 1| exceeds this
+CAL_RESIDUAL_TOL = 0.5                 # mm; warn if a point is further than this off the 3-point fit
 
 # ---------------- rendering ----------------
 RENDER_PX_PER_MM = 8.0

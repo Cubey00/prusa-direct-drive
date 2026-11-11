@@ -92,3 +92,26 @@ def test_viewer_command_uses_prusa_gcodeviewer(tmp_path):
     except SlicerError:
         pytest.skip("PrusaSlicer not installed")
     assert cmd[-1].endswith("x.bgcode") and "prusa" in cmd[0].lower()
+
+
+def test_open_plate_fills_fiducials_and_calibrates(qtbot, tmp_path):
+    from pathprogrammer.ui.main_window import MainWindow
+    from slicing.testset import write_testset
+    write_testset(tmp_path / "set")
+    pipeline.run(tmp_path / "set", tmp_path / "out", do_slice=False, on_status=lambda m: None)
+    w = MainWindow(QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat))
+    qtbot.addWidget(w)
+    w.plates.openPlateRequested.emit(str(tmp_path / "out" / "plate_01.3mf"))
+    cal = w.left.cal_points()
+    assert all(cal.face[p] is not None for p in ("F1", "F2", "F3"))
+    assert w.transform is None                       # machine points still missing
+    manifest = __import__("json").loads((tmp_path / "out" / "plate_01.json").read_text())
+    shift = complex(3.0, -2.0)                       # plate sits 3 mm right, 2 mm to the front
+    for f in manifest["fiducials"]:
+        w.left.set_machine_point(f["name"], f["x"] + shift.real, f["y"] + shift.imag)
+    assert w.transform is not None
+    part = manifest["parts"][0]
+    lo, hi = w.model.mesh.bounds
+    fx, fy = part["x"] - lo[0], hi[1] - part["y"]    # the part's centre on the face
+    assert w.transform.face_to_machine(fx, fy) == pytest.approx((part["x"] + 3, part["y"] - 2), abs=1e-6)
+    w.server.close()

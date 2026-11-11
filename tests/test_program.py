@@ -10,8 +10,8 @@ def sample():
                         TouchPoint(20, 5, TouchMode.DEPTH, 0.05, 0.5)])
     p.model = pm.ModelRef("model.3mf", "abc", [[1, 0, 0], [0, 1, 0], [0, 0, 1]], (73.4, 11.7))
     c = CalPoints()
-    c.face = {"back_left": (0, 0), "front_right": (70, 10)}
-    c.machine = {"back_left": (100, 150), "front_right": (170, 140)}
+    c.face = {"F1": (0, 10), "F2": (70, 10), "F3": (0, 0)}
+    c.machine = {"F1": (100, 140), "F2": (170, 140), "F3": (100, 150)}
     p.calibration, p.transform = c, Transform(1 + 0j, 100 + 150j, -1)
     return p
 

@@ -130,6 +130,8 @@ class PlatePreview(QWidget):
 
 
 class PlatesPanel(QGroupBox):
+    openPlateRequested = Signal(str)      # plate 3MF to open in the path programmer
+
     def __init__(self, settings=None, parent=None):
         super().__init__("Print plates", parent)
         self.settings = settings or QSettings("TUDelft", "pathprogrammer")
@@ -153,6 +155,10 @@ class PlatesPanel(QGroupBox):
         self.view3d_btn = QPushButton("Show in 3D")
         self.view3d_btn.setToolTip("Open the selected plate's G-code in PrusaSlicer's 3D G-code viewer")
         self.view3d_btn.setEnabled(False)
+        self.program_btn = QPushButton("Open plate in programmer")
+        self.program_btn.setToolTip("Load the selected plate as the model: its fiducials F1-F3 become "
+                                    "the calibration points and you can place touch points on the parts")
+        self.program_btn.setEnabled(False)
         self.open_btn = QPushButton("Open plates folder")
         self.open_btn.setEnabled(False)
 
@@ -164,13 +170,15 @@ class PlatesPanel(QGroupBox):
         g.addWidget(self.preview, 3, 0, 1, 2)
         g.addWidget(self.log, 4, 0, 1, 2)
         g.addWidget(self.view3d_btn, 5, 0)
-        g.addWidget(self.open_btn, 5, 1)
+        g.addWidget(self.program_btn, 5, 1)
+        g.addWidget(self.open_btn, 6, 0, 1, 2)
 
         self.dataset_btn.clicked.connect(self.import_dataset_dialog)
         self.testset_btn.clicked.connect(self.import_testset)
         self.plate_list.currentRowChanged.connect(self._show_plate)
         self.open_btn.clicked.connect(self._open_folder)
         self.view3d_btn.clicked.connect(self.show_in_3d)
+        self.program_btn.clicked.connect(self._request_open_plate)
 
     # ---------------- import ----------------
     def import_dataset_dialog(self):
@@ -195,6 +203,7 @@ class PlatesPanel(QGroupBox):
         self.preview.set_manifest(None)
         self.result = None
         self.view3d_btn.setEnabled(False)
+        self.program_btn.setEnabled(False)
         self.status.setText(f"Importing {dataset.name} ...")
         self._set_busy(True)
         self.thread = QThread(self)
@@ -254,6 +263,7 @@ class PlatesPanel(QGroupBox):
             m = self.result["manifests"][row]
             self.preview.set_manifest(m)
             self.view3d_btn.setEnabled(bool(m.get("gcode")))
+            self.program_btn.setEnabled(True)
 
     def selected_gcode(self):
         row = self.plate_list.currentRow()
@@ -261,6 +271,11 @@ class PlatesPanel(QGroupBox):
             return None
         name = self.result["manifests"][row].get("gcode")
         return Path(self.result["out"]) / name if name else None
+
+    def _request_open_plate(self):
+        row = self.plate_list.currentRow()
+        if self.result and 0 <= row < len(self.result["manifests"]):
+            self.openPlateRequested.emit(str(Path(self.result["out"]) / self.result["manifests"][row]["model"]))
 
     def show_in_3d(self):
         gcode = self.selected_gcode()
