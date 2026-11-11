@@ -50,9 +50,29 @@ def find_port():
 
 
 def get_local_ip():
+    """IP the printer should stream metrics to.
+
+    The default route can be a VPN (public-looking address the printer can't reach), so
+    prefer a private LAN address. Override with the PRINTER_METRICS_IP environment variable.
+    """
+    import ipaddress
+    import os
+    override = os.environ.get("PRINTER_METRICS_IP")
+    if override:
+        return override
+    try:
+        addrs = {ai[4][0] for ai in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
+    except OSError:
+        addrs = set()
+    lan = [a for a in addrs
+           if ipaddress.ip_address(a).is_private and not ipaddress.ip_address(a).is_link_local
+           and not ipaddress.ip_address(a).is_loopback]
+    if lan:
+        lan.sort(key=lambda a: not a.startswith("192.168."))   # home/lab LAN first
+        return lan[0]
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s.connect(("8.8.8.8", 80))      # no packet is sent; just picks the LAN interface
+        s.connect(("8.8.8.8", 80))      # no packet is sent; just picks the default interface
         return s.getsockname()[0]
     finally:
         s.close()
