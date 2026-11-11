@@ -1,7 +1,6 @@
 """touch() against a simulated Z axis and a stiff contact whose force data arrives late."""
 import re
 import threading
-import time
 
 import pytest
 
@@ -12,9 +11,22 @@ STIFFNESS = 100.0     # g/mm: ~ the real sample (50 g over 0.57 mm in run_202610
 LATENCY = 0.05        # s between the bed reaching a position and the PC seeing that force
 
 
+class Clock:
+    """Simulated time advances only by requested delays, independent of host scheduling."""
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
 class FakeAxis:
-    def __init__(self, z):
-        self.z0, self.z1, self.t0, self.v = z, z, time.perf_counter(), 1.0
+    def __init__(self, z, clock):
+        self.clock = clock
+        self.z0, self.z1, self.t0, self.v = z, z, clock.monotonic(), 1.0
         self.lock = threading.Lock()
 
     def z_at(self, t):
@@ -25,13 +37,13 @@ class FakeAxis:
         return self.z0 + (self.z1 - self.z0) * a
 
     def move(self, target, v):
-        now = time.perf_counter()
+        now = self.clock.monotonic()
         with self.lock:
             self.z0, self.z1, self.t0, self.v = self.z_at(now), target, now, v
 
     def halt(self):
-        time.sleep(0.01)                       # serial + firmware delay of M410
-        now = time.perf_counter()
+        self.clock.sleep(0.01)                 # serial + firmware delay of M410
+        now = self.clock.monotonic()
         with self.lock:
             self.z0 = self.z1 = self.z_at(now)
 
@@ -49,7 +61,7 @@ class FakeGauge:
         self.peak_true = 0.0
 
     def force_g(self, n=300):
-        now = time.perf_counter()
+        now = self.axis.clock.monotonic()
         self.peak_true = max(self.peak_true, self.axis.true_force(now))
         self.pos["z"] = self.axis.z_at(now - LATENCY)
         return -self.axis.true_force(now - LATENCY)        # pressing reads negative
@@ -66,11 +78,12 @@ class FakeGauge:
 
 @pytest.fixture
 def rig(monkeypatch):
-    axis = FakeAxis(5.0)
+    clock = Clock()
+    axis = FakeAxis(5.0, clock)
     gauge = FakeGauge(axis)
 
     def wait_done():
-        time.sleep(max(0.0, axis.done_at() - time.perf_counter()))
+        clock.sleep(max(0.0, axis.done_at() - clock.monotonic()))
 
     def nowait(cmd):
         m = re.match(r"G1 Z(-?[\d.]+) F([\d.]+)", cmd)
@@ -81,11 +94,13 @@ def rig(monkeypatch):
             nowait(cmd)
             wait_done()
         elif cmd == "M400":
-            time.sleep(max(0.0, axis.done_at() - time.perf_counter()))
+            wait_done()
         elif cmd == "M114":
-            return f"X:0.00 Y:0.00 Z:{axis.z_at(time.perf_counter()):.4f} E:0\nok"
+            return f"X:0.00 Y:0.00 Z:{axis.z_at(clock.monotonic()):.4f} E:0\nok"
         return "ok"
 
+    # Replace this module reference, not the shared Python time module used by pytest/Qt.
+    monkeypatch.setattr(touch_mod, "time", clock)
     monkeypatch.setattr(touch_mod, "_send", send)
     monkeypatch.setattr(touch_mod, "_send_nowait", nowait)
     monkeypatch.setattr(touch_mod, "_resync_serial", lambda timeout=15: wait_done())
@@ -107,7 +122,23 @@ def test_force_touch_stops_near_target(rig):
     assert res.status == "ok", res.message
     assert abs(res.contact_z - SURFACE) < 5.0 / STIFFNESS + 0.02   # threshold depth + overtravel
     assert 48 <= abs(res.final_g) <= 55
-    assert axis.z_at(time.perf_counter()) == pytest.approx(5.0)      # back at the start
+    assert axis.z_at(axis.clock.monotonic()) == pytest.approx(5.0)      # back at the start
+
+
+def test_longer_simulated_stop_delay_still_causes_force_overshoot(rig, monkeypatch):
+    axis, gauge = rig
+    halt = axis.halt
+
+    def delayed_halt():
+        axis.clock.sleep(0.1)
+        halt()
+
+    monkeypatch.setattr(touch_mod, "halt_move", delayed_halt)
+    res = run(gauge, "force", 50.0, expect_z=SURFACE)
+    assert res.status == "ok", res.message
+    # Virtual time must retain force growth during an explicitly delayed stop.
+    assert abs(res.final_g) > 55
+    assert axis.z_at(axis.clock.monotonic()) == pytest.approx(5.0)
 
 
 def test_expected_height_avoids_the_fast_hit(rig):
@@ -141,4 +172,4 @@ def test_cancel_returns_to_start(rig):
     res = run(gauge, "force", 50.0, expect_z=SURFACE, cancel=cancel, on_status=on_status)
     assert res.status == "aborted"
     assert gauge.peak_true < 60
-    assert axis.z_at(time.perf_counter()) == pytest.approx(5.0)
+    assert axis.z_at(axis.clock.monotonic()) == pytest.approx(5.0)
