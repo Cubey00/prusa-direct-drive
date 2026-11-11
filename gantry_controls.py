@@ -238,13 +238,20 @@ def motionstop():
 
 def emergency_drop(gauge, release_g=50.0, window=16):
     """Stop all motion and drop the bed fast towards Z_MAX until the load cell
-    reads below `release_g` grams, then keep dropping for `extra_s` seconds."""
+    reads below `release_g` grams (or Z_MAX is reached), then stop the drop."""
     motionstop()
-    send_gcode("G90")
-    send_gcode(f"G1 Z{Z_MAX:.2f} F{DROP_FEED}")     # 'ok' comes once queued, so we can watch while it moves
-    while abs(gauge.force_g(window) or 0) >= release_g: # and (gauge.pos["z"] or 0) < Z_MAX - 0.05:
-        time.sleep(0.005)
-    motionstop()
+    with _lock:
+        _send("G90")
+        # the G1 'ok' only comes once the move is done: don't wait for it, watch the force instead
+        _send_nowait(f"G1 Z{Z_MAX:.2f} F{DROP_FEED}")
+        try:
+            while abs(gauge.force_g(window) or 0) >= release_g:
+                z = gauge.pos.get("z")
+                if _stop.is_set() or (z is not None and z >= Z_MAX - 0.05):
+                    break       # a user stop is waiting for the lock, or the drop is done
+                time.sleep(0.005)
+        finally:
+            halt_move()         # M410 + drop the pending G1 'ok'
 
 
 def force_guard(gauge, trip_g=500.0, release_g=50.0, window=16, on_trip=None, stop_event=None):
