@@ -1,0 +1,4 @@
+{
+  "scale": 0.54982,
+  "note": "grams = scale * tared reading. 50-point fit, see logs/50 points calibration.png"
+}

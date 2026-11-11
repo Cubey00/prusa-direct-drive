@@ -1,0 +1,12 @@
+﻿__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+logs/
+fototest/
+USB drive backup/
+*.lnk
+*.tif
+*.tiff
+*.3mf
+UI_layout.png

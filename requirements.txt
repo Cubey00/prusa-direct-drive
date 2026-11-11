@@ -1,0 +1,10 @@
+numpy
+pillow
+pyserial
+trimesh
+networkx
+lxml
+PySide6
+matplotlib
+pytest
+pytest-qt
