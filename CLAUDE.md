@@ -16,7 +16,7 @@ Python control of a Prusa Core One (as a gantry) with an IDS camera and a strain
 - `imaging.py` – snap/save TIFF images (threaded saver); `set_photo_folder`.
 - `gauge_drift_reader.py` – logs and plots strain gauge drift over time.
 - `camera speedtester.py` – benchmarks the snap + TIFF save pipeline.
-- `printer_command_test.py`, `test.py` – quick serial/G-code connection tests.
+- `printer_command_test.py` – quick serial/G-code connection test.
 
 ## Data / other
 - `calibration.json` – hand-edited load cell `scale` (grams = scale × tared reading), read by `strain_gauge.py`; fit it with the GUI calibration points.
