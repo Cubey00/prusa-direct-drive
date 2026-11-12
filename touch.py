@@ -1,6 +1,6 @@
 """
 touch.py
-Force/depth touch. The load cell data reaches the PC with a delay (UDP batching + averaging),
+Force/depth touch. The load cell data reaches the PC with a delay (metrics pipeline + averaging),
 and the head/sample contact is stiff, so a continuous move overshoots by roughly
 stiffness x speed x delay: at 2 mm/s a 5 g contact stop ended at 90-225 g. Moves are continuous
 and stopped with M410 (an immediate stop in the modified firmware); don't chunk them, that makes

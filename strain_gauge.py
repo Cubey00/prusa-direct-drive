@@ -1,5 +1,7 @@
 #strain_gauge
-import re, socket, threading, json, time
+"""Load cell force from the printer metrics, which arrive over the serial link
+(gantry_controls reader thread -> StrainGauge.feed). Call gantry_controls.enable_metrics() first."""
+import re, json, time
 from collections import deque
 from pathlib import Path
 import numpy as np
@@ -20,25 +22,28 @@ _POS_RE = re.compile(r'\bpos_([xyz]) v=(-?\d+(?:\.\d+)?)')
 class StrainGauge:
     TARE_SAMPLES = 300
 
-    def __init__(self, port=8514, history=900, debug=False):
+    def __init__(self, history=900, debug=False):
         self.pos = {"x": None, "y": None, "z": None}
-        self.port, self.debug = port, debug
-        self.samples = deque(maxlen=history)   # absolute values, appended by the UDP thread
+        self.debug = debug
+        self.samples = deque(maxlen=history)   # absolute values, appended by the serial reader thread
         self.offset = 0.0                      # tare
         self._count = 0                        # samples received in total
         self._seen = 0                         # _count at the last drain()
-        self._stop = threading.Event()
-        self._thread = None
 
     def start(self):
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._worker, daemon=True)
-        self._thread.start()
+        """Start receiving the metric lines from the serial reader."""
+        import gantry_controls
+        gantry_controls.add_metric_listener(self.feed)
 
     def stop(self):
-        self._stop.set()
+        import gantry_controls
+        gantry_controls.remove_metric_listener(self.feed)
+
+    def feed(self, line):
+        """One metric line (without the 'metric:' prefix)."""
+        if self.debug:
+            print("RAW:", line)
+        self._parse(line)
 
     def can_tare(self):
         return len(self.samples) >= self.TARE_SAMPLES
@@ -75,7 +80,7 @@ class StrainGauge:
         self.offset = value
 
     def recent(self, n):
-        """Thread-safe copy of the last n absolute samples (the UDP thread appends to the deque)."""
+        """Thread-safe copy of the last n absolute samples (the serial reader thread appends to the deque)."""
         for _ in range(5):
             try:
                 return list(self.samples)[-n:]
@@ -113,22 +118,6 @@ class StrainGauge:
         sums[window:] -= sums[:-window].copy()
         counts = np.minimum(np.arange(1, len(vals) + 1), window)
         return (sums / counts - self.offset).tolist()
-
-    def _worker(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(("0.0.0.0", self.port))
-            sock.settimeout(0.5)
-            while not self._stop.is_set():
-                try:
-                    data, _ = sock.recvfrom(4096)
-                except socket.timeout:
-                    continue
-                text = data.decode(errors="replace")
-                if self.debug:
-                    print("RAW:", text)
-                for line in text.splitlines():
-                    self._parse(line)
 
     def _parse(self, line):
         if m := _RE.search(line):

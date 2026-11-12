@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "saved_at": "2026-11-12T12:38:23",
+  "model": {
+    "filename": "model.3mf",
+    "sha256": "26b84598a79a5087dfa0897e8ff5e182d7c15e33a3c47c9a6ce898a7a5ca46bc",
+    "orientation": [
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1
+      ],
+      [
+        0,
+        -1,
+        0
+      ]
+    ],
+    "face_size_mm": [
+      73.42,
+      26.0
+    ]
+  },
+  "calibration": {
+    "face": {
+      "back_left": [
+        5.0,
+        4.0
+      ],
+      "front_right": [
+        65.0,
+        19.0
+      ]
+    },
+    "machine": {
+      "back_left": [
+        64.01,
+        74.0
+      ],
+      "front_right": [
+        124.02,
+        59.0
+      ]
+    },
+    "transform": {
+      "a": [
+        1.0001568627450979,
+        3.9215686274474135e-05
+      ],
+      "b": [
+        59.009058823529415,
+        78.00043137254902
+      ],
+      "y_sign": -1
+    }
+  },
+  "settings": {
+    "approach_speed": 2.0,
+    "max_travel": 50.0,
+    "contact_g": 5.0,
+    "travel_speed": 40.0
+  },
+  "points": [
+    {
+      "x": 38.52865960587157,
+      "y": 10.653758148593274,
+      "mode": "force",
+      "value": 50.0,
+      "speed": 0.2,
+      "image_step": 5.0
+    },
+    {
+      "x": 54.87415155987768,
+      "y": 10.507816256146791,
+      "mode": "force",
+      "value": 50.0,
+      "speed": 0.5,
+      "image_step": 5.0
+    }
+  ]
+}

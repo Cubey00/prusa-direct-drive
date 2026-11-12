@@ -18,7 +18,7 @@ class Hardware(Protocol):
 
 
 class PrinterHardware:
-    """Owns the serial port and the UDP metrics port for the length of a run."""
+    """Owns the serial port (G-code and the metrics stream) for the length of a run."""
 
     def __init__(self, on_status=print, use_camera=False):
         self.on_status = on_status
@@ -47,7 +47,7 @@ class PrinterHardware:
         t0 = time.monotonic()
         while not self.gauge.tare():
             if time.monotonic() - t0 > 5:
-                raise gc.PrinterError("No load cell data over UDP metrics")
+                raise gc.PrinterError("No load cell data in the serial metrics (firmware with M334 usb?)")
             time.sleep(0.1)
         self._guard_stop = gc.force_guard(self.gauge, trip_g=500, release_g=50,
                                           on_trip=lambda: self.on_status("FORCE LIMIT: bed dropped"))

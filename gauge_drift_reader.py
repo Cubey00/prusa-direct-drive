@@ -1,6 +1,7 @@
 #gauge_drift_reader
 import time, json
-from strain_gauge import StrainGauge, enable_metrics
+from strain_gauge import StrainGauge
+from gantry_controls import enable_metrics
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -51,7 +52,7 @@ try:
 except Exception as e:
     print(f"Metrics Error: {e}")
 
-gauge.start()          # starts the UDP listener thread
+gauge.start()          # receives the metric lines from the serial reader
 print("Metrics enabled, waiting for data...")
 
 while not gauge.can_tare():

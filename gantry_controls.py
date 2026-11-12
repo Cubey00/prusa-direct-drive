@@ -1,12 +1,17 @@
 """
-gantry_controls.pyUSB serial link to a Prusa Core One used as a gantry. Nothing touches the
+gantry_controls.py – USB serial link to a Prusa Core One used as a gantry. Nothing touches the
 serial port at import time; the connection is opened on first use.
+
+The serial port carries both the G-code replies and the metrics stream (load cell, position):
+the modified firmware sends metrics over USB after `M334 usb`, one `metric:<name> ...` line per
+point. A reader thread owns all reads: metric lines go to the listeners (the StrainGauge), every
+other line to a reply queue that _send/_resync_serial consume.
 
 Z convention: a higher Z means the bed is LOWER. Z_MAX is the lowest the bed
 can safely go.
 """
 import atexit
-import queue, re, socket, threading, time
+import queue, re, threading, time
 
 import serial
 from serial.tools import list_ports
@@ -26,6 +31,12 @@ _ser = None
 _lock = threading.RLock()   # serial access must be one command at a time
 _stop = threading.Event()   # set while a stop is in progress; long-running moves check it
 _sync_count = 0
+
+METRIC_PREFIX = "metric:"
+_replies = queue.Queue()    # non-metric lines from the printer, in order
+_metric_listeners = []      # callables(line), called from the reader thread
+_reader = None
+REPLY_POLL = 0.2            # s; how often reply waits re-check their timeout
 
 _POS_RE = re.compile(r'X:(-?\d+(?:\.\d+)?)\s+Y:(-?\d+(?:\.\d+)?)\s+Z:(-?\d+(?:\.\d+)?)')
 
@@ -49,51 +60,94 @@ def find_port():
     raise PrinterError(f"Multiple Prusa ports found ({names}). Set PORT_OVERRIDE.")
 
 
-def get_local_ip():
-    """IP the printer should stream metrics to.
+def add_metric_listener(fn):
+    """Call fn(line) for every metric line (without the 'metric:' prefix), from the reader thread."""
+    if fn not in _metric_listeners:
+        _metric_listeners.append(fn)
 
-    The default route can be a VPN (public-looking address the printer can't reach), so
-    prefer a private LAN address. Override with the PRINTER_METRICS_IP environment variable.
-    """
-    import ipaddress
-    import os
-    override = os.environ.get("PRINTER_METRICS_IP")
-    if override:
-        return override
+
+def remove_metric_listener(fn):
     try:
-        addrs = {ai[4][0] for ai in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
-    except OSError:
-        addrs = set()
-    lan = [a for a in addrs
-           if ipaddress.ip_address(a).is_private and not ipaddress.ip_address(a).is_link_local
-           and not ipaddress.ip_address(a).is_loopback]
-    if lan:
-        lan.sort(key=lambda a: not a.startswith("192.168."))   # home/lab LAN first
-        return lan[0]
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        _metric_listeners.remove(fn)
+    except ValueError:
+        pass
+
+
+def _dispatch_line(text):
+    """Route one received line: metrics to the listeners, everything else to the reply queue."""
+    text = text.strip()
+    if not text:
+        return
+    i = text.find(METRIC_PREFIX)
+    if i < 0:
+        _replies.put(text)
+        return
+    if i > 0:
+        # a reply cut by a metric line (only if the printer left a line open for a long time)
+        _replies.put(text[:i].strip())
+    metric = text[i + len(METRIC_PREFIX):]
+    for fn in list(_metric_listeners):
+        try:
+            fn(metric)
+        except Exception as e:
+            print(f"Metric listener failed on {metric!r}: {e}")
+
+
+def _reader_loop(ser):
+    """Owns all reads from `ser` until it is closed. Reads in chunks: the metrics stream is
+    hundreds of lines a second, too much for byte-by-byte readline()."""
+    buf = b""
+    while True:
+        try:
+            data = ser.read(ser.in_waiting or 1)
+        except (serial.SerialException, OSError, TypeError, AttributeError):
+            return                      # port closed (disconnect) or unplugged
+        if not data:
+            continue
+        buf += data
+        *lines, buf = buf.split(b"\n")
+        for raw in lines:
+            _dispatch_line(raw.decode("utf-8", errors="ignore"))
+
+
+def _drain_replies():
     try:
-        s.connect(("8.8.8.8", 80))      # no packet is sent; just picks the default interface
-        return s.getsockname()[0]
-    finally:
-        s.close()
+        while True:
+            _replies.get_nowait()
+    except queue.Empty:
+        pass
+
+
+def _next_reply(timeout=REPLY_POLL):
+    """Next non-metric line, or '' if none arrived within `timeout` seconds."""
+    try:
+        return _replies.get(timeout=timeout)
+    except queue.Empty:
+        return ""
 
 
 def connect():
-    global _ser
+    global _ser, _reader
     with _lock:
         if _ser is not None and _ser.is_open:
             return
-        _ser = serial.Serial(find_port(), BAUD, timeout=1)
+        _ser = serial.Serial(find_port(), BAUD, timeout=0.2)
         time.sleep(2)                 # let the printer finish its serial handshake
         _ser.reset_input_buffer()     # discard boot chatter
+        _drain_replies()
+        _reader = threading.Thread(target=_reader_loop, args=(_ser,), daemon=True, name="serial-reader")
+        _reader.start()
 
 
 def disconnect():
-    global _ser
+    global _ser, _reader
     with _lock:
         if _ser is not None and _ser.is_open:
-            _ser.close()
+            _ser.close()              # ends the reader thread
         _ser = None
+        if _reader is not None and _reader is not threading.current_thread():
+            _reader.join(timeout=2)
+        _reader = None
 
 
 atexit.register(disconnect)
@@ -117,7 +171,7 @@ def _send(cmd, timeout=30):
     error = None
     last_activity = time.monotonic()
     while True:
-        line = _ser.readline().decode("utf-8", errors="ignore").strip()
+        line = _next_reply()
         if line:
             last_activity = time.monotonic()
             response.append(line)
@@ -158,7 +212,7 @@ def _resync_serial(timeout=15):
     deadline = time.monotonic() + timeout
     got_marker = False
     while time.monotonic() < deadline:
-        line = _ser.readline().decode("utf-8", errors="ignore").strip()
+        line = _next_reply()
         if not line:
             continue
         if line == marker:
@@ -178,10 +232,10 @@ def _quickstop():
 METRICS = ("loadcell", "pos_x", "pos_y", "pos_z")     # the only metrics the PC reads
 
 
-def enable_metrics(port=8514, pc_ip=None):
-    pc_ip = pc_ip or get_local_ip()
+def enable_metrics():
+    """Stream the metrics over this serial link (modified firmware: `M334 usb`)."""
     # M334 asks for confirmation on the printer screen if the metrics settings change
-    send_gcode(f"M334 {pc_ip} {port}", timeout=300)
+    send_gcode("M334 usb", timeout=300)
     # The printer can have dozens of diagnostic metrics on (after a firmware update/reset). Its
     # sender then drops points, and the low-rate pos_x/y/z are the ones that go missing while the
     # load cell keeps arriving. Switch off everything we don't read.
