@@ -1,7 +1,7 @@
 """Left panel: model file, outer dimensions, calibration points and the visual calibrator link."""
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QDoubleSpinBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
-                               QLabel, QPushButton, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 from ..calibration import POINTS, CalPoints
 
@@ -40,22 +40,27 @@ class LeftPanel(QWidget):
         self.open_btn = QPushButton("Open model...")
         self.save_folder_btn = QPushButton("Programs folder...")
         self.save_folder_btn.setToolTip("Default folder for saving and loading program (.json) files")
-        self.log_folder_btn = QPushButton("Run logs folder...")
-        self.log_folder_btn.setToolTip("Folder where run logs are written when a program is executed")
+        self.runs_folder_btn = QPushButton("Runs folder...")
+        self.runs_folder_btn.setToolTip("Folder in which each run gets its own folder (log, images, heightmap)")
+        self.run_name = QLineEdit()
+        self.run_name.setPlaceholderText("run_YYYYMMDD_HHMMSS")
+        self.run_name.setToolTip("Name of this run's folder inside the runs folder")
         self.file_label = QLabel("[no model]")
         self.file_label.setWordWrap(True)
         self.folder_label = QLabel("")
         self.folder_label.setWordWrap(True)
         self.folder_label.setStyleSheet("color: gray;")
-        self.log_folder_label = QLabel("")
-        self.log_folder_label.setWordWrap(True)
-        self.log_folder_label.setStyleSheet("color: gray;")
+        self.runs_folder_label = QLabel("")
+        self.runs_folder_label.setWordWrap(True)
+        self.runs_folder_label.setStyleSheet("color: gray;")
         fl.addWidget(self.open_btn, 0, 0, 1, 2)
         fl.addWidget(self.file_label, 1, 0, 1, 2)
         fl.addWidget(self.save_folder_btn, 2, 0)
-        fl.addWidget(self.log_folder_btn, 2, 1)
+        fl.addWidget(self.runs_folder_btn, 2, 1)
         fl.addWidget(self.folder_label, 3, 0, 1, 2)
-        fl.addWidget(self.log_folder_label, 4, 0, 1, 2)
+        fl.addWidget(self.runs_folder_label, 4, 0, 1, 2)
+        fl.addWidget(QLabel("Run name"), 5, 0)
+        fl.addWidget(self.run_name, 5, 1)
         lay.addWidget(file_box)
 
         # --- dimensions ---

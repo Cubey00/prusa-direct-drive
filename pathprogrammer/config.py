@@ -3,7 +3,7 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 GUI_SCRIPT = PROJECT_DIR / "GUI.py"
-RUN_LOG_DIR = PROJECT_DIR / "logs" / "runs"
+RUNS_DIR = PROJECT_DIR / "runs"       # default parent of the per-run folders (log, images, heightmap)
 
 # face +Y points to the front, machine +Y to the back -> mirror. Check once on the hardware.
 FACE_Y_TO_MACHINE_SIGN = -1
@@ -26,6 +26,15 @@ DEPTH_RANGE = (0.01, 0.1)              # mm past contact, for "d = ..." points
 MAX_TRAVEL = 50.0                      # mm below the start Z to look for contact
 MAX_TRAVEL_RANGE = (0.5, 200.0)
 HOLD_S = 0.1
+
+# ---------------- imaging ----------------
+CAMERA_EXPOSURE_US = 100_000           # the bed stands still for every exposure
+MAX_IMAGES_PER_POINT = 100
+IMAGE_STEP_DEFAULT = {"force": 5.0, "depth": 0.02}   # template default per type (g / mm)
+
+# ---------------- heightmap ----------------
+HEIGHTMAP_RES_MM = 0.1
+HEIGHTMAP_MAX_PX = 2000                # per side; the resolution is coarsened to stay below
 
 # ---------------- machine ----------------
 MACHINE_XY_BOUNDS = ((0.0, 250.0), (0.0, 220.0))   # placeholder, confirm against the Core One

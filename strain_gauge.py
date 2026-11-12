@@ -128,9 +128,16 @@ class StrainGauge:
                 if self.debug:
                     print("RAW:", text)
                 for line in text.splitlines():
-                    if m := _RE.search(line):
-                        raw, off, scale = int(m.group(1)), int(m.group(2)), float(m.group(3))
-                        self.samples.append((raw - off) * scale)
-                        self._count += 1
-                    elif pm := _POS_RE.search(line):
-                        self.pos[pm.group(1)] = float(pm.group(2))
+                    self._parse(line)
+
+    def _parse(self, line):
+        if m := _RE.search(line):
+            # raw reading only: the firmware's own offset (o=) is re-zeroed whenever the printer
+            # homes or calibrates with the load cell, which would shift our tare by that jump and
+            # trip the force guard. Our tare removes the constant part anyway, so the
+            # calibration.json scale (fitted on tared readings) still holds.
+            raw, scale = int(m.group(1)), float(m.group(3))
+            self.samples.append(raw * scale)
+            self._count += 1
+        elif pm := _POS_RE.search(line):
+            self.pos[pm.group(1)] = float(pm.group(2))

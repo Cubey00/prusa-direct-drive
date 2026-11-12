@@ -142,3 +142,37 @@ def test_cancel_returns_to_start(rig):
     assert res.status == "aborted"
     assert gauge.peak_true < 60
     assert axis.z_at(time.perf_counter()) == pytest.approx(5.0)
+
+
+def test_force_images_taken_while_standing_still(rig):
+    axis, gauge = rig
+    calls = []
+
+    def capture(k, target):
+        a = axis
+        calls.append((k, target, a.z0 == a.z1, abs(gauge.force_g())))
+
+    res = run(gauge, "force", 20.0, expect_z=SURFACE, image_step=5.0, capture=capture)
+    assert res.status == "ok", res.message
+    assert [c[0] for c in calls] == [1, 2, 3, 4]
+    assert all(c[2] for c in calls)                       # bed stationary during every exposure
+    assert all(c[3] >= c[1] - 1 for c in calls)           # at least the target (data lags a bit)
+    assert [i["increment"] for i in res.images] == [1, 2, 3, 4]
+    assert all(i["force_g"] >= i["target"] - 1 for i in res.images)
+    assert 18 <= abs(res.final_g) <= 25
+
+
+def test_depth_images_step_by_step(rig):
+    axis, gauge = rig
+    res = run(gauge, "depth", 0.06, expect_z=SURFACE, image_step=0.02, capture=lambda k, t: None)
+    assert res.status == "ok", res.message
+    zs = [i["z"] for i in res.images]
+    assert len(zs) == 3
+    assert [round(res.contact_z - z, 2) for z in zs] == [0.02, 0.04, 0.06]
+
+
+def test_no_images_without_step(rig):
+    axis, gauge = rig
+    calls = []
+    res = run(gauge, "force", 20.0, expect_z=SURFACE, image_step=0.0, capture=lambda k, t: calls.append(k))
+    assert res.status == "ok" and calls == [] and res.images == []

@@ -1,4 +1,6 @@
 """Main window: left panel | face view + rotate controls | point list + run controls."""
+import re
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
@@ -92,7 +94,7 @@ class MainWindow(QMainWindow):
         # wiring
         self.left.open_btn.clicked.connect(self.open_model_dialog)
         self.left.save_folder_btn.clicked.connect(self.choose_save_folder)
-        self.left.log_folder_btn.clicked.connect(self.choose_log_folder)
+        self.left.runs_folder_btn.clicked.connect(self.choose_runs_folder)
         self.left.calib_btn.clicked.connect(self.open_calibrator)
         self.left.calibrationChanged.connect(self.refit)
         self.left.faceSizeChanged.connect(self.refit)
@@ -114,7 +116,7 @@ class MainWindow(QMainWindow):
 
         self.server = CalibratorServer(self.calibratorMessage.emit)
         self.left.folder_label.setText(f"Programs folder: {self.save_folder()}")
-        self.left.log_folder_label.setText(f"Run logs folder: {self.log_folder()}")
+        self.left.runs_folder_label.setText(f"Runs folder: {self.runs_folder()}")
         self.refit()
         self.update_graph_lines()
         geo = self.settings.value("geometry")
@@ -133,14 +135,25 @@ class MainWindow(QMainWindow):
             self.settings.setValue("save_folder", path)
             self.left.folder_label.setText(f"Programs folder: {path}")
 
-    def log_folder(self):
-        return self.settings.value("log_folder", str(config.RUN_LOG_DIR))
+    def runs_folder(self):
+        return self.settings.value("runs_folder", str(config.RUNS_DIR))
 
-    def choose_log_folder(self):
-        path = QFileDialog.getExistingDirectory(self, "Select run logs folder", self.log_folder())
+    def choose_runs_folder(self):
+        path = QFileDialog.getExistingDirectory(self, "Select runs folder", self.runs_folder())
         if path:
-            self.settings.setValue("log_folder", path)
-            self.left.log_folder_label.setText(f"Run logs folder: {path}")
+            self.settings.setValue("runs_folder", path)
+            self.left.runs_folder_label.setText(f"Runs folder: {path}")
+
+    def new_run_dir(self):
+        """(folder, name): the typed name made filesystem-safe, a timestamp if empty, _2, _3... if taken."""
+        name = re.sub(r'[<>:"/\|?*\x00-\x1f]', "_", self.left.run_name.text()).strip(" .")
+        name = name or f"run_{datetime.now():%Y%m%d_%H%M%S}"
+        base, n, d = name, 1, Path(self.runs_folder()) / name
+        while d.exists() and any(d.iterdir()):
+            n += 1
+            name = f"{base}_{n}"
+            d = Path(self.runs_folder()) / name
+        return d, name
 
     def open_model_dialog(self):
         start = self.settings.value("model_folder", str(config.PROJECT_DIR))
@@ -326,19 +339,22 @@ class MainWindow(QMainWindow):
                 return
             self.server.terminate()
         xs, ys = zip(*(self.transform.face_to_machine(p.x, p.y) for p in prog.points))
+        run_dir, run_name = self.new_run_dir()
+        n_images = sum(p.n_images() for p in prog.points)
         msg = (f"Run {len(prog.points)} points{' (SIMULATION)' if simulate else ''}?\n\n"
+               f"Run folder: {run_dir}\n{n_images} images planned.\n\n"
                f"Machine X {min(xs):.1f} - {max(xs):.1f} mm, Y {min(ys):.1f} - {max(ys):.1f} mm.\n"
                "The bed's CURRENT Z will be the travel height: make sure the head clears the part.")
         if QMessageBox.question(self, "Execute program", msg) != QMessageBox.Yes:
             return
 
-        hw = SimHardware(on_status=print) if simulate else PrinterHardware(on_status=print)
+        hw = SimHardware(on_status=print) if simulate else PrinterHardware(on_status=print, use_camera=n_images > 0)
         self.points.clear_states()
         self.run.progress.setRange(0, len(prog.points))
         self.run.progress.setValue(0)
         self.set_running(True)
         self.thread = QThread(self)
-        self.worker = ExecutorWorker(prog, self.transform, hw, Path(self.log_folder()))
+        self.worker = ExecutorWorker(prog, self.transform, hw, run_dir, self.mesh, run_name)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.status.connect(self.run.status.setText)
@@ -383,7 +399,7 @@ class MainWindow(QMainWindow):
         self._running_row = None
         self.update_graph_lines()
         self.set_running(False)
-        self.run.status.setText(f"{summary.outcome}: {summary.message}\nLog: {summary.log_path}")
+        self.run.status.setText(f"{summary.outcome}: {summary.message}\nRun folder: {summary.log_path}")
         if summary.outcome != "completed":
             QMessageBox.warning(self, "Run ended", f"{summary.outcome}: {summary.message}")
 
