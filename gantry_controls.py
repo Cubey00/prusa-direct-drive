@@ -11,6 +11,8 @@ import queue, re, socket, threading, time
 import serial
 from serial.tools import list_ports
 
+from machine_settings import SETTINGS
+
 # ---------------- settings ----------------
 BAUD = 115200
 PRUSA_VID = 0x2C99          # Prusa Research USB vendor ID
@@ -18,13 +20,16 @@ PORT_OVERRIDE = None        # e.g. "COM5" to skip auto-detection
 XYFEEDRATE = 1200            # mm/min for nudges
 ZFEEDRATE = 600             # mm/min, kept slow so the bed never slams into anything during normal moves
 
-Z_MAX = 273.0               # mm, lowest bed position before crashing (higher Z = lower bed)
+Z_MAX = SETTINGS.printer.z_max   # mm, lowest bed position before crashing (machine_settings.toml)
 DROP_FEED = 1200            # mm/min for the emergency drop
+CONNECT_SETTLE = 2.0        # s after opening the port before talking to the printer
+DISCONNECT_WAIT = 2.0       # s disconnect() waits for a running command before closing anyway
 # ------------------------------------------
 
 _ser = None
 _lock = threading.RLock()   # serial access must be one command at a time
 _stop = threading.Event()   # set while a stop is in progress; long-running moves check it
+_closing = threading.Event()  # set by disconnect(): a command still waiting for its 'ok' gives up
 _sync_count = 0
 
 _POS_RE = re.compile(r'X:(-?\d+(?:\.\d+)?)\s+Y:(-?\d+(?:\.\d+)?)\s+Z:(-?\d+(?:\.\d+)?)')
@@ -83,17 +88,30 @@ def connect():
     with _lock:
         if _ser is not None and _ser.is_open:
             return
-        _ser = serial.Serial(find_port(), BAUD, timeout=1)
-        time.sleep(2)                 # let the printer finish its serial handshake
+        port = find_port()
+        _closing.clear()
+        _ser = serial.Serial(port, BAUD, timeout=1)
+        time.sleep(CONNECT_SETTLE)    # let the printer finish its serial handshake
         _ser.reset_input_buffer()     # discard boot chatter
 
 
-def disconnect():
+def disconnect(wait=None):
+    """Close the serial link without hanging. A command still waiting for its 'ok' holds the lock,
+    and the printer's 'busy' lines keep that wait alive forever (e.g. while a question waits on
+    its screen), so after `wait` seconds the port is closed anyway; that command then fails."""
     global _ser
-    with _lock:
-        if _ser is not None and _ser.is_open:
-            _ser.close()
-        _ser = None
+    _closing.set()
+    got = _lock.acquire(timeout=DISCONNECT_WAIT if wait is None else wait)
+    try:
+        ser, _ser = _ser, None
+        if ser is not None and ser.is_open:
+            try:
+                ser.close()
+            except (serial.SerialException, OSError):
+                pass
+    finally:
+        if got:
+            _lock.release()
 
 
 atexit.register(disconnect)
@@ -101,6 +119,16 @@ atexit.register(disconnect)
 
 def _connected():
     return _ser is not None and _ser.is_open
+
+
+def _readline(ser):
+    """One line from the printer; PrinterError once the link is closed or closing."""
+    if _closing.is_set():
+        raise PrinterError("Serial connection is closing")
+    try:
+        return ser.readline().decode("utf-8", errors="ignore").strip()
+    except (serial.SerialException, OSError, TypeError, AttributeError):
+        raise PrinterError("Serial connection was closed") from None
 
 
 # ---------------- G-code ----------------
@@ -112,12 +140,13 @@ def _send(cmd, timeout=30):
     The printer still sends 'ok' after an error, so an error is raised only
     once that 'ok' is read; otherwise the next command would take it as its own."""
     connect()
-    _ser.write(f"{cmd}\n".encode())
+    ser = _ser
+    ser.write(f"{cmd}\n".encode())
     response = []
     error = None
     last_activity = time.monotonic()
     while True:
-        line = _ser.readline().decode("utf-8", errors="ignore").strip()
+        line = _readline(ser)
         if line:
             last_activity = time.monotonic()
             response.append(line)
@@ -154,11 +183,12 @@ def _resync_serial(timeout=15):
     global _sync_count
     _sync_count += 1
     marker = f"resync{_sync_count}"
-    _ser.write(f"M118 {marker}\n".encode())
+    ser = _ser
+    ser.write(f"M118 {marker}\n".encode())
     deadline = time.monotonic() + timeout
     got_marker = False
     while time.monotonic() < deadline:
-        line = _ser.readline().decode("utf-8", errors="ignore").strip()
+        line = _readline(ser)
         if not line:
             continue
         if line == marker:
@@ -171,8 +201,14 @@ def _resync_serial(timeout=15):
 def _quickstop():
     """M410: abort the current move and flush the planner.
     Deliberately NOT under _lock: whoever holds it may be blocked waiting on
-    an M400 that only finishes once the motion is stopped."""
-    _ser.write(b"\nM410\n")
+    an M400 that only finishes once the motion is stopped. Does nothing when not connected."""
+    ser = _ser
+    if ser is None or not ser.is_open:
+        return
+    try:
+        ser.write(b"\nM410\n")
+    except (serial.SerialException, OSError):
+        pass
 
 
 def enable_metrics(port=8514, pc_ip=None):

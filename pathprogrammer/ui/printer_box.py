@@ -165,13 +165,19 @@ class PrinterBox(QGroupBox):
 
     # ---------------- polling ----------------
     def _run(self, work, ok_signal, fail_signal):
+        def emit(signal, value):
+            try:
+                signal.emit(value)
+            except RuntimeError:                       # the box was closed while the call ran
+                pass
+
         def target():
             try:
-                ok_signal.emit(work())
+                emit(ok_signal, work())
             except PrusaLinkError as e:
-                fail_signal.emit(str(e))
+                emit(fail_signal, str(e))
             except Exception as e:                     # never let a thread die silently
-                fail_signal.emit(f"{type(e).__name__}: {e}")
+                emit(fail_signal, f"{type(e).__name__}: {e}")
         threading.Thread(target=target, daemon=True).start()
 
     def poll(self):

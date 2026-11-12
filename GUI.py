@@ -12,7 +12,9 @@ from PIL import Image, ImageTk
 #from playsound3 import playsound
 
 #from imaging import single_image, set_photo_folder
-from gantry_controls import MotionController, force_guard, home, motionstop, _stop, enable_metrics
+from gantry_controls import (MotionController, force_guard, home, motionstop, _stop, enable_metrics,
+                             disconnect, _quickstop as quickstop)
+from machine_settings import SETTINGS
 from strain_gauge import StrainGauge
 
 script_folder = Path(__file__).resolve().parent
@@ -308,7 +310,7 @@ class App:
                 if self._tared:
                     # over 500 g: stop everything and drop the bed until under 50 g, plus extra_s
                     # (only armed once tared, the raw offset would trip it)
-                    force_guard(self.gauge, trip_g=500, release_g=50,
+                    force_guard(self.gauge, trip_g=SETTINGS.forces.guard_trip_g, release_g=SETTINGS.forces.guard_release_g,
                                 on_trip=self._on_guard_trip)
             if len(s) > 1:
                 lv = self.get_line_value()
@@ -498,11 +500,15 @@ class App:
 
     def on_close(self):
         _stop.set()             # stop the probe and any chunked move
-        self.stop()             # stop the printer in its tracks
+        self.motion.halt()
+        quickstop()             # M410 straight away; no thread that could keep the port busy
         self.gauge.stop()
         if self.link is not None:
             self.link.close()
         self.root.destroy()
+        # release the serial port now, even if a command is still waiting for its 'ok';
+        # otherwise the process can stay alive without a window and keep the port locked
+        disconnect()
 
 
 if __name__ == "__main__":
