@@ -1,5 +1,8 @@
-"""Limits and defaults for the path programmer. Edit here, like the settings block in gantry_controls."""
+"""Limits and defaults for the path programmer. Values that depend on the physical setup (forces,
+machine bounds, calibration tolerances) come from machine_settings.toml: change them there."""
 from pathlib import Path
+
+from machine_settings import SETTINGS
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 GUI_SCRIPT = PROJECT_DIR / "GUI.py"
@@ -19,8 +22,10 @@ TOUCH_SPEED_RANGE = (0.05, 2.0)
 RETURN_SPEED = 10.0                    # back up to the travel height
 
 # ---------------- touch ----------------
-CONTACT_G = 5.0                        # |force| that counts as contact
-MAX_FORCE_G = 450.0                    # abort the touch above this (force_guard trips at 500)
+CONTACT_G = SETTINGS.forces.contact_g          # |force| that counts as contact
+MAX_FORCE_G = SETTINGS.forces.max_force_g      # abort the touch above this
+GUARD_TRIP_G = SETTINGS.forces.guard_trip_g    # force_guard: emergency drop above this
+GUARD_RELEASE_G = SETTINGS.forces.guard_release_g
 FORCE_RANGE = (1.0, 100.0)             # grams, for "M = ..." points
 DEPTH_RANGE = (0.01, 0.1)              # mm past contact, for "d = ..." points
 MAX_TRAVEL = 50.0                      # mm below the start Z to look for contact
@@ -28,12 +33,12 @@ MAX_TRAVEL_RANGE = (0.5, 200.0)
 HOLD_S = 0.1
 
 # ---------------- machine ----------------
-MACHINE_XY_BOUNDS = ((0.0, 250.0), (0.0, 220.0))   # placeholder, confirm against the Core One
+MACHINE_XY_BOUNDS = SETTINGS.work_area.machine     # [work_area] machine_x / machine_y
 
 # ---------------- calibration ----------------
-CAL_MIN_DISTANCE = 10.0                # mm
-CAL_SCALE_TOL = 0.02                   # warn if |scale - 1| exceeds this
-CAL_RESIDUAL_TOL = 0.5                 # mm; warn if a point is further than this off the 3-point fit
+CAL_MIN_DISTANCE = SETTINGS.calibration.min_distance   # mm
+CAL_SCALE_TOL = SETTINGS.calibration.scale_tol         # warn if |scale - 1| exceeds this
+CAL_RESIDUAL_TOL = SETTINGS.calibration.residual_tol   # mm; warn if a point is this far off the fit
 
 # ---------------- rendering ----------------
 RENDER_PX_PER_MM = 8.0

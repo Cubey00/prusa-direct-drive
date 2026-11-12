@@ -1,4 +1,5 @@
-"""Plate layout and slicer settings. Edit here, like the settings block in gantry_controls.
+"""Plate layout and slicer settings. The physical values (bed, usable area, raster, fiducials)
+come from machine_settings.toml: change them there. Slicer-only settings stay below.
 
 Bed coordinates are PrusaSlicer's: origin at the front-left corner of the print area, +X to the
 right, +Y to the back, mm. The manifest stores everything in these coordinates; the three
@@ -6,29 +7,28 @@ fiducial cones on each plate tie them to the gantry later.
 """
 from pathlib import Path
 
+from machine_settings import SETTINGS
+
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 
-# ---------------- bed ----------------
-BED_SIZE = (250.0, 220.0)      # Core One print area (X, Y)
-# The stops on the rods keep the head out of the front and back 60 mm of the bed (seen from the
-# door), so only this part of it is used: ((x min, x max), (y min, y max)) in bed mm.
-USABLE_AREA = ((0.0, 250.0), (60.0, 160.0))
-MAX_HEIGHT = 50.0              # mm, refuse taller parts (the sensor has to reach over them later)
+# ---------------- bed (machine_settings.toml [printer], [work_area]) ----------------
+BED_SIZE = SETTINGS.printer.bed_size
+# The stops keep the head out of part of the bed: ((x min, x max), (y min, y max)) in bed mm.
+USABLE_AREA = SETTINGS.work_area.usable
+MAX_HEIGHT = SETTINGS.raster.max_part_height
 
-# ---------------- raster ----------------
-# Free strips inside the usable area: left and right wide enough for the fiducials, front and
-# back only a small edge so the short Y range still holds several rows.
-MARGIN_X = 20.0
-MARGIN_Y = 5.0
-CELL_PITCH = 20.0              # mm between neighbouring cell centres (10 x 4 = 40 cells)
-MIN_GAP = 5.0                  # mm free between a part and the edge of the next cell
+# ---------------- raster ([raster]) ----------------
+MARGIN_X = SETTINGS.raster.margin_x
+MARGIN_Y = SETTINGS.raster.margin_y
+CELL_PITCH = SETTINGS.raster.cell_pitch
+MIN_GAP = SETTINGS.raster.min_gap
 
-# ---------------- fiducials ----------------
+# ---------------- fiducials ([fiducials]) ----------------
 # Three cones in an L in the side strips (front-left, front-right, back-left of the usable area),
 # so the plate can't be read rotated.
-FIDUCIAL_INSET = MARGIN_X / 2  # mm from the usable area's edges to the cone axis
-FIDUCIAL_BASE_D = 8.0          # mm
-FIDUCIAL_HEIGHT = 5.0          # mm
+FIDUCIAL_INSET = SETTINGS.fiducials.inset
+FIDUCIAL_BASE_D = SETTINGS.fiducials.base_diameter
+FIDUCIAL_HEIGHT = SETTINGS.fiducials.height
 
 # ---------------- checks ----------------
 OVERHANG_ANGLE = 45.0          # degrees from vertical; steeper downward faces need support
@@ -45,6 +45,6 @@ SLICER_SEARCH = [
 # the print settings and the filament selected. Every plate is sliced with exactly this file.
 SLICER_PROFILE = PROJECT_DIR / "slicing" / "profiles" / "coreone.ini"
 SLICER_OVERRIDES = ["--support-material=0", "--support-material-auto=0"]   # never supports
-PRINTER_MODEL = "COREONE"      # printer_model the profile must have (COREONEL is the bigger L)
+PRINTER_MODEL = SETTINGS.printer.model   # printer_model the profile must have (COREONEL is the bigger L)
 MIN_SLICER_VERSION = (2, 9)    # first PrusaSlicer that knows the Core One
 SLICER_TIMEOUT = 600           # s per plate

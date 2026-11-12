@@ -42,7 +42,7 @@ class PrinterHardware:
             if time.monotonic() - t0 > 5:
                 raise gc.PrinterError("No load cell data over UDP metrics")
             time.sleep(0.1)
-        self._guard_stop = gc.force_guard(self.gauge, trip_g=500, release_g=50,
+        self._guard_stop = gc.force_guard(self.gauge, trip_g=config.GUARD_TRIP_G, release_g=config.GUARD_RELEASE_G,
                                           on_trip=lambda: self.on_status("FORCE LIMIT: bed dropped"))
 
     def position(self):

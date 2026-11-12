@@ -1,0 +1,72 @@
+# machine_settings.toml
+# All values that depend on the physical setup (printer, stops, sensor, mount, camera, plates).
+# Change them HERE, not in the code: the code reads this file at start-up (machine_settings.py).
+#
+# Units: mm, grams, mm/s. Coordinates:
+#   bed     = PrusaSlicer bed coordinates: origin front-left of the print area, +X right, +Y back
+#   machine = printer coordinates as reported by M114 / the metrics stream (head position)
+# Higher Z = LOWER bed (Core One moves the bed).
+#
+# Values marked "TODO measure" are first guesses: measure them and set `measured = true`,
+# then the software stops warning about them.
+
+[printer]
+model = "COREONE"
+bed_size = [250.0, 220.0]          # print area (X, Y)
+z_max = 273.0                      # lowest safe bed position (gantry_controls.Z_MAX)
+
+[work_area]
+# The stops on the rods keep the head out of the front and back 60 mm (seen from the door).
+# Plates, fiducials and every sensor target must lie inside this rectangle (bed coordinates).
+usable_x = [0.0, 250.0]
+usable_y = [60.0, 160.0]
+# Where the SENSOR (not the nozzle) may be sent, in machine coordinates. TODO measure:
+# jog the head with the sensor mounted to the four limits and note M114.
+machine_x = [0.0, 250.0]
+machine_y = [0.0, 220.0]
+measured = false
+
+[raster]
+margin_x = 20.0                    # free strip left and right inside the usable area (fiducials)
+margin_y = 5.0                     # free strip front and back
+cell_pitch = 20.0                  # mm between neighbouring cell centres
+min_gap = 5.0                      # mm free between a part and the edge of the next cell
+max_part_height = 50.0             # taller parts are refused
+
+[fiducials]
+# Cones printed on every plate: F1 front-left, F2 front-right, F3 back-left of the usable area.
+inset = 10.0                       # mm from the usable area's edges to the cone axis
+base_diameter = 8.0
+height = 5.0                       # tip height above the bed
+
+[sensor]
+# Offset of the sensor's touch point (centre of the polymer / camera axis) from the nozzle tip,
+# in machine axes: sensor = nozzle + offset. With the head at machine (X, Y), the sensor touches
+# (X + dx, Y + dy). dz < 0 means the sensor sits LOWER than the nozzle. TODO measure (see
+# docs/kalibratie-plan.md, stap A1). Used to predict where the fiducials are before calibrating.
+mount = "zijkant mount"            # which bracket is fitted (zijkant mount / fan mount V2)
+offset_x = 0.0
+offset_y = 0.0
+offset_z = 0.0
+measured = false
+# Size of the sensor housing, for clearance checks between neighbouring parts. TODO measure.
+housing_diameter = 50.0
+polymer_protrusion = 5.0           # how far the polymer sticks out below the housing
+
+[camera]
+# Camera inside the sensor. mm per pixel at the polymer surface, and the pixel where the touch
+# point (sensor axis) appears. TODO measure (stap A2).
+mm_per_px = 0.0
+centre_px = [0.0, 0.0]
+measured = false
+
+[forces]
+contact_g = 5.0                    # |force| that counts as contact
+max_force_g = 450.0                # a touch is aborted above this
+guard_trip_g = 500.0               # force_guard: emergency drop above this
+guard_release_g = 50.0             # ...until the force is below this
+
+[calibration]
+min_distance = 10.0                # mm: calibration points closer than this are refused
+scale_tol = 0.02                   # warn if the fitted scale differs more than this from 1
+residual_tol = 0.5                 # mm: warn if a point is further than this off the 3-point fit

@@ -4,6 +4,8 @@ Python control of a Prusa Core One (as a gantry) with an IDS camera and a strain
 
 ## Code
 - `GUI.py` – Tkinter app tying everything together (jogging, photos, gauge calibration, touch probing).
+- `machine_settings.toml` + `machine_settings.py` – the ONE place for values that depend on the physical setup: bed and usable area, raster, fiducials, nozzle→sensor offset, sensor size, camera mm/px, force limits, calibration tolerances. `SETTINGS` is loaded and validated at import (clear `SettingsError` with section/key); `slicing/config.py`, `pathprogrammer/config.py`, `gantry_controls.Z_MAX` and the `force_guard` calls read from it. `measured = false` marks guesses. `PRINTERPROJECT_SETTINGS=<file>` loads another file. Change values in the TOML, not in the config modules.
+- `docs/kalibratie-plan.md` – plan (Dutch) for the Calibrate button after the tool swap: setup calibration (offsets, camera scale), per-plate F1–F3 calibration (Z touch, XY via camera/tactile search, Z plane, acceptance criteria that block measuring, saved per plate), drift checks.
 - `gantry_controls.py` – USB serial link to the printer: connect, G-code send, home, relative moves, e-stop, `MotionController`.
 - `prusalink.py` – `PrusaLink` client for the printer's PrusaLink API v1 (digest auth or `X-Api-Key`): `status()`, `upload(gcode, print_after=True)`, `pause/resume/stop(job_id)`. Separate from the USB serial link, which stays free while the printer prints. Tested against `tests/fake_prusalink.py`.
 - `strain_gauge.py` – `StrainGauge` reads force values streamed from the printer over UDP metrics (`enable_metrics`).
