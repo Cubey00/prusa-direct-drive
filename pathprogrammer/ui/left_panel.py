@@ -78,40 +78,31 @@ class LeftPanel(QWidget):
 
         # --- calibration ---
         cal_box = QGroupBox("Calibration")
-        cl = QGridLayout(cal_box)
-        intro = QLabel("Fiducial tips on the face (from its <b>back left corner</b>; "
-                       "filled in from the plate manifest):")
-        intro.setWordWrap(True)
-        cl.addWidget(intro, 0, 0, 1, 5)
-        self.face_fields, self.machine_fields = {}, {}
-        r = 1
-        for p in POINTS:
-            cl.addWidget(QLabel(LABELS[p]), r, 0)
-            self.face_fields[p] = self._xy_row(cl, r)
-            r += 1
+        cv = QVBoxLayout(cal_box)
         self.calib_btn = QPushButton("Start kalibratie")
-        self.calib_btn.setToolTip("Stap voor stap de sensor op F1, F2 en F3 zetten; start ook de calibrator")
+        self.calib_btn.setToolTip("Stap voor stap de sensor op kegel 1, 2 en 3 zetten; start ook de calibrator")
         self.calib_btn.setStyleSheet("font-size: 15px; padding: 8px;")
-        cl.addWidget(self.calib_btn, r, 0, 1, 5)
-        r += 1
+        cv.addWidget(self.calib_btn)
         self.link_label = QLabel("Calibrator not running")
         self.link_label.setWordWrap(True)
         self.link_label.setStyleSheet("color: gray;")
-        cl.addWidget(self.link_label, r, 0, 1, 5)
-        r += 1
-        cl.addWidget(QLabel("Absolute locations (machine):"), r, 0, 1, 5)
-        r += 1
-        for p in POINTS:
-            cl.addWidget(QLabel(LABELS[p]), r, 0)
-            self.machine_fields[p] = self._xy_row(cl, r)
-            r += 1
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        cl.addWidget(line, r, 0, 1, 5)
-        r += 1
+        cv.addWidget(self.link_label)
         self.diag_label = QLabel("")
         self.diag_label.setWordWrap(True)
-        cl.addWidget(self.diag_label, r, 0, 1, 5)
+        cv.addWidget(self.diag_label)
+        # The fiducial coordinates themselves (face from the plate manifest, machine from the
+        # calibration) are kept here but not shown: the wizard fills them.
+        self.points_box = QWidget()
+        cl = QGridLayout(self.points_box)
+        self.face_fields, self.machine_fields = {}, {}
+        for r, p in enumerate(POINTS):
+            cl.addWidget(QLabel(LABELS[p]), r, 0)
+            self.face_fields[p] = self._xy_row(cl, r)
+        for r, p in enumerate(POINTS, start=len(POINTS)):
+            cl.addWidget(QLabel(LABELS[p]), r, 0)
+            self.machine_fields[p] = self._xy_row(cl, r)
+        self.points_box.setVisible(False)
+        cv.addWidget(self.points_box)
         lay.addWidget(cal_box)
 
         lay.addStretch()

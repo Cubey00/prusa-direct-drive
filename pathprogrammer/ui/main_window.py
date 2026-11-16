@@ -200,9 +200,8 @@ class MainWindow(QMainWindow):
         cal = self.left.cal_points()
         cal.face.update(face)
         self.left.set_cal_points(cal)
-        self.left.link_label.setText(f"Fiducials {', '.join(sorted(face))} filled in from "
-                                     f"{Path(model_path).with_suffix('.json').name}; "
-                                     "now send each one's machine position from the calibrator")
+        self.left.link_label.setText(f"Plaat geladen ({Path(model_path).with_suffix('.json').name}); "
+                                     "klik Start kalibratie")
         return True
 
     def update_face(self):
@@ -251,6 +250,9 @@ class MainWindow(QMainWindow):
         """'Start kalibratie': the step-by-step window; it starts the calibrator when needed."""
         if self.wizard is None:
             self.wizard = CalibrationWizard(self)
+            self.wizard.restart()             # a new calibration: old machine points no longer count
+        elif self.wizard.state == "done":
+            self.wizard.restart()
         self.wizard.refresh()
         self.wizard.show()
         self.wizard.raise_()
@@ -275,12 +277,12 @@ class MainWindow(QMainWindow):
     def on_calibrator_message(self, msg):
         kind = msg.get("type")
         if kind == "hello":
-            self.left.link_label.setText("Calibrator connected: follow the steps in the calibration window")
+            self.left.link_label.setText("Calibrator verbonden: volg de stappen in het kalibratievenster")
         elif kind == "bye":
-            self.left.link_label.setText("Calibrator closed")
+            self.left.link_label.setText("Calibrator gesloten")
         elif kind == "position" and msg.get("point") in calibration.POINTS:
             self.left.set_machine_point(msg["point"], msg["x"], msg["y"])
-            self.left.link_label.setText(f"Received {msg['point']}: "
+            self.left.link_label.setText(f"{msg['point']} ontvangen: "
                                          f"X{msg['x']:.2f} Y{msg['y']:.2f} Z{msg['z']:.2f}")
         if self.wizard is not None:
             self.wizard.on_message(msg)

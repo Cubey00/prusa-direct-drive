@@ -10,7 +10,7 @@ Alle getallen die van de opstelling afhangen staan in **[`machine_settings.toml`
 
 ## Wat er al is
 
-**Sinds 16-11-2026:** de knop **Start kalibratie** (path programmer, blok *Calibration*) opent een stap-voor-stapvenster. Het voorspelt met de sensorafstand uit `machine_settings.toml` (eerste schatting: 40 mm vóór en 80 mm onder de nozzle) waar de kop per kegel moet staan, laat de calibrator daar heen rijden (eerst het bed naar een veilige hoogte, dan X/Y), neemt de posities van F1–F3 over en eindigt met *Kalibratie geslaagd!* als de fit klopt. De gemeten sensorafstand kan direct worden opgeslagen (stap A1). Z (B2/B4) en automatisch XY (B3b/c) volgen nog.
+**Sinds 16-11-2026:** de knop **Start kalibratie** (path programmer, blok *Calibration*) opent een venster dat per kegel steeds maar één ding vraagt: *Ga naar kegel N* (de kop rijdt naar de plek die de sensorafstand uit `machine_settings.toml` voorspelt; eerst het bed naar een veilige hoogte, dan X/Y), daarna een langzame jogger (1 tot 0,05 mm) om de sensor precies op de top te zetten, en *Positie van kegel N insturen*. Na kegel 3 volgt *Kalibratie geslaagd! … Positie bekend* als de fit klopt; de gemeten sensorafstand wordt dan opgeslagen (stap A1). Z (B2/B4) en automatisch XY (B3b/c) volgen nog.
 
 
 | Onderdeel | Waar |

@@ -13,7 +13,7 @@ from PIL import Image, ImageTk
 
 #from imaging import single_image, set_photo_folder
 from gantry_controls import (MotionController, force_guard, home, motionstop, _stop, enable_metrics,
-                             disconnect, move_absolute, _quickstop as quickstop)
+                             disconnect, move_absolute, _quickstop as quickstop, _lock as gantry_lock)
 from machine_settings import SETTINGS
 from strain_gauge import StrainGauge
 
@@ -241,8 +241,18 @@ class App:
     def on_link_message(self, msg):
         """Message from the path programmer (main thread). "goto": drive the head to an absolute
         position for the calibration wizard: Z first (the bed goes to the travel height, so the
-        sensor is clear of the plate), then X/Y."""
-        if msg.get("type") != "goto":
+        sensor is clear of the plate), then X/Y. "jog": a small fine-tuning move from the wizard.
+        "request_position": send the current position as that fiducial."""
+        kind = msg.get("type")
+        if kind == "jog":
+            self.link_jog(msg)
+            return
+        if kind == "request_position":
+            from pathprogrammer.calibration import POINTS
+            if msg.get("point") in POINTS:
+                self.send_position(msg["point"])
+            return
+        if kind != "goto":
             return
         label = msg.get("label", "")
         try:
@@ -255,6 +265,18 @@ class App:
             self.progress_label.config(text=text)
             self.link.send_goto_done(label, False, text)
             return
+        # A command still waiting for the printer (e.g. M334 while the printer asks on its screen
+        # to confirm the metrics address) holds the serial lock: say so instead of waiting silently.
+        if not gantry_lock.acquire(blocking=False):
+            text = (f"Cannot go to {label}: the printer is still busy with an earlier command. "
+                    "Check the printer's screen for a question (e.g. confirm the metrics address) "
+                    "and try again.")
+            self.progress_label.config(text=text)
+            self.link.send_goto_done(label, False, text)
+            return
+        gantry_lock.release()
+        if self.gauge.pos.get("z") is None:
+            self.progress_label.config(text="Note: no live position from the printer yet (metrics); moving anyway.")
         feed = self.get_speed() or 1200.0         # mm/min (get_speed converts the mm/s field)
         self.motion.halt()
         self.progress_label.config(text=f"Going to {label}: Z{z:.1f}, then X{x:.1f} Y{y:.1f} ...")
@@ -272,19 +294,49 @@ class App:
                                         self.update_position_labels()))
         threading.Thread(target=work, daemon=True).start()
 
+    def link_jog(self, msg):
+        try:
+            dx, dy, dz = float(msg["dx"]), float(msg["dy"]), float(msg["dz"])
+            feed = float(msg["feed"])
+        except (KeyError, TypeError, ValueError):
+            return
+        if max(abs(dx), abs(dy), abs(dz)) > 10 or not 30 <= feed <= 1200:
+            self.link.send_status(False, "Jog refused: steps up to 10 mm, speed 0.5-20 mm/s")
+            return
+        # the serial lock taken while no jog is queued: something else waits (e.g. M334 for a
+        # confirmation on the printer's screen); queued jogs would only pile up behind it
+        if self.motion.pending == 0:
+            if not gantry_lock.acquire(blocking=False):
+                self.link.send_status(False, "The printer is still busy with an earlier command; "
+                                             "check its screen for a question.")
+                return
+            gantry_lock.release()
+        try:
+            self.motion.nudge(dx, dy, dz, feed)
+        except Exception as e:
+            self.link.send_status(False, f"Jog failed: {e}")
+            return
+        self.update_position_labels()
+
     def send_position(self, point):
         def work():
+            ok = False
             try:
                 # actual position from the metrics stream (what the "Current" label shows);
-                # M114 only reports the commanded position, i.e. the target
+                # M114 only reports the commanded position, which equals it once the head stands still
                 p = self.gauge.pos
-                if None in (p["x"], p["y"], p["z"]):
-                    raise RuntimeError("no live position from the printer yet")
-                x, y, z = p["x"], p["y"], p["z"]
+                if None not in (p["x"], p["y"], p["z"]):
+                    x, y, z = p["x"], p["y"], p["z"]
+                elif self.motion.pending == 0:
+                    x, y, z = self.motion.read_position()
+                else:
+                    raise RuntimeError("the head is still moving; wait until it stands still")
                 ok = self.link.send_position(point, x, y, z)
                 text = f"Sent {point.replace('_', ' ')}: X{x:.2f} Y{y:.2f}" if ok else "Path programmer not connected"
             except Exception as e:
                 text = f"Send failed: {e}"
+            if not ok:
+                self.link.send_status(False, text)
             self.root.after(0, lambda: self.progress_label.config(text=text))
         threading.Thread(target=work, daemon=True).start()
 
@@ -303,16 +355,34 @@ class App:
     # --- Load cell display ---
 
     def start_gauge(self):
+        """Turn on the printer's metrics stream in a background thread: M334 waits until the printer
+        is confirmed on its own screen when the metrics address changed, and doing that here in the
+        Tk thread froze the whole window (no jogging, no 'Rijd erheen')."""
         if self._gauge_running:
             return
-        try:
-            enable_metrics()          # runs on the serial link, quick
-        except Exception as e:
-            messagebox.showerror("Metrics", str(e))
-            return
-        self.gauge.start()
         self._gauge_running = True
-        self.poll_gauge()
+        self.progress_label.config(text="Connecting to the printer for the force data... If the printer asks "
+                                        "on its screen to confirm the metrics address, confirm it there.")
+
+        def work():
+            try:
+                enable_metrics()
+            except Exception as e:
+                msg = str(e)
+
+                def failed():
+                    self._gauge_running = False
+                    self.progress_label.config(text=f"No force data: {msg}")
+                    messagebox.showerror("Metrics", msg)
+                self.root.after(0, failed)
+                return
+
+            def started():
+                self.gauge.start()
+                self.poll_gauge()
+                self.progress_label.config(text="Printer connected; force data is coming in.")
+            self.root.after(0, started)
+        threading.Thread(target=work, daemon=True).start()
 
     def get_smoothing(self):
         try:

@@ -9,10 +9,15 @@ Message contract (dicts, all with "v": 1):
     {"v": 1, "type": "position", "point": "F1" | "F2" | "F3",
      "x": float, "y": float, "z": float, "t": iso timestamp}    absolute head position (mm)
     {"v": 1, "type": "goto_done", "label": str, "ok": bool, "message": str}
+    {"v": 1, "type": "status", "ok": bool, "message": str}       e.g. why a position could not be sent
     {"v": 1, "type": "bye"}                                     calibrator closing
   path programmer -> calibrator
     {"v": 1, "type": "goto", "x": float, "y": float, "z": float, "label": str}
         move the head to this absolute position: Z first (bed down to the travel height), then X/Y
+    {"v": 1, "type": "jog", "dx": float, "dy": float, "dz": float, "feed": float}
+        small relative move (mm, feed in mm/min) for fine-tuning onto a cone
+    {"v": 1, "type": "request_position", "point": "F1" | "F2" | "F3"}
+        answer with a "position" message for that point (the head's current position)
 Unknown types are ignored by the receiver, so either side can add messages.
 """
 import os
@@ -31,6 +36,17 @@ KEY_ENV = "PRINTERPROJECT_LINK_KEY"
 
 def goto_msg(x, y, z, label=""):
     return {"v": VERSION, "type": "goto", "x": float(x), "y": float(y), "z": float(z), "label": str(label)}
+
+
+def jog_msg(dx, dy, dz, feed):
+    return {"v": VERSION, "type": "jog", "dx": float(dx), "dy": float(dy), "dz": float(dz),
+            "feed": float(feed)}
+
+
+def request_position_msg(point):
+    if point not in POINTS:
+        raise ValueError(f"Unknown calibration point {point!r}")
+    return {"v": VERSION, "type": "request_position", "point": point}
 
 
 def position_msg(point, x, y, z):
@@ -89,6 +105,12 @@ class CalibratorServer:
 
     def goto(self, x, y, z, label=""):
         return self.send(goto_msg(x, y, z, label))
+
+    def jog(self, dx, dy, dz, feed):
+        return self.send(jog_msg(dx, dy, dz, feed))
+
+    def request_position(self, point):
+        return self.send(request_position_msg(point))
 
     def launch(self, script):
         if self.is_running():
@@ -168,6 +190,9 @@ class CalibratorClient:
     def send_goto_done(self, label, ok, message=""):
         return self._send({"v": VERSION, "type": "goto_done", "label": str(label), "ok": bool(ok),
                            "message": str(message)})
+
+    def send_status(self, ok, message=""):
+        return self._send({"v": VERSION, "type": "status", "ok": bool(ok), "message": str(message)})
 
     def close(self):
         """Say bye and stop using the link. The socket itself is left to the process exit: closing
