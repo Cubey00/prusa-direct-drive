@@ -89,7 +89,8 @@ class LeftPanel(QWidget):
             cl.addWidget(QLabel(LABELS[p]), r, 0)
             self.face_fields[p] = self._xy_row(cl, r)
             r += 1
-        self.calib_btn = QPushButton("Open visual calibrator")
+        self.calib_btn = QPushButton("Start kalibratie")
+        self.calib_btn.setToolTip("Stap voor stap de sensor op F1, F2 en F3 zetten; start ook de calibrator")
         self.calib_btn.setStyleSheet("font-size: 15px; padding: 8px;")
         cl.addWidget(self.calib_btn, r, 0, 1, 5)
         r += 1

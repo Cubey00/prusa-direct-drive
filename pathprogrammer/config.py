@@ -33,7 +33,7 @@ MAX_TRAVEL_RANGE = (0.5, 200.0)
 HOLD_S = 0.1
 
 # ---------------- machine ----------------
-MACHINE_XY_BOUNDS = SETTINGS.work_area.machine     # [work_area] machine_x / machine_y
+MACHINE_XY_BOUNDS = SETTINGS.printer.travel        # head travel, [printer] travel_x / travel_y
 
 # ---------------- calibration ----------------
 CAL_MIN_DISTANCE = SETTINGS.calibration.min_distance   # mm

@@ -10,6 +10,9 @@ Alle getallen die van de opstelling afhangen staan in **[`machine_settings.toml`
 
 ## Wat er al is
 
+**Sinds 16-11-2026:** de knop **Start kalibratie** (path programmer, blok *Calibration*) opent een stap-voor-stapvenster. Het voorspelt met de sensorafstand uit `machine_settings.toml` (eerste schatting: 40 mm vóór en 80 mm onder de nozzle) waar de kop per kegel moet staan, laat de calibrator daar heen rijden (eerst het bed naar een veilige hoogte, dan X/Y), neemt de posities van F1–F3 over en eindigt met *Kalibratie geslaagd!* als de fit klopt. De gemeten sensorafstand kan direct worden opgeslagen (stap A1). Z (B2/B4) en automatisch XY (B3b/c) volgen nog.
+
+
 | Onderdeel | Waar |
 |---|---|
 | Plaat met F1 (linksvoor), F2 (rechtsvoor) en F3 (linksachter); het manifest kent hun bedcoördinaten en tophoogte (5 mm) | `slicing/`, `plates/<set>/plate_NN.json` |

@@ -19,11 +19,13 @@ def test_default_file_loads_with_the_known_values():
     assert s.printer.bed_size == (250.0, 220.0)
     assert (s.prusalink.host, s.prusalink.user) == ("192.168.50.2", "maker")
     assert s.printing.filament == "Generic PETG @COREONE HF0.4"
-    assert s.work_area.usable == ((0.0, 200.0), (56.0, 219.0))
+    assert s.work_area.usable == ((0.0, 200.0), (56.0, 179.0))
+    assert s.printer.travel == ((-2.0, 201.0), (42.0, 221.0))
+    assert s.sensor.offset == (0.0, -40.0, -80.0)
     assert s.work_area.probe_points == ((189.0, 52.0), (194.0, 44.0))
     assert (s.fiducials.inset, s.fiducials.height) == (10.0, 5.0)
     assert (s.forces.contact_g, s.forces.max_force_g, s.forces.guard_trip_g) == (5.0, 450.0, 500.0)
-    assert set(s.unmeasured()) == {"work_area", "sensor", "camera"}
+    assert set(s.unmeasured()) == {"sensor", "camera"}
 
 
 def test_config_modules_use_the_settings():
@@ -33,7 +35,7 @@ def test_config_modules_use_the_settings():
     s = ms.SETTINGS
     assert sc.USABLE_AREA == s.work_area.usable and sc.CELL_PITCH == s.raster.cell_pitch
     assert sc.FIDUCIAL_BASE_D == s.fiducials.base_diameter and sc.PRINTER_MODEL == s.printer.model
-    assert pc.MACHINE_XY_BOUNDS == s.work_area.machine and pc.GUARD_TRIP_G == s.forces.guard_trip_g
+    assert pc.MACHINE_XY_BOUNDS == s.printer.travel and pc.GUARD_TRIP_G == s.forces.guard_trip_g
     assert pc.CAL_RESIDUAL_TOL == s.calibration.residual_tol
     assert gantry_controls.Z_MAX == s.printer.z_max
 
@@ -52,7 +54,10 @@ def test_missing_key_names_section_and_key(data):
     ("raster", "min_gap", 25.0, "larger than min_gap"),
     ("fiducials", "inset", 18.0, "do not fit"),
     ("forces", "max_force_g", 600.0, "contact_g < max_force_g < guard_trip_g"),
-    ("work_area", "usable_y", [50.0, 219.0], "probes the bed"),
+    ("work_area", "usable_y", [50.0, 179.0], "probes the bed"),
+    ("work_area", "usable_y", [56.0, 200.0], "sensor can reach"),
+    ("work_area", "usable_x", [0.0, 205.0], "nozzle can reach"),
+    ("sensor", "offset_y", -60.0, "sensor can reach"),
     ("work_area", "probe_points", [[189.0]], "list of"),
 ])
 def test_bad_values_are_refused(data, section, key, value, msg):
@@ -72,9 +77,9 @@ def test_measured_camera_needs_a_scale(data):
 
 def test_env_var_selects_another_file(tmp_path):
     other = tmp_path / "other.toml"
-    text = ms.DEFAULT_PATH.read_text(encoding="utf-8").replace("offset_x = 0.0", "offset_x = 42.5")
+    text = ms.DEFAULT_PATH.read_text(encoding="utf-8").replace("hover_clearance = 10.0", "hover_clearance = 42.5")
     other.write_text(text, encoding="utf-8")
-    code = "import machine_settings as m; print(m.SETTINGS.sensor.offset_x)"
+    code = "import machine_settings as m; print(m.SETTINGS.sensor.hover_clearance)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True,
                          cwd=ms.DEFAULT_PATH.parent, env={**__import__("os").environ, ms.ENV_VAR: str(other)})
     assert out.stdout.strip() == "42.5"
@@ -87,3 +92,25 @@ def test_unreadable_file_gives_settings_error(tmp_path):
         ms.load(broken)
     with pytest.raises(ms.SettingsError, match="not found"):
         ms.load(tmp_path / "nope.toml")
+
+
+def test_sensor_helpers_predict_head_position_and_travel_height():
+    s = ms.SETTINGS.sensor
+    assert s.head_xy(10.0, 66.0) == (10.0, 106.0)          # sensor 40 mm in front: head 40 mm back
+    assert s.hover_z(5.0) == 5.0 + s.hover_clearance + 80.0  # sensor 80 mm below the nozzle
+
+
+def test_save_values_keeps_comments_and_refuses_bad_values(tmp_path):
+    path = tmp_path / "settings.toml"
+    path.write_text(ms.DEFAULT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+    s = ms.save_values("sensor", {"offset_y": -38.5, "offset_z": -81.0, "measured": True}, path)
+    assert s.sensor.offset == (0.0, -38.5, -81.0) and s.sensor.measured
+    after = path.read_text(encoding="utf-8")
+    changed = [(a, b) for a, b in zip(before.splitlines(), after.splitlines()) if a != b]
+    assert [b for _, b in changed] == ["offset_y = -38.5", "offset_z = -81.0", "measured = true"]
+    with pytest.raises(ms.SettingsError, match="sensor can reach"):
+        ms.save_values("sensor", {"offset_y": -60.0}, path)
+    assert path.read_text(encoding="utf-8") == after       # nothing written
+    with pytest.raises(ms.SettingsError, match="no \\[sensor\\] nope"):
+        ms.save_values("sensor", {"nope": 1.0}, path)

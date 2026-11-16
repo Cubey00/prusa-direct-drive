@@ -4,10 +4,15 @@ Transport: multiprocessing.connection over 127.0.0.1. The main app listens on a 
 starts `GUI.py --link <port>` with a random authkey in PRINTERPROJECT_LINK_KEY (hex).
 
 Message contract (dicts, all with "v": 1):
+  calibrator -> path programmer
     {"v": 1, "type": "hello"}                                   calibrator connected
     {"v": 1, "type": "position", "point": "F1" | "F2" | "F3",
      "x": float, "y": float, "z": float, "t": iso timestamp}    absolute head position (mm)
+    {"v": 1, "type": "goto_done", "label": str, "ok": bool, "message": str}
     {"v": 1, "type": "bye"}                                     calibrator closing
+  path programmer -> calibrator
+    {"v": 1, "type": "goto", "x": float, "y": float, "z": float, "label": str}
+        move the head to this absolute position: Z first (bed down to the travel height), then X/Y
 Unknown types are ignored by the receiver, so either side can add messages.
 """
 import os
@@ -22,6 +27,10 @@ from .calibration import POINTS   # pure module, no Qt
 
 VERSION = 1
 KEY_ENV = "PRINTERPROJECT_LINK_KEY"
+
+
+def goto_msg(x, y, z, label=""):
+    return {"v": VERSION, "type": "goto", "x": float(x), "y": float(y), "z": float(z), "label": str(label)}
 
 
 def position_msg(point, x, y, z):
@@ -40,6 +49,8 @@ class CalibratorServer:
         self.listener = Listener(("127.0.0.1", 0), authkey=self.key)
         self.port = self.listener.address[1]
         self.proc = None
+        self.conn = None                # the calibrator's connection, for messages to it
+        self._send_lock = threading.Lock()
         threading.Thread(target=self._accept_loop, daemon=True).start()
 
     def _accept_loop(self):
@@ -48,6 +59,7 @@ class CalibratorServer:
                 conn = self.listener.accept()
             except Exception:
                 return          # listener closed (or a bad authkey: try again would be pointless)
+            self.conn = conn
             threading.Thread(target=self._recv_loop, args=(conn,), daemon=True).start()
 
     def _recv_loop(self, conn):
@@ -56,9 +68,27 @@ class CalibratorServer:
                 try:
                     msg = conn.recv()
                 except (EOFError, OSError):
+                    if self.conn is conn:
+                        self.conn = None
                     return
                 if isinstance(msg, dict) and msg.get("v") == VERSION:
                     self.on_message(msg)
+
+    def send(self, msg):
+        """Send to the calibrator; False if it isn't connected."""
+        conn = self.conn
+        if conn is None:
+            return False
+        with self._send_lock:
+            try:
+                conn.send(msg)
+                return True
+            except (OSError, EOFError, ValueError):
+                self.conn = None
+                return False
+
+    def goto(self, x, y, z, label=""):
+        return self.send(goto_msg(x, y, z, label))
 
     def launch(self, script):
         if self.is_running():
@@ -88,9 +118,12 @@ class CalibratorServer:
 class CalibratorClient:
     """Used by GUI.py. Fails softly: the calibrator keeps working if the main app is gone."""
 
-    def __init__(self, port, key=None):
+    def __init__(self, port, key=None, on_message=None):
+        """on_message(dict) gets messages from the path programmer (e.g. "goto"), called from a
+        background thread."""
         key = key if key is not None else bytes.fromhex(os.environ.get(KEY_ENV, ""))
         self.conn = None
+        self.on_message = on_message
         self._lock = threading.Lock()
         try:
             self.conn = Client(("127.0.0.1", int(port)), authkey=key)
@@ -98,6 +131,20 @@ class CalibratorClient:
         except Exception as e:
             print(f"Calibrator link unavailable: {e}")
             self.conn = None
+            return
+        threading.Thread(target=self._recv_loop, daemon=True).start()
+
+    def _recv_loop(self):
+        while True:
+            conn = self.conn
+            if conn is None:
+                return
+            try:
+                msg = conn.recv()
+            except (EOFError, OSError):
+                return
+            if self.on_message is not None and isinstance(msg, dict) and msg.get("v") == VERSION:
+                self.on_message(msg)
 
     @property
     def connected(self):
@@ -118,11 +165,12 @@ class CalibratorClient:
     def send_position(self, point, x, y, z):
         return self._send(position_msg(point, x, y, z))
 
+    def send_goto_done(self, label, ok, message=""):
+        return self._send({"v": VERSION, "type": "goto_done", "label": str(label), "ok": bool(ok),
+                           "message": str(message)})
+
     def close(self):
+        """Say bye and stop using the link. The socket itself is left to the process exit: closing
+        it while the receive thread waits on it makes Windows drop the 'bye' still in flight."""
         self._send({"v": VERSION, "type": "bye"})
-        if self.conn is not None:
-            try:
-                self.conn.close()
-            except Exception:
-                pass
-            self.conn = None
+        self.conn = None

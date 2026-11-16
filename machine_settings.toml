@@ -14,6 +14,12 @@
 model = "COREONE"
 bed_size = [250.0, 220.0]          # print area (X, Y)
 z_max = 273.0                      # lowest safe bed position (gantry_controls.Z_MAX)
+# Where the head (nozzle) can go, in machine coordinates. The spacer blocks on the rail ends stop
+# it 51 mm early on the right (X max) and 61 mm early at the front (Y min, door side); the team's
+# firmware (Cubey00/prusa-direct-drive-firmware, 6.10.100) uses the same limits. Keep these in
+# step with X_STOP_SPACER / Y_STOP_SPACER there.
+travel_x = [-2.0, 201.0]
+travel_y = [42.0, 221.0]
 
 [prusalink]
 # Network address of the printer for printing and status (docs/printer-verbinden.md: direct
@@ -30,22 +36,15 @@ user = "maker"
 filament = "Generic PETG @COREONE HF0.4"
 
 [work_area]
-# The spacer blocks on the rail ends stop the head 51 mm early on the right (X max) and 61 mm
-# early at the front (Y min, door side). The team's firmware (Cubey00/prusa-direct-drive-firmware,
-# 6.10.100) uses the same limits: the nozzle reaches X -2..201 and Y 42..221. The back and the
-# left are free. Plates and fiducials stay inside this rectangle (bed coordinates), 1 mm in from
-# those limits. Keep it in step with X_STOP_SPACER / Y_STOP_SPACER in the firmware.
-# The front edge starts at Y 56 instead of 43: on every G28 the nozzle probes the bed at the
-# firmware's Z homing point and sheet check point (probe_points below), so nothing may be printed
-# there (a part or a fiducial cone there would be hit by the nozzle); 3 mm around them stays free.
+# Plates and fiducials stay inside this rectangle (bed coordinates). It must be reachable by the
+# NOZZLE (to print: [printer] travel) and by the SENSOR (to measure: travel + [sensor] offset);
+# both are checked at start-up. With the sensor 40 mm in front of the nozzle it reaches at most
+# Y 221 - 40 = 181, hence the back edge at 179.
+# The front edge starts at Y 56: on every G28 the nozzle probes the bed at the firmware's Z homing
+# point and sheet check point (probe_points), so nothing may be printed within 3 mm of them.
 usable_x = [0.0, 200.0]
-usable_y = [56.0, 219.0]
+usable_y = [56.0, 179.0]
 probe_points = [[189.0, 52.0], [194.0, 44.0]]   # firmware Z_SAFE_HOMING / DETECT_PRINT_SHEET (X, Y)
-# Where the SENSOR (not the nozzle) may be sent, in machine coordinates. TODO measure:
-# jog the head with the sensor mounted to the four limits and note M114.
-machine_x = [0.0, 250.0]
-machine_y = [0.0, 220.0]
-measured = false
 
 [raster]
 margin_x = 20.0                    # free strip left and right inside the usable area (fiducials)
@@ -61,15 +60,20 @@ base_diameter = 8.0
 height = 5.0                       # tip height above the bed
 
 [sensor]
-# Offset of the sensor's touch point (centre of the polymer / camera axis) from the nozzle tip,
-# in machine axes: sensor = nozzle + offset. With the head at machine (X, Y), the sensor touches
-# (X + dx, Y + dy). dz < 0 means the sensor sits LOWER than the nozzle. TODO measure (see
-# docs/kalibratie-plan.md, stap A1). Used to predict where the fiducials are before calibrating.
+# Where the sensor's touch point (centre of the polymer / camera axis) is relative to the nozzle
+# tip, in mm along the machine axes: sensor = nozzle + offset.
+#   offset_x > 0: sensor to the right of the nozzle
+#   offset_y < 0: sensor IN FRONT of the nozzle (towards the door)
+#   offset_z < 0: sensor LOWER than the nozzle
+# First guess: 40 mm in front and 80 mm below the nozzle. TODO measure (docs/kalibratie-plan.md,
+# stap A1); "Start kalibratie" can save new values here. Used to send the sensor to the
+# fiducials, to keep it clear of the plate, and to check the usable area.
 mount = "zijkant mount"            # which bracket is fitted (zijkant mount / fan mount V2)
 offset_x = 0.0
-offset_y = 0.0
-offset_z = 0.0
+offset_y = -40.0
+offset_z = -80.0
 measured = false
+hover_clearance = 10.0             # mm the sensor stays above the plate (cones, parts) when it travels
 # Size of the sensor housing, for clearance checks between neighbouring parts. TODO measure.
 housing_diameter = 50.0
 polymer_protrusion = 5.0           # how far the polymer sticks out below the housing

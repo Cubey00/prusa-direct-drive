@@ -13,7 +13,7 @@ from PIL import Image, ImageTk
 
 #from imaging import single_image, set_photo_folder
 from gantry_controls import (MotionController, force_guard, home, motionstop, _stop, enable_metrics,
-                             disconnect, _quickstop as quickstop)
+                             disconnect, move_absolute, _quickstop as quickstop)
 from machine_settings import SETTINGS
 from strain_gauge import StrainGauge
 
@@ -237,6 +237,40 @@ class App:
             return
         self.root.focus_set()     # release the entry so live updates resume
         self.update_position_labels()
+
+    def on_link_message(self, msg):
+        """Message from the path programmer (main thread). "goto": drive the head to an absolute
+        position for the calibration wizard: Z first (the bed goes to the travel height, so the
+        sensor is clear of the plate), then X/Y."""
+        if msg.get("type") != "goto":
+            return
+        label = msg.get("label", "")
+        try:
+            x, y, z = float(msg["x"]), float(msg["y"]), float(msg["z"])
+        except (KeyError, TypeError, ValueError):
+            return
+        (x0, x1), (y0, y1) = SETTINGS.printer.travel
+        if not (x0 <= x <= x1 and y0 <= y <= y1 and 0 <= z <= SETTINGS.printer.z_max):
+            text = f"Refused to go to X{x:.1f} Y{y:.1f} Z{z:.1f}: outside the travel limits"
+            self.progress_label.config(text=text)
+            self.link.send_goto_done(label, False, text)
+            return
+        feed = self.get_speed() or 1200.0         # mm/min (get_speed converts the mm/s field)
+        self.motion.halt()
+        self.progress_label.config(text=f"Going to {label}: Z{z:.1f}, then X{x:.1f} Y{y:.1f} ...")
+
+        def work():
+            try:
+                move_absolute(z=z)                                     # bed to travel height first
+                move_absolute(x=x, y=y, XYfeed=feed)
+                ok, text = True, f"At {label}: X{x:.2f} Y{y:.2f} Z{z:.2f}. Fine-jog, then send the position."
+            except Exception as e:
+                ok, text = False, f"Going to {label} failed: {e}"
+            self.motion.halt()                                         # next jog starts from the real position
+            self.link.send_goto_done(label, ok, text)
+            self.root.after(0, lambda: (self.progress_label.config(text=text),
+                                        self.update_position_labels()))
+        threading.Thread(target=work, daemon=True).start()
 
     def send_position(self, point):
         def work():
@@ -520,5 +554,7 @@ if __name__ == "__main__":
         from pathprogrammer.ipc import CalibratorClient
         link = CalibratorClient(args.link)
     root = tk.Tk()
-    App(root, link)
+    app = App(root, link)
+    if link is not None:
+        link.on_message = lambda msg: root.after(0, app.on_link_message, msg)
     root.mainloop()

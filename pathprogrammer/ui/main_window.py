@@ -13,6 +13,7 @@ from ..ipc import CalibratorServer
 from ..model_io import Orientation, face_size, load_model, oriented_mesh
 from ..program import Program, RunSettings, TouchMode
 from .face_view import FaceView
+from .calibration_wizard import CalibrationWizard
 from .left_panel import LeftPanel
 from .plates_panel import PlatesPanel
 from .printer_box import PrinterBox
@@ -38,6 +39,7 @@ class MainWindow(QMainWindow):
         self.renderer = ShadedTopRenderer()
         self._render_cache = {}
         self.thread = self.worker = None
+        self.wizard = None                # 'Start kalibratie' window, made on first use
 
         self.points = PointTableModel(self.program.points)
         self.left = LeftPanel()
@@ -103,7 +105,7 @@ class MainWindow(QMainWindow):
         self.left.open_btn.clicked.connect(self.open_model_dialog)
         self.left.save_folder_btn.clicked.connect(self.choose_save_folder)
         self.left.log_folder_btn.clicked.connect(self.choose_log_folder)
-        self.left.calib_btn.clicked.connect(self.open_calibrator)
+        self.left.calib_btn.clicked.connect(self.start_calibration)
         self.left.calibrationChanged.connect(self.refit)
         self.left.faceSizeChanged.connect(self.refit)
         self.view.faceClicked.connect(self.add_point_at)
@@ -184,6 +186,8 @@ class MainWindow(QMainWindow):
         self.update_face()
         if self.orientation == Orientation():
             self.fill_fiducials_from_manifest(path)
+        if self.wizard is not None:
+            self.wizard.refresh()
         return True
 
     def fill_fiducials_from_manifest(self, model_path):
@@ -243,6 +247,17 @@ class MainWindow(QMainWindow):
             text += "\n" + "\n".join(i.msg for i in issues)
         self.left.set_diagnostics(text, "warning" if issues else "ok")
 
+    def start_calibration(self):
+        """'Start kalibratie': the step-by-step window; it starts the calibrator when needed."""
+        if self.wizard is None:
+            self.wizard = CalibrationWizard(self)
+        self.wizard.refresh()
+        self.wizard.show()
+        self.wizard.raise_()
+        self.wizard.activateWindow()
+        if not self.server.is_running() and self.thread is None:
+            self.open_calibrator()
+
     def open_calibrator(self):
         if self.server.is_running():
             QMessageBox.information(self, "Calibrator", "The visual calibrator is already open.")
@@ -260,14 +275,15 @@ class MainWindow(QMainWindow):
     def on_calibrator_message(self, msg):
         kind = msg.get("type")
         if kind == "hello":
-            self.left.link_label.setText("Calibrator connected: centre the camera on each fiducial tip (F1, F2, F3), "
-                                         "then use 'Send position as'")
+            self.left.link_label.setText("Calibrator connected: follow the steps in the calibration window")
         elif kind == "bye":
             self.left.link_label.setText("Calibrator closed")
         elif kind == "position" and msg.get("point") in calibration.POINTS:
             self.left.set_machine_point(msg["point"], msg["x"], msg["y"])
             self.left.link_label.setText(f"Received {msg['point']}: "
                                          f"X{msg['x']:.2f} Y{msg['y']:.2f} Z{msg['z']:.2f}")
+        if self.wizard is not None:
+            self.wizard.on_message(msg)
 
     # ---------------- points ----------------
     def add_point_at(self, x, y):
