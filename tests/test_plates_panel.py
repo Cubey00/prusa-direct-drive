@@ -12,6 +12,7 @@ from slicing import pipeline
 @pytest.fixture
 def panel(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(plates_panel, "TESTSET_DIR", tmp_path / "testset")
+    monkeypatch.setattr(plates_panel, "MINI_TESTSET_DIR", tmp_path / "testset_mini")
     monkeypatch.setattr(plates_panel, "PLATES_DIR", tmp_path / "plates")
     monkeypatch.setattr(pipeline, "find_slicer", lambda: tmp_path / "PrusaSlicer")
     monkeypatch.setattr(pipeline, "slicer_version", lambda exe: (2, 9, 3))
@@ -60,7 +61,7 @@ def test_import_empty_folder_reports_failure(panel, qtbot, tmp_path, monkeypatch
 def test_pipeline_rerun_removes_stale_plates(tmp_path):
     src = tmp_path / "set"
     src.mkdir()
-    for i in range(45):
+    for i in range(70):
         trimesh.creation.box((3, 3, 2)).export(src / f"{i:03d}.3mf")
     out = tmp_path / "out"
     first = pipeline.run(src, out, do_slice=False, on_status=lambda m: None)
@@ -117,3 +118,33 @@ def test_open_plate_fills_fiducials_and_calibrates(qtbot, tmp_path):
     fx, fy = part["x"] - lo[0], hi[1] - part["y"]    # the part's centre on the face
     assert w.transform.face_to_machine(fx, fy) == pytest.approx((part["x"] + 3, part["y"] - 2), abs=1e-6)
     w.server.close()
+
+
+def test_import_mini_testset_builds_a_plate_with_two_parts(panel, qtbot, tmp_path):
+    assert panel.import_mini_testset()
+    qtbot.waitUntil(lambda: panel.result is not None, timeout=30000)
+    assert sorted(f.name for f in (tmp_path / "testset_mini").glob("*.3mf")) ==         ["06_vierkant_5mm.3mf", "21_halve_bol_5mm.3mf"]
+    assert panel.plate_list.count() == 1
+    m = panel.preview.manifest
+    assert [p["id"] for p in m["parts"]] == ["06_vierkant_5mm", "21_halve_bol_5mm"]
+    assert len(m["fiducials"]) == 3
+    assert (tmp_path / "plates" / "testset_mini" / "plate_01.3mf").exists()
+    assert panel.mini_btn.isEnabled()
+
+
+def test_filament_choice_is_remembered_and_passed_to_the_import(panel, qtbot, monkeypatch):
+    seen = {}
+    real = plates_panel.PlateWorker
+
+    class Spy(real):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            seen["filament"] = self.filament
+
+    monkeypatch.setattr(plates_panel, "PlateWorker", Spy)
+    panel.filament.addItem("Test PETG @COREONE HF0.4", "Test PETG @COREONE HF0.4")
+    panel.filament.setCurrentIndex(panel.filament.count() - 1)
+    assert panel.settings.value("filament") == "Test PETG @COREONE HF0.4"
+    panel.import_mini_testset()
+    qtbot.waitUntil(lambda: panel.result is not None, timeout=30000)
+    assert seen["filament"] == "Test PETG @COREONE HF0.4"

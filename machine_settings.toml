@@ -15,11 +15,32 @@ model = "COREONE"
 bed_size = [250.0, 220.0]          # print area (X, Y)
 z_max = 273.0                      # lowest safe bed position (gantry_controls.Z_MAX)
 
+[prusalink]
+# Network address of the printer for printing and status (docs/printer-verbinden.md: direct
+# cable, printer fixed at 192.168.50.2). The app uses these unless "Printer settings..." overrides
+# them. The password is NOT kept here: it is entered once in the app and stays on that laptop.
+host = "192.168.50.2"
+user = "maker"
+
+[printing]
+# Filament loaded in the printer, as a PrusaSlicer preset name for this printer and nozzle
+# (e.g. "Generic PLA @COREONE HF0.4", "Generic PETG @COREONE HF0.4"). Taken from PrusaSlicer's
+# own profile bundle, on top of slicing/profiles/coreone.ini. "" = the filament in that profile.
+# The Print plates box can pick another one per laptop.
+filament = "Generic PETG @COREONE HF0.4"
+
 [work_area]
-# The stops on the rods keep the head out of the front and back 60 mm (seen from the door).
-# Plates, fiducials and every sensor target must lie inside this rectangle (bed coordinates).
-usable_x = [0.0, 250.0]
-usable_y = [60.0, 160.0]
+# The spacer blocks on the rail ends stop the head 51 mm early on the right (X max) and 61 mm
+# early at the front (Y min, door side). The team's firmware (Cubey00/prusa-direct-drive-firmware,
+# 6.10.100) uses the same limits: the nozzle reaches X -2..201 and Y 42..221. The back and the
+# left are free. Plates and fiducials stay inside this rectangle (bed coordinates), 1 mm in from
+# those limits. Keep it in step with X_STOP_SPACER / Y_STOP_SPACER in the firmware.
+# The front edge starts at Y 56 instead of 43: on every G28 the nozzle probes the bed at the
+# firmware's Z homing point and sheet check point (probe_points below), so nothing may be printed
+# there (a part or a fiducial cone there would be hit by the nozzle); 3 mm around them stays free.
+usable_x = [0.0, 200.0]
+usable_y = [56.0, 219.0]
+probe_points = [[189.0, 52.0], [194.0, 44.0]]   # firmware Z_SAFE_HOMING / DETECT_PRINT_SHEET (X, Y)
 # Where the SENSOR (not the nozzle) may be sent, in machine coordinates. TODO measure:
 # jog the head with the sensor mounted to the four limits and note M114.
 machine_x = [0.0, 250.0]

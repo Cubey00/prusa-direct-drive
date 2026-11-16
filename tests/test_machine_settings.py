@@ -17,7 +17,10 @@ def data():
 def test_default_file_loads_with_the_known_values():
     s = ms.load()
     assert s.printer.bed_size == (250.0, 220.0)
-    assert s.work_area.usable == ((0.0, 250.0), (60.0, 160.0))
+    assert (s.prusalink.host, s.prusalink.user) == ("192.168.50.2", "maker")
+    assert s.printing.filament == "Generic PETG @COREONE HF0.4"
+    assert s.work_area.usable == ((0.0, 200.0), (56.0, 219.0))
+    assert s.work_area.probe_points == ((189.0, 52.0), (194.0, 44.0))
     assert (s.fiducials.inset, s.fiducials.height) == (10.0, 5.0)
     assert (s.forces.contact_g, s.forces.max_force_g, s.forces.guard_trip_g) == (5.0, 450.0, 500.0)
     assert set(s.unmeasured()) == {"work_area", "sensor", "camera"}
@@ -49,6 +52,8 @@ def test_missing_key_names_section_and_key(data):
     ("raster", "min_gap", 25.0, "larger than min_gap"),
     ("fiducials", "inset", 18.0, "do not fit"),
     ("forces", "max_force_g", 600.0, "contact_g < max_force_g < guard_trip_g"),
+    ("work_area", "usable_y", [50.0, 219.0], "probes the bed"),
+    ("work_area", "probe_points", [[189.0]], "list of"),
 ])
 def test_bad_values_are_refused(data, section, key, value, msg):
     bad = copy.deepcopy(data)

@@ -201,3 +201,19 @@ def test_dataset_mixes_stl_and_3mf_and_keeps_ids_unique(tmp_path):
     assert sizes == {"a.3mf": 5, "a.stl": 3, "B": 4}
     scene = trimesh.load(tmp_path / "out" / "plate_01.3mf")
     assert {"a.3mf", "a.stl", "B"} <= set(scene.graph.nodes_geometry)
+
+
+def test_mini_testset_writes_two_small_parts_and_clears_others(tmp_path):
+    from slicing.testset import MINI_PARTS, write_mini_testset, write_testset
+    write_testset(tmp_path)                                # a full set first
+    (tmp_path / "eigen_onderdeel.3mf").write_bytes(b"")     # a file the user put there stays
+    paths = write_mini_testset(tmp_path)
+    assert [p.name for p in paths] == ["06_vierkant_5mm.3mf", "21_halve_bol_5mm.3mf"]
+    assert sorted(f.name for f in tmp_path.glob("*.3mf")) ==         ["06_vierkant_5mm.3mf", "21_halve_bol_5mm.3mf", "eigen_onderdeel.3mf"]
+    grid = make_grid()
+    for p in paths:
+        mesh = trimesh.load(p, force="mesh")
+        assert check_part(on_bed(mesh), grid).ok and max(mesh.extents) <= 5.0 + 1e-6
+    assert len(MINI_PARTS) == 2
+    with pytest.raises(ValueError, match="Unknown"):
+        write_testset(tmp_path, ["bestaat_niet"])

@@ -127,6 +127,7 @@ def test_box_shows_unreachable_printer(qtbot, tmp_path):
     from pathprogrammer.ui.printer_box import PrinterBox
     settings = QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat)
     settings.setValue("printer/host", "127.0.0.1:1")
+    settings.setValue("printer/api_key", API_KEY)
     b = PrinterBox(lambda: (None, ""), settings)
     qtbot.addWidget(b)
     qtbot.waitUntil(lambda: "not reachable" in b.state_label.text(), timeout=5000)
@@ -134,8 +135,20 @@ def test_box_shows_unreachable_printer(qtbot, tmp_path):
     b.shutdown()
 
 
-def test_box_without_printer_set(qtbot, tmp_path):
-    from pathprogrammer.ui.printer_box import PrinterBox
-    b = PrinterBox(lambda: (None, ""), QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat))
+def test_box_uses_settings_file_address_and_only_asks_for_the_password(qtbot, tmp_path):
+    from machine_settings import SETTINGS
+    from pathprogrammer.ui.printer_box import PrinterBox, PrinterDialog, link_from_settings
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat)
+    b = PrinterBox(lambda: (None, ""), settings)
     qtbot.addWidget(b)
-    assert "No printer set" in b.state_label.text() and not b.print_btn.isEnabled()
+    text = b.state_label.text()
+    assert SETTINGS.prusalink.host in text and "password" in text
+    assert not b.timer.isActive() and not b.print_btn.isEnabled()
+    d = PrinterDialog(settings)
+    qtbot.addWidget(d)
+    assert d.host.text() == SETTINGS.prusalink.host and d.user.text() == SETTINGS.prusalink.user
+    assert d.password.text() == ""
+    link = link_from_settings(settings)
+    assert link.base == f"http://{SETTINGS.prusalink.host}"
+    settings.setValue("printer/password", "secret")
+    assert b.configured()

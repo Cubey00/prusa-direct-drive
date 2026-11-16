@@ -7,7 +7,8 @@ from PySide6.QtCore import QSettings, Qt, QTimer, Signal
 from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QGroupBox,
                                QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton, QVBoxLayout)
 
-from prusalink import DEFAULT_USER, PrusaLink, PrusaLinkError, fmt_duration
+from machine_settings import SETTINGS
+from prusalink import PrusaLink, PrusaLinkError, fmt_duration
 
 POLL_MS = 2000              # while the printer answers
 POLL_OFFLINE_MS = 10000     # after it didn't
@@ -16,13 +17,22 @@ STATE_COLORS = {"PRINTING": "#2d7be5", "PAUSED": "#b36b00", "FINISHED": "#1b7a1b
                 "ERROR": "#c00000", "ATTENTION": "#c00000", "BUSY": "#b36b00"}
 
 
+def printer_host(settings):
+    """Address saved in 'Printer settings...', else the one in machine_settings.toml [prusalink]."""
+    return settings.value("printer/host", "") or SETTINGS.prusalink.host
+
+
+def printer_user(settings):
+    return settings.value("printer/user", "") or SETTINGS.prusalink.user
+
+
+def has_login(settings):
+    return bool(settings.value("printer/password", "") or settings.value("printer/api_key", ""))
+
+
 def link_from_settings(settings):
-    host = settings.value("printer/host", "")
-    if not host:
-        return None
-    return PrusaLink(host, password=settings.value("printer/password", "") or None,
-                     user=settings.value("printer/user", DEFAULT_USER) or DEFAULT_USER,
-                     api_key=settings.value("printer/api_key", "") or None)
+    return PrusaLink(printer_host(settings), password=settings.value("printer/password", "") or None,
+                     user=printer_user(settings), api_key=settings.value("printer/api_key", "") or None)
 
 
 class PrinterDialog(QDialog):
@@ -32,9 +42,9 @@ class PrinterDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Printer (PrusaLink)")
         self.settings = settings
-        self.host = QLineEdit(settings.value("printer/host", ""))
-        self.host.setPlaceholderText("e.g. 192.168.1.42")
-        self.user = QLineEdit(settings.value("printer/user", DEFAULT_USER))
+        self.host = QLineEdit(printer_host(settings))
+        self.host.setPlaceholderText(SETTINGS.prusalink.host)
+        self.user = QLineEdit(printer_user(settings))
         self.password = QLineEdit(settings.value("printer/password", ""))
         self.password.setEchoMode(QLineEdit.Password)
         self.api_key = QLineEdit(settings.value("printer/api_key", ""))
@@ -50,8 +60,9 @@ class PrinterDialog(QDialog):
         form.addRow("User", self.user)
         form.addRow("Password", self.password)
         form.addRow("API key", self.api_key)
-        hint = QLabel("Shown on the printer under Settings > Network > PrusaLink. "
-                      "Saved on this computer only (not in the repository).")
+        hint = QLabel("Address and user come from machine_settings.toml [prusalink]; only the "
+                      "password is needed (printer: Settings > Network > PrusaLink). It is saved on "
+                      "this computer only, not in the repository.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray;")
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -66,7 +77,8 @@ class PrinterDialog(QDialog):
 
     def _link(self):
         return PrusaLink(self.host.text(), password=self.password.text() or None,
-                         user=self.user.text() or DEFAULT_USER, api_key=self.api_key.text() or None)
+                         user=self.user.text() or SETTINGS.prusalink.user,
+                         api_key=self.api_key.text() or None)
 
     def test(self):
         QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -138,17 +150,21 @@ class PrinterBox(QGroupBox):
 
     # ---------------- state ----------------
     def configured(self):
-        return bool(self.settings.value("printer/host", ""))
+        """Address (saved or from machine_settings.toml) and a password or API key."""
+        return bool(printer_host(self.settings)) and has_login(self.settings)
 
     def _restart_polling(self):
         self.status = None
         if self.configured():
-            self.state_label.setText(f"Connecting to {self.settings.value('printer/host')} ...")
+            self.state_label.setStyleSheet("")
+            self.state_label.setText(f"Connecting to {printer_host(self.settings)} ...")
             self.timer.start(POLL_MS)
             self.poll()
         else:
             self.timer.stop()
-            self.state_label.setText("No printer set: use 'Printer settings...'")
+            self.state_label.setStyleSheet("color: #b36b00;")
+            self.state_label.setText(f"Printer {printer_host(self.settings)}: enter the PrusaLink "
+                                     "password once with 'Printer settings...'")
         self.refresh()
 
     def refresh(self):

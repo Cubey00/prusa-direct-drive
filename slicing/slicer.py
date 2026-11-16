@@ -99,8 +99,9 @@ def check_compatible(version, profile):
                           f"install {need} or newer.")
 
 
-def slice_plate(model_path, exe=None, profile_path=None):
-    """Slice one plate; returns (gcode path, slicer log). .bgcode if the profile enables binary G-code."""
+def slice_plate(model_path, exe=None, profile_path=None, filament_ini=None):
+    """Slice one plate; returns (gcode path, slicer log). .bgcode if the profile enables binary G-code.
+    filament_ini (slicing.filaments.write_filament_ini) replaces the profile's filament settings."""
     exe = Path(exe) if exe else find_slicer()
     profile_path = Path(profile_path) if profile_path else cfg.SLICER_PROFILE
     profile = read_profile(profile_path)
@@ -109,7 +110,8 @@ def slice_plate(model_path, exe=None, profile_path=None):
     ext = ".bgcode" if profile.get("binary_gcode") == "1" else ".gcode"
     out = model_path.with_suffix(ext)
     out.unlink(missing_ok=True)         # a stale file must not pass as this run's output
-    cmd = [str(exe), "--load", str(profile_path), *cfg.SLICER_OVERRIDES, "--dont-arrange",
+    loads = ["--load", str(profile_path)] + (["--load", str(filament_ini)] if filament_ini else [])
+    cmd = [str(exe), *loads, *cfg.SLICER_OVERRIDES, "--dont-arrange",
            "--export-gcode", str(model_path), "--output", str(out)]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=cfg.SLICER_TIMEOUT)
     log = proc.stdout + proc.stderr

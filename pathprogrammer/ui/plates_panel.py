@@ -1,18 +1,22 @@
-"""Print plates: import a dataset (or the built-in test set), lay it out on plates and slice them.
+"""Print plates: import a dataset (or a built-in test set), lay it out on plates and slice them.
 The work runs in a QThread (slicing takes a while); the plates are shown from their manifests."""
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QPointF, QRectF, QSettings, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen
-from PySide6.QtWidgets import (QFileDialog, QGridLayout, QGroupBox, QLabel, QListWidget, QListWidgetItem,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QGroupBox, QLabel, QListWidget, QListWidgetItem,
                                QMessageBox, QPlainTextEdit, QPushButton, QToolTip, QWidget)
 
 from slicing import pipeline
+from slicing import config as slicing_config
 from slicing.config import PROJECT_DIR
+from slicing.filaments import Bundle, FilamentError, printer_suffix
+from slicing.slicer import SlicerError as _SlicerError, read_profile
 from slicing.slicer import SlicerError, open_in_viewer
-from slicing.testset import write_testset
+from slicing.testset import MINI_PARTS, write_mini_testset, write_testset
 
 TESTSET_DIR = PROJECT_DIR / "testset"
+MINI_TESTSET_DIR = PROJECT_DIR / "testset_mini"
 PLATES_DIR = PROJECT_DIR / "plates"
 
 
@@ -21,16 +25,20 @@ class PlateWorker(QObject):
     done = Signal(dict)
     failed = Signal(str)
 
-    def __init__(self, dataset, out_dir, make_testset=False):
+    def __init__(self, dataset, out_dir, make_testset=None, filament=None):
+        """make_testset: None for a user's dataset, else a function that writes the parts into it.
+        filament: PrusaSlicer filament preset to slice with (None = the profile's own)."""
         super().__init__()
         self.dataset, self.out_dir, self.make_testset = Path(dataset), Path(out_dir), make_testset
+        self.filament = filament
 
     def run(self):
         try:
-            if self.make_testset:
-                n = len(write_testset(self.dataset))
+            if self.make_testset is not None:
+                n = len(self.make_testset(self.dataset))
                 self.status.emit(f"Wrote {n} test parts to {self.dataset}")
-            self.done.emit(pipeline.run(self.dataset, self.out_dir, on_status=self.status.emit))
+            self.done.emit(pipeline.run(self.dataset, self.out_dir, on_status=self.status.emit,
+                                        filament=self.filament))
         except Exception as e:
             self.failed.emit(f"{type(e).__name__}: {e}")
 
@@ -129,6 +137,15 @@ class PlatePreview(QWidget):
             QToolTip.hideText()
 
 
+def available_filaments():
+    """(preset names for this printer + nozzle, message). Empty list if they can't be read."""
+    try:
+        suffix = printer_suffix(read_profile(slicing_config.SLICER_PROFILE))
+        return Bundle().names(suffix), ""
+    except (FilamentError, _SlicerError, OSError) as e:
+        return [], str(e)
+
+
 class PlatesPanel(QGroupBox):
     openPlateRequested = Signal(str)      # plate 3MF to open in the path programmer
 
@@ -143,7 +160,25 @@ class PlatesPanel(QGroupBox):
         self.testset_btn = QPushButton("Import test set")
         self.testset_btn.setToolTip(f"Write the 30 simple test parts to {TESTSET_DIR.name}/, "
                                     "lay them out and slice them")
-        self.status = QLabel("Import a dataset or the test set.")
+        self.mini_btn = QPushButton("Import mini test set")
+        self.mini_btn.setToolTip(f"Only {len(MINI_PARTS)} small parts ({', '.join(MINI_PARTS)}) in "
+                                 f"{MINI_TESTSET_DIR.name}/: a quick first print to try printing, "
+                                 "calibrating and touching")
+        self.filament = QComboBox()
+        self.filament.setToolTip("Filament loaded in the printer; plates are sliced for it (PrusaSlicer "
+                                 "preset). Change it before importing.")
+        names, problem = available_filaments()
+        self.filament.addItem("Profile default (slicing/profiles/coreone.ini)", None)
+        for name in names:
+            self.filament.addItem(name, name)
+        if problem:
+            self.filament.setToolTip(problem)
+        wanted = self.settings.value("filament", "") or slicing_config.FILAMENT
+        index = self.filament.findData(wanted) if wanted else 0
+        self.filament.setCurrentIndex(max(index, 0))
+        self.filament.currentIndexChanged.connect(
+            lambda _: self.settings.setValue("filament", self.filament.currentData() or ""))
+        self.status = QLabel("Import a dataset or a test set.")
         self.status.setWordWrap(True)
         self.plate_list = QListWidget()
         self.plate_list.setMaximumHeight(90)
@@ -163,18 +198,24 @@ class PlatesPanel(QGroupBox):
         self.open_btn.setEnabled(False)
 
         g = QGridLayout(self)
-        g.addWidget(self.dataset_btn, 0, 0)
-        g.addWidget(self.testset_btn, 0, 1)
-        g.addWidget(self.status, 1, 0, 1, 2)
-        g.addWidget(self.plate_list, 2, 0, 1, 2)
-        g.addWidget(self.preview, 3, 0, 1, 2)
-        g.addWidget(self.log, 4, 0, 1, 2)
-        g.addWidget(self.view3d_btn, 5, 0)
-        g.addWidget(self.program_btn, 5, 1)
-        g.addWidget(self.open_btn, 6, 0, 1, 2)
+        frow = QHBoxLayout()
+        frow.addWidget(QLabel("Filament:"))
+        frow.addWidget(self.filament, 1)
+        g.addLayout(frow, 0, 0, 1, 2)
+        g.addWidget(self.dataset_btn, 1, 0, 1, 2)
+        g.addWidget(self.testset_btn, 2, 0)
+        g.addWidget(self.mini_btn, 2, 1)
+        g.addWidget(self.status, 3, 0, 1, 2)
+        g.addWidget(self.plate_list, 4, 0, 1, 2)
+        g.addWidget(self.preview, 5, 0, 1, 2)
+        g.addWidget(self.log, 6, 0, 1, 2)
+        g.addWidget(self.view3d_btn, 7, 0)
+        g.addWidget(self.program_btn, 7, 1)
+        g.addWidget(self.open_btn, 8, 0, 1, 2)
 
         self.dataset_btn.clicked.connect(self.import_dataset_dialog)
         self.testset_btn.clicked.connect(self.import_testset)
+        self.mini_btn.clicked.connect(self.import_mini_testset)
         self.plate_list.currentRowChanged.connect(self._show_plate)
         self.open_btn.clicked.connect(self._open_folder)
         self.view3d_btn.clicked.connect(self.show_in_3d)
@@ -190,12 +231,16 @@ class PlatesPanel(QGroupBox):
 
     def import_dataset(self, folder):
         folder = Path(folder)
-        return self._start(folder, PLATES_DIR / folder.name, make_testset=False)
+        return self._start(folder, PLATES_DIR / folder.name)
 
     def import_testset(self):
-        return self._start(TESTSET_DIR, PLATES_DIR / TESTSET_DIR.name, make_testset=True)
+        return self._start(TESTSET_DIR, PLATES_DIR / TESTSET_DIR.name, make_testset=write_testset)
 
-    def _start(self, dataset, out_dir, make_testset):
+    def import_mini_testset(self):
+        return self._start(MINI_TESTSET_DIR, PLATES_DIR / MINI_TESTSET_DIR.name,
+                           make_testset=write_mini_testset)
+
+    def _start(self, dataset, out_dir, make_testset=None):
         if self.thread is not None:
             return False
         self.log.clear()
@@ -207,7 +252,7 @@ class PlatesPanel(QGroupBox):
         self.status.setText(f"Importing {dataset.name} ...")
         self._set_busy(True)
         self.thread = QThread(self)
-        self.worker = PlateWorker(dataset, out_dir, make_testset)
+        self.worker = PlateWorker(dataset, out_dir, make_testset, self.filament.currentData())
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.status.connect(self.log.appendPlainText)
@@ -241,7 +286,7 @@ class PlatesPanel(QGroupBox):
             text += f"\nSlicing failed for {', '.join(result['slice_failed'])}; see the log."
             self.status.setStyleSheet("color: #c00000;")
         else:
-            text += " All plates sliced."
+            text += f" All plates sliced for {result.get('filament') or 'the profile filament'}."
             self.status.setStyleSheet("color: #1b7a1b;")
         self.status.setText(text)
 
@@ -255,6 +300,8 @@ class PlatesPanel(QGroupBox):
     def _set_busy(self, busy):
         self.dataset_btn.setEnabled(not busy)
         self.testset_btn.setEnabled(not busy)
+        self.mini_btn.setEnabled(not busy)
+        self.filament.setEnabled(not busy)
         if busy:
             self.status.setStyleSheet("")
 

@@ -15,6 +15,7 @@ from pathlib import Path
 
 DEFAULT_PATH = Path(__file__).resolve().parent / "machine_settings.toml"
 ENV_VAR = "PRINTERPROJECT_SETTINGS"
+PROBE_CLEARANCE = 3.0   # mm kept free around the firmware's G28 probe points
 
 
 class SettingsError(ValueError):
@@ -29,9 +30,21 @@ class Printer:
 
 
 @dataclass(frozen=True)
+class PrusaLinkSettings:
+    host: str
+    user: str
+
+
+@dataclass(frozen=True)
+class Printing:
+    filament: str
+
+
+@dataclass(frozen=True)
 class WorkArea:
     usable_x: tuple
     usable_y: tuple
+    probe_points: tuple             # ((x, y), ...) where the firmware probes the bed on G28
     machine_x: tuple
     machine_y: tuple
     measured: bool
@@ -103,6 +116,8 @@ class Calibration:
 class Settings:
     path: Path
     printer: Printer
+    prusalink: PrusaLinkSettings
+    printing: Printing
     work_area: WorkArea
     raster: Raster
     fiducials: Fiducials
@@ -136,6 +151,11 @@ def _get(data, section, key, kind, where):
         if not isinstance(value, str):
             raise SettingsError(f"{where}: [{section}] {key} must be text, got {value!r}")
         return value
+    if kind == "points":
+        if (not isinstance(value, list) or any(not isinstance(p, list) or len(p) != 2 for p in value)
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) for p in value for v in p)):
+            raise SettingsError(f"{where}: [{section}] {key} must be a list of [x, y] pairs, got {value!r}")
+        return tuple((float(x), float(y)) for x, y in value)
     if kind == "pair":
         if (not isinstance(value, list) or len(value) != 2
                 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in value)):
@@ -153,10 +173,18 @@ def _check(s, where):
     def fail(msg):
         raise SettingsError(f"{where}: {msg}")
 
+    if not s.prusalink.host.strip() or not s.prusalink.user.strip():
+        fail("[prusalink] host and user cannot be empty")
     bw, bh = s.printer.bed_size
     for name, (lo, hi), limit in (("usable_x", s.work_area.usable_x, bw), ("usable_y", s.work_area.usable_y, bh)):
         if not 0 <= lo < hi <= limit:
             fail(f"[work_area] {name} {lo:g}..{hi:g} must lie inside the bed 0..{limit:g}")
+    (ux0, ux1), (uy0, uy1) = s.work_area.usable
+    for px, py in s.work_area.probe_points:
+        m = PROBE_CLEARANCE
+        if ux0 - m < px < ux1 + m and uy0 - m < py < uy1 + m:
+            fail(f"[work_area] probe point ({px:g}, {py:g}) is within {m:g} mm of the usable area: the "
+                 "nozzle probes the bed there on every G28, so keep usable_x / usable_y clear of it")
     for name, (lo, hi) in (("machine_x", s.work_area.machine_x), ("machine_y", s.work_area.machine_y)):
         if not lo < hi:
             fail(f"[work_area] {name} must go from low to high")
@@ -188,7 +216,10 @@ def parse(data, where="settings"):
     s = Settings(
         path=Path(where),
         printer=_build(Printer, data, "printer", where, model=str, bed_size="pair", z_max=float),
+        prusalink=_build(PrusaLinkSettings, data, "prusalink", where, host=str, user=str),
+        printing=_build(Printing, data, "printing", where, filament=str),
         work_area=_build(WorkArea, data, "work_area", where, usable_x="pair", usable_y="pair",
+                         probe_points="points",
                          machine_x="pair", machine_y="pair", measured=bool),
         raster=_build(Raster, data, "raster", where, margin_x=float, margin_y=float, cell_pitch=float,
                       min_gap=float, max_part_height=float),
