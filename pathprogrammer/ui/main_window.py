@@ -464,9 +464,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Run ended", f"{summary.outcome}: {summary.message}")
 
     def stop(self):
-        if self.focusfield.hardware_active:
+        if self.focusfield.thread is not None:
             self.focusfield.stop()
-        elif self.worker is not None:
+            if self.focusfield.hardware_active:
+                return
+        if self.worker is not None:
             self.worker.abort()
             self.run.status.setText("STOP requested")
         elif not self.run.simulate.isChecked() and not self.server.is_running():

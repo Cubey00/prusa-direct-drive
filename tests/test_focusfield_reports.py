@@ -65,7 +65,7 @@ def test_manifest_validation_rejects_missing_count_changed_wd_and_duplicate_ids(
         elif kind == "hash":
             manifest["frames"][0]["sha256"] = "wrong"
         else:
-            manifest["frames"][1]["host_monotonic_ns"] = manifest["frames"][0]["host_monotonic_ns"]
+            manifest["frames"][1]["host_monotonic_ns"] = manifest["frames"][0]["host_monotonic_ns"] - 1
         with pytest.raises(ValueError):
             validate_run(path, manifest, recipe)
 
@@ -86,3 +86,18 @@ def test_offline_reanalysis_has_no_hardware_dependency(optical_run, monkeypatch)
     monkeypatch.setitem(sys.modules, "ids_camera", None)
     summary = analyze_run(optical_run[0])
     assert summary["valid_focus_fits"] >= 115
+
+
+def test_completed_acquisition_with_zero_usable_fits_is_not_a_valid_measurement(optical_run, monkeypatch):
+    path, _ = optical_run
+    monkeypatch.setattr('focusfield.reports.fit_peak', lambda *args: dict(valid=False, reason='peak_not_bracketed'))
+    summary = analyze_run(path)
+    assert summary['acquisition_complete'] and summary['analysis_complete']
+    assert not summary['qa_passed'] and not summary['measurement_valid']
+    assert summary['valid_focus_fits'] == 0
+    assert any('center' in r for r in summary['qa_rejection_reasons'])
+    assert any('peripheral' in r for r in summary['qa_rejection_reasons'])
+    manifest = json.loads((path / 'manifest.json').read_text())
+    assert not manifest['measurement_valid'] and manifest['analysis_complete']
+    assert (path / 'images/frame_000001.tiff').is_file()
+    assert 'Measurement valid: False' in (path / 'report.html').read_text()

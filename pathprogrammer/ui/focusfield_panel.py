@@ -1,6 +1,9 @@
 """Optical setup, preview, scan and offline review inside the existing application."""
 from dataclasses import replace
+import json
 from pathlib import Path
+import sys
+import threading
 
 import numpy as np
 from PySide6.QtCore import QObject, QThread, Qt, QUrl, Signal, Slot
@@ -11,13 +14,16 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
                                QSplitter, QTextEdit, QVBoxLayout, QWidget)
 
 from machine_settings import SETTINGS, load as load_settings
-from focusfield.acquisition import CameraAdapter
+from focusfield.acquisition import CameraAdapter, check_cancel
 from focusfield.chart import load_chart
 from focusfield.config import DEFAULT_RECIPE, load_recipe, simulation_fixture
+from focusfield.calibration import XYCalibration, save_reference
 from focusfield.controller import OperatorChecks, RunResult, ScanController
 from focusfield.hardware import SimCamera, SimStage, ZStage
 from focusfield.reports import analyze_run
+from focusfield.setup import CenteringLimits, SetupController, simulation_xy_calibration
 from .printer_box import link_from_settings
+from .optical_setup_dialogs import measured_wd_dialog, scout_recipe_dialog
 
 
 class OpticalWorker(QObject):
@@ -32,6 +38,8 @@ class OpticalWorker(QObject):
     def run(self):
         try:
             result = self.work()
+        except InterruptedError as exc:
+            result = RunResult("ABORTED", "", str(exc))
         except Exception as exc:
             result = RunResult("FAILED", "", f"{type(exc).__name__}: {exc}")
         self.finished.emit(result)
@@ -47,6 +55,12 @@ class FocusFieldPanel(QWidget):
         self.hardware_active = False
         self.run_path = None
         self._analysis_cancel = None
+        self._task_cancel = None
+        self.last_preview = None
+        self.xy_calibration = None
+        self._sim_stage = None
+        self.scout_proposal = None
+        self.setup_history = []
         self.recipe = load_recipe()
         outer = QVBoxLayout(self)
         notice = QLabel("Fixed lens focus · variable target distance · apparent focus-field variation. "
@@ -84,8 +98,8 @@ class FocusFieldPanel(QWidget):
         self.reverse = QCheckBox("Alternate reverse sweeps (hysteresis check)")
         form.addRow(self.reverse)
         self.format = QComboBox()
-        self.format.addItems(["RGB8", "Mono8", "Mono10", "Mono12", "Mono16", "BayerRG8", "BayerRG10",
-                              "BayerRG12", "BayerRG10p", "BayerRG12p"])
+        self.format.addItems((["RGB8", "Mono8", "Mono16", "BayerRG8", "BayerRG10p", "BayerRG12p"] if sys.platform == 'darwin'
+                              else ["RGB8", "Mono8", "Mono10", "Mono12", "Mono16", "BayerRG8", "BayerRG10", "BayerRG12"]))
         form.addRow("Capture pixel format", self.format)
         self.simulate = QCheckBox("Simulate stage and camera")
         self.simulate.setChecked(True)
@@ -106,6 +120,22 @@ class FocusFieldPanel(QWidget):
             check_layout.addWidget(checkbox)
         form.addRow(checks)
         form.addRow(QLabel("No automatic homing, touch, or recovery motion. Configure [focusfield] in machine settings."))
+        optical_setup = QGroupBox("Separate optical setup operations")
+        setup_form = QFormLayout(optical_setup)
+        self.wd_btn = QPushButton("Record measured WD reference… (no motion)")
+        self.wd_btn.clicked.connect(self.record_wd_reference)
+        self.xy_btn = QPushButton("Load measured optical XY mapping…")
+        self.xy_btn.clicked.connect(self.load_xy_calibration)
+        self.xy_label = QLabel("No optical XY mapping selected")
+        self.center_btn = QPushButton("Center chart… (bounded XY motion)")
+        self.center_btn.setEnabled(False)
+        self.center_btn.clicked.connect(lambda: self.start_setup('center'))
+        self.scout_btn = QPushButton("Scout focus interval… (bounded Z motion)")
+        self.scout_btn.setEnabled(False)
+        self.scout_btn.clicked.connect(lambda: self.start_setup('scout'))
+        for widget in (self.wd_btn, self.xy_btn, self.xy_label, self.center_btn, self.scout_btn):
+            setup_form.addRow(widget)
+        form.addRow(optical_setup)
         gen = QGroupBox("Generate optical test chart")
         gen_form = QFormLayout(gen)
         self.field_width, self.field_height = QDoubleSpinBox(), QDoubleSpinBox()
@@ -153,6 +183,122 @@ class FocusFieldPanel(QWidget):
         split.addWidget(right)
         outer.addWidget(split, 1)
         self.setup = setup
+        self.simulate.toggled.connect(self.invalidate_preview)
+        self.chart.textChanged.connect(self.invalidate_preview)
+        self.format.currentTextChanged.connect(self.invalidate_preview)
+        for widget in self.fields.values():
+            widget.valueChanged.connect(self.invalidate_preview)
+
+    def invalidate_preview(self, *args):
+        self.last_preview = None
+        self.scout_proposal = None
+        self.center_btn.setEnabled(False)
+        self.scout_btn.setEnabled(False)
+
+    def current_recipe(self):
+        return replace(self.recipe, **{key: w.value() for key, w in self.fields.items()},
+                       chart_path=self.chart.text(), pixel_format=self.format.currentText(),
+                       reverse_alternate=self.reverse.isChecked())
+
+    def devices(self, recipe, fixture, *, xy=None):
+        if self.simulate.isChecked():
+            if self._sim_stage is None:
+                self._sim_stage = SimStage(fixture)
+            self._sim_stage.stopped = False
+            camera = SimCamera(self._sim_stage, recipe, load_chart(recipe.chart_path))
+            camera.offset_px = np.array([12., -8.])
+            return self._sim_stage, camera
+        settings = load_settings()
+        return ZStage(fixture, settings.printer.z_max, xy, settings.printer.travel), CameraAdapter(recipe)
+
+    def record_wd_reference(self):
+        try:
+            settings = load_settings()
+            record = measured_wd_dialog(self, settings.focusfield)
+            if record is None:
+                return
+            path, _ = QFileDialog.getSaveFileName(self, "Save immutable measured WD reference", "wd_reference.json", "JSON (*.json)")
+            if not path:
+                return
+            save_reference(record, path, settings.path)
+            self.invalidate_preview()
+            self.status.append(f"Measured WD reference saved to {path}. Physical motion remains disabled; verify all other calibration and safety checks.")
+        except Exception as exc:
+            QMessageBox.warning(self, "WD reference", str(exc))
+
+    def load_xy_calibration(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Measured optical XY mapping", "", "JSON (*.json)")
+        if path:
+            try:
+                c = XYCalibration.load(path)
+                c.validate(load_settings().focusfield)
+                self.xy_calibration = c
+                self.xy_label.setText(f"XY calibration: {c.calibration_id}")
+                self.invalidate_preview()
+            except Exception as exc:
+                QMessageBox.warning(self, "Optical XY mapping", str(exc))
+
+    def start_setup(self, operation):
+        if self.thread is not None:
+            return
+        if self.dry_run.isChecked():
+            QMessageBox.warning(self, "Setup needs images", "Centering/scouting require images. Turn off Motion only; use Start scan for a supervised motion-only Z preflight.")
+            return
+        simulated = self.simulate.isChecked()
+        if not self.last_preview or self.last_preview['simulated'] != simulated:
+            QMessageBox.warning(self, "Preview required", "Run Check preview & chart successfully before setup motion.")
+            return
+        if not simulated and (self.main.thread is not None or self.main.server.is_running() or self.main.printer._busy):
+            QMessageBox.warning(self, "Printer in use", "Finish other printer/calibrator operations first.")
+            return
+        try:
+            recipe = self.current_recipe()
+            settings = load_settings()
+            fixture = simulation_fixture() if simulated else settings.focusfield
+            checks = OperatorChecks(**{k: v.isChecked() for k, v in self.checks.items()})
+            if not simulated:
+                fixture.validate_physical()
+                checks.validate()
+            xy = self.xy_calibration
+            if simulated:
+                xy = simulation_xy_calibration(fixture)
+                chart = load_chart(recipe.chart_path)
+                width, height = int(chart['page_width']*16), int(chart['page_height']*16)
+                xy = replace(xy, optical_center_px=(width/2, height/2), image_size_px=(width, height))
+            limits = CenteringLimits()
+            scout = None
+            if operation == 'center':
+                if xy is None:
+                    raise ValueError("Load a measured optical XY mapping; ArUco registration alone cannot authorize motion")
+                xy.validate(fixture)
+                description = (f"Center using mapping {xy.calibration_id}: at most {limits.max_iterations} XY steps, "
+                    f"{limits.max_step_mm:g} mm per step, {limits.max_total_mm:g} mm total, "
+                    f"{limits.speed_mm_s:g} mm/s. No Z adjustment or homing. Approve this supervised operation?")
+            else:
+                scout = scout_recipe_dialog(self, fixture)
+                if scout is None:
+                    return
+                description = (f"Scout Z {scout.z_start_mm:g}–{scout.z_end_mm:g} mm in {scout.step_mm:g} mm steps; "
+                    f"may extend once within verified Z {fixture.safe_z_min_mm:g}–{fixture.safe_z_max_mm:g} mm; "
+                    f"maximum {scout.max_positions} positions. Fine scan requires separate approval. Approve this supervised scout?")
+            if not simulated and QMessageBox.question(self, "Approve bounded optical setup motion", description,
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+            stage, camera = self.devices(recipe, fixture, xy=xy)
+            link = link_from_settings(self.main.settings) if not simulated and self.main.printer.configured() else None
+            kwargs = dict(operation=operation, operator_confirmed=not simulated, xy_calibration=xy,
+                          centering_limits=limits)
+            if scout:
+                kwargs['scout_recipe'] = scout
+            self.controller = SetupController(recipe, settings, fixture, stage, camera,
+                Path(self.main.log_folder()) / 'focusfield', checks=checks,
+                printer_state=(lambda: link.status().state) if link else (lambda: None), **kwargs)
+            self._start_task(self.controller.run, physical=not simulated)
+            self.controller.on_event = lambda kind, *args: self.worker.event.emit(kind, args)
+            self.invalidate_preview()
+            self.thread.start()
+        except Exception as exc:
+            QMessageBox.warning(self, "Cannot start optical setup", str(exc))
 
     def choose_chart(self):
         path, _ = QFileDialog.getOpenFileName(self, "Chart physical layout", self.chart.text(), "Layout (*.json)")
@@ -168,6 +314,8 @@ class FocusFieldPanel(QWidget):
         if path:
             try:
                 recipe = load_recipe(path)
+                if recipe.pixel_format not in [self.format.itemText(i) for i in range(self.format.count())]:
+                    raise ValueError("Recipe pixel format is not supported by this camera backend; choose an explicitly supported native format")
                 self.recipe = recipe
                 for key, widget in self.fields.items():
                     widget.setValue(getattr(recipe, key))
@@ -200,9 +348,7 @@ class FocusFieldPanel(QWidget):
             QMessageBox.warning(self, "Printer in use", "Close the calibrator and finish other printer operations first.")
             return
         try:
-            recipe = replace(self.recipe, **{key: w.value() for key, w in self.fields.items()},
-                             chart_path=self.chart.text(), pixel_format=self.format.currentText(),
-                             reverse_alternate=self.reverse.isChecked())
+            recipe = self.current_recipe()
             chart = load_chart(recipe.chart_path)
             settings = load_settings()
             fixture = simulation_fixture() if simulated else settings.focusfield
@@ -210,12 +356,21 @@ class FocusFieldPanel(QWidget):
             checks = OperatorChecks(**{k: v.isChecked() for k, v in self.checks.items()})
             if not simulated:
                 checks.validate(self.dry_run.isChecked())
-            stage = SimStage(fixture) if simulated else ZStage(fixture, settings.printer.z_max)
-            camera = SimCamera(stage, recipe, chart) if simulated else CameraAdapter(recipe)
+                if QMessageBox.question(self, "Approve optical scan motion",
+                        f"Run supervised {'motion-only dry run' if self.dry_run.isChecked() else 'image scan'} at calibrated WD "
+                        f"{recipe.wd_start_mm:g}–{recipe.wd_end_mm:g} mm, step {recipe.step_mm:g} mm? "
+                        f"Absolute WD uncertainty: {fixture.wd_uncertainty_mm:g} mm. "
+                        "This is a separate operation from scouting and centering.",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                    return
+            stage, camera = self.devices(recipe, fixture)
             # Construct PrusaLink from QSettings on the GUI thread; only network I/O runs in worker.
             link = link_from_settings(self.main.settings) if not simulated and self.main.printer.configured() else None
             self.controller = ScanController(recipe, settings, fixture, stage, camera,
                 Path(self.main.log_folder()) / "focusfield", checks=checks, dry_run=self.dry_run.isChecked(),
+                setup_provenance=dict(history=self.setup_history,
+                                      scout_proposal=({**self.scout_proposal, 'approved': not simulated} if self.scout_proposal else None),
+                                      operator_approved_fine_scan=bool(self.scout_proposal and not simulated)),
                 printer_state=(lambda: link.status().state) if link else (lambda: None))
             self._start_task(self.controller.run, physical=not simulated)
             self.controller.on_event = lambda kind, *args: self.worker.event.emit(kind, args)
@@ -235,39 +390,57 @@ class FocusFieldPanel(QWidget):
                              exposure_us=self.fields["exposure_us"].value(), gain=self.fields["gain"].value())
             chart = load_chart(recipe.chart_path)
             if simulated:
-                stage = SimStage(simulation_fixture())
-                camera = SimCamera(stage, recipe, chart)
+                stage, camera = self.devices(recipe, simulation_fixture())
             else:
                 camera = CameraAdapter(recipe)
+            cancel = threading.Event()
+            if hasattr(camera, 'cancel'):
+                camera.cancel = cancel
+            calibrated_center = self.xy_calibration.optical_center_px if self.xy_calibration and not simulated else None
             def preview():
                 from focusfield.acquisition import analysis_plane
-                from focusfield.chart import detect_chart, edge_rois
+                from focusfield.chart import register_chart, edge_rois
                 try:
+                    check_cancel(cancel)
                     camera.open()
+                    check_cancel(cancel)
                     camera.fresh()
+                    check_cancel(cancel)
                     capture = camera.capture()
+                    check_cancel(cancel)
                     self.worker.event.emit("frame", (capture.metadata, capture.pixels))
                     gray, pitch = analysis_plane(capture.pixels, capture.metadata)
-                    h, error = detect_chart(gray, chart)
+                    registration = register_chart(gray, chart, optical_center_px=calibrated_center, sensor_pitch=pitch,
+                        max_reprojection_rms_px=recipe.quality.max_marker_reprojection_px)
+                    h, error = registration.pop('homography'), registration['reprojection_rms_px']
                     local_count = 0
                     for square in chart["slanted_squares"]:
+                        check_cancel(cancel)
                         try:
                             local_count += len(edge_rois(gray, h, square))
                         except ValueError:
                             pass
                     message = (f"All four chart markers detected; {local_count} local edges. "
-                               f"Marker reprojection RMS {error:.2f} analysis pixels. "
+                               f"Marker reprojection RMS {error:.2f} sensor pixels. "
                                f"Camera {capture.metadata['camera_serial']}; {capture.metadata['pixel_format']}. "
-                               "This preview does not validate physical scale or camera processing.")
-                    return RunResult("COMPLETED", "", message)
+                               f"Chart-center error {registration['center_error_px']} sensor pixels "
+                               f"relative to {'calibrated optical center' if calibrated_center else 'image midpoint (diagnostic only)'}. "
+                               "Registration does not authorize XY motion or establish absolute WD.")
+                    check_cancel(cancel)
+                    return RunResult("COMPLETED", "", message, details=dict(preview_registration=registration,
+                        simulated=simulated, camera_serial=capture.metadata['camera_serial']))
+                except InterruptedError as exc:
+                    return RunResult("ABORTED", "", str(exc))
                 finally:
                     camera.close()
-            self._start_task(preview, physical=not simulated)
+            self.invalidate_preview()
+            self._start_task(preview, physical=not simulated, task_cancel=cancel)
             self.thread.start()
         except Exception as exc:
             QMessageBox.warning(self, "Preview", str(exc))
 
-    def _start_task(self, work, *, physical=False):
+    def _start_task(self, work, *, physical=False, task_cancel=None):
+        self._task_cancel = task_cancel or threading.Event()
         self.thread = QThread(self)
         self.worker = OpticalWorker(work)
         self.worker.moveToThread(self.thread)
@@ -285,6 +458,8 @@ class FocusFieldPanel(QWidget):
         self.reanalyze_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.report_btn.setEnabled(False)
+        self.center_btn.setEnabled(False)
+        self.scout_btn.setEnabled(False)
         self.status.clear()
 
     @Slot(str, object)
@@ -308,6 +483,7 @@ class FocusFieldPanel(QWidget):
         self.thread.deleteLater()
         self.thread = self.worker = self.controller = None
         self._analysis_cancel = None
+        self._task_cancel = None
         if self.hardware_active:
             self.hardware_active = False
             self.hardwareActivityChanged.emit(False)
@@ -319,13 +495,38 @@ class FocusFieldPanel(QWidget):
         self.run_path = Path(result.path) if result.path else None
         self.report_btn.setEnabled(bool(self.run_path and (self.run_path / "report.html").exists()))
         self.status.append(f"{result.state}: {result.message}\nRun: {result.path}")
+        if result.state == 'COMPLETED' and 'preview_registration' in result.details:
+            self.last_preview = result.details
+        usable_preview = bool(self.last_preview and self.last_preview['preview_registration']['full_field_visible'])
+        self.center_btn.setEnabled(usable_preview)
+        self.scout_btn.setEnabled(usable_preview)
+        if result.path and (Path(result.path) / 'setup_result.json').is_file() and result.state == 'COMPLETED':
+            manifest = json.loads((Path(result.path) / 'manifest.json').read_text(encoding='utf-8'))
+            details = manifest['setup_result']
+            self.setup_history.append(dict(path=result.path, operation=manifest['operation'], result=details))
+            if manifest['operation'] == 'scout':
+                self.status.append(details['reasoning'] + f". Absolute WD uncertainty {details['absolute_wd_uncertainty_mm']:g} mm.")
+                if QMessageBox.question(self, 'Proposed fine scan — no automatic motion',
+                        f"{details['reasoning']}. Proposed Z {details['z_start_mm']:g}–{details['z_end_mm']:g} mm. "
+                        "Load the proposed recipe into the editor? Start scan requires a separate action and approval.",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+                    from focusfield.config import Recipe
+                    self.recipe = Recipe(**details['suggested_recipe'])
+                    for key, widget in self.fields.items():
+                        widget.setValue(getattr(self.recipe, key))
+                    self.scout_proposal = dict(path=result.path, **details)
+        elif result.acquisition_complete or result.analysis_complete:
+            self.status.append(f"Acquisition complete: {result.acquisition_complete}; analysis complete: "
+                               f"{result.analysis_complete}; measurement valid: {result.measurement_valid}")
 
     def stop(self):
         if self.controller:
             self.controller.stop()
         if self._analysis_cancel:
             self._analysis_cancel.set()
-        self.status.append("STOP requested")
+        if self._task_cancel:
+            self._task_cancel.set()
+        self.status.append("STOP requested; waiting for any current camera call to return before cleanup (frame timeout 5 s)")
 
     def reanalyze(self):
         path = QFileDialog.getExistingDirectory(self, "Select optical run folder", str(Path(self.main.log_folder()) / "focusfield"))
@@ -335,6 +536,8 @@ class FocusFieldPanel(QWidget):
         import threading
         try:
             manifest = json.loads((Path(path) / "manifest.json").read_text(encoding="utf-8"))
+            if manifest.get('operation') in {'center', 'scout'}:
+                raise ValueError("This is a setup log. Inspect setup_result.json and manifest.json; acquire a fine scan for field analysis.")
             partial = manifest["state"] != "COMPLETED"
             if partial and QMessageBox.question(self, "Partial run", "Analyze this incomplete run with explicit partial-data flags?") != QMessageBox.Yes:
                 return
@@ -343,7 +546,8 @@ class FocusFieldPanel(QWidget):
             def analyze():
                 summary = analyze_run(path, allow_partial=partial, should_abort=cancel.is_set,
                                       on_progress=lambda *args: self.worker.event.emit("progress", args))
-                return RunResult("COMPLETED", path, f"{summary['valid_focus_fits']} valid focus fits")
+                return RunResult("COMPLETED", path, f"{summary['valid_focus_fits']} valid focus fits",
+                                 summary['acquisition_complete'], summary['analysis_complete'], summary['measurement_valid'])
             self._start_task(analyze)
             self.thread.start()
         except Exception as exc:

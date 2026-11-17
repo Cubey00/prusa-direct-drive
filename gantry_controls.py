@@ -168,6 +168,8 @@ def _send(cmd, timeout=30, *, cancel=None):
     error = None
     last_activity = time.monotonic()
     while True:
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("Motion cancelled while awaiting command acknowledgement")
         line = _readline(ser)
         if line:
             last_activity = time.monotonic()
@@ -192,10 +194,10 @@ def _send_nowait(cmd):
     _write_line(_ser, f"{cmd}\n".encode())
 
 
-def send_gcode(cmd, timeout=30):
+def send_gcode(cmd, timeout=30, *, cancel=None):
     """Thread-safe public version of _send."""
     with _lock:
-        return _send(cmd, timeout)
+        return _send(cmd, timeout, cancel=cancel)
 
 
 def _resync_serial(timeout=15):
@@ -243,8 +245,8 @@ def enable_metrics(port=8514, pc_ip=None):
 
 # ---------------- motion ----------------
 
-def read_position():
-    m = _POS_RE.search(send_gcode("M114"))
+def read_position(*, cancel=None):
+    m = _POS_RE.search(send_gcode("M114", cancel=cancel))
     if not m:
         raise PrinterError("Could not parse M114 response")
     return float(m.group(1)), float(m.group(2)), float(m.group(3))

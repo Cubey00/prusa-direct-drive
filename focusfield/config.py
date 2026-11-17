@@ -1,11 +1,12 @@
 """Versioned recipes, separate from measured machine safety/calibration."""
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 import math
 from pathlib import Path
 import tomllib
 
 from machine_settings import FocusFixture
+from .quality import QualityThresholds
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHART = ROOT / "focusfield/charts/focus_field_chart_layout.json"
@@ -29,8 +30,18 @@ class Recipe:
     fixed_frequency_cpp: float = 0.1
     pixel_format: str = "RGB8"
     chart_path: str = str(DEFAULT_CHART)
+    expected_width_px: int = 4056
+    expected_height_px: int = 3040
+    quality: QualityThresholds = field(default_factory=QualityThresholds)
 
     def __post_init__(self):
+        if isinstance(self.quality, dict):
+            object.__setattr__(self, "quality", QualityThresholds(**self.quality))
+        if not isinstance(self.quality, QualityThresholds):
+            raise ValueError("quality must contain data-quality thresholds")
+        for size in (self.expected_width_px, self.expected_height_px):
+            if type(size) is not int or not 1 <= size <= 65536:
+                raise ValueError("Expected image dimensions must be integers in 1..65536")
         if self.schema_version != 1:
             raise ValueError("Unsupported recipe schema_version")
         for name in ("wd_start_mm", "wd_end_mm", "step_mm", "nominal_wd_mm", "settle_s",
@@ -75,6 +86,8 @@ class Recipe:
     def validate_fixture(self, fixture, printer_z_max, *, simulation=False):
         if not simulation and not (fixture.enabled and fixture.measured):
             raise ValueError("Optical fixture is disabled or unmeasured in machine_settings.toml")
+        if not simulation:
+            fixture.validate_physical()
         for _, wd, z in self.schedule(fixture):
             if not (math.isfinite(z) and 0 <= fixture.safe_z_min_mm <= z <= fixture.safe_z_max_mm <= printer_z_max):
                 raise ValueError(f"Z {z:g} is outside measured fixture / printer bounds")
@@ -99,4 +112,6 @@ def load_recipe(path=DEFAULT_RECIPE):
 def simulation_fixture():
     return FocusFixture(enabled=True, measured=True, fixture_id="SIMULATED", calibration_id="SIMULATED",
                         camera_serial="SIMULATED", firmware_id="SIMULATED", safe_z_min_mm=99,
-                        safe_z_max_mm=101, reference_z_mm=100, wd_uncertainty_mm=0.01)
+                        safe_z_max_mm=101, reference_z_mm=100, wd_uncertainty_mm=0.01,
+                        motion_safety_verified=True, camera_pipeline_verified=True,
+                        frame_timing_verified=True, wd_reference_record="SIMULATED")

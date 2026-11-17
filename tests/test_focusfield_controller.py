@@ -28,7 +28,7 @@ class FakeCamera:
         self.captures += 1
         if self.captures == self.fail_at:
             raise RuntimeError("Camera disconnected")
-        m = capture_metadata("Mono12", "SIMULATED", 10000, 1)
+        m = capture_metadata("Mono12", "SIMULATED", 10000, 1, device_frame_id=self.captures)
         return Capture(np.full((32, 32), 2000, dtype=np.uint16), m)
 
     def close(self):
@@ -36,8 +36,8 @@ class FakeCamera:
 
 
 @pytest.fixture
-def rig(tmp_path):
-    f = simulation_fixture()
+def rig(tmp_path, verified_optical_fixture):
+    f = verified_optical_fixture
     r = Recipe(wd_start_mm=19.8, wd_end_mm=20.2, step_mm=0.1, frames_per_position=2,
                repetitions=1, settle_s=0, pixel_format="Mono12")
     stage, camera = SimStage(f), FakeCamera()
@@ -60,6 +60,34 @@ def test_schedule_readback_metadata_and_lossless_frames(rig):
     assert array.dtype == np.uint16 and array.max() == 2000
 
 
+def test_coarse_equal_timestamp_scan_preserves_order_for_offline_analysis(rig, monkeypatch):
+    from focusfield.reports import validate_run
+    monkeypatch.setattr('focusfield.acquisition.time.monotonic_ns', lambda: 1000)
+    result = rig.run(analyze=False)
+    assert result.state == 'COMPLETED', result.message
+    assert {f['host_monotonic_ns'] for f in rig.writer.manifest['frames']} == {1000}
+    validate_run(rig.writer.path, rig.writer.manifest, rig.recipe)
+
+
+def test_insufficient_storage_blocks_motion(rig, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr('focusfield.data.shutil.disk_usage', lambda _: SimpleNamespace(free=0))
+    result = rig.run(analyze=False)
+    assert result.state == 'FAILED' and 'Insufficient storage' in result.message
+    assert not any(c[0] in {'open', 'move'} for c in rig.stage.calls)
+
+
+@pytest.mark.parametrize('flag', ['motion_safety_verified', 'camera_pipeline_verified', 'frame_timing_verified'])
+def test_physical_motion_needs_all_verified_calibrations(rig, flag):
+    rig.stage.simulated = rig.camera.simulated = rig.simulated = False
+    rig.fixture = replace(rig.fixture, **{flag: False})
+    rig.checks = OperatorChecks(True, True, True, True, True)
+    rig.printer_state = lambda: 'IDLE'
+    result = rig.run(analyze=False)
+    assert result.state == 'FAILED'
+    assert ('open',) not in rig.stage.calls
+
+
 def test_camera_disconnect_preserves_partial_data_and_stops_without_retreat(rig):
     rig.camera.fail_at = 4
     result = rig.run(analyze=False)
@@ -73,6 +101,18 @@ def test_stop_before_open_and_during_scan(rig):
     rig.stop()
     assert rig.run(analyze=False).state == "ABORTED"
     assert ("open",) not in rig.stage.calls
+
+
+def test_concurrent_stop_requests_dispatch_one_stop_and_prevent_motion(rig):
+    import threading
+    workers = [threading.Thread(target=rig.stop) for _ in range(16)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert rig.run(analyze=False).state == 'ABORTED'
+    assert rig.stage.calls.count(('stop',)) == 1
+    assert ('open',) not in rig.stage.calls
 
 
 def test_stop_in_frame_callback_prevents_next_move(rig):
@@ -151,15 +191,15 @@ def test_simulated_camera_backend_with_physical_stage_is_rejected_before_motion(
     assert not any(c[0] == "move" for c in rig.stage.calls)
 
 
-def test_real_stage_uses_only_absolute_z_no_homing_or_metrics(monkeypatch):
+def test_real_stage_uses_only_absolute_z_no_homing_or_metrics(monkeypatch, verified_optical_fixture):
     from types import SimpleNamespace
     import sys
     calls = []
-    fake = SimpleNamespace(connect=lambda: calls.append("connect"), read_position=lambda: (5, 8, 100),
+    fake = SimpleNamespace(connect=lambda: calls.append("connect"), read_position=lambda **kwargs: (5, 8, 100),
         move_absolute=lambda **kwargs: calls.append(kwargs), disconnect=lambda: calls.append("disconnect"),
         motionstop=lambda: calls.append("stop"))
     monkeypatch.setitem(sys.modules, "gantry_controls", fake)
-    stage = ZStage(simulation_fixture(), 273)
+    stage = ZStage(verified_optical_fixture, 273)
     stage.open()
     stage.move_z_absolute(100.05)
     stage.stop()

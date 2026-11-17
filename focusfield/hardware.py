@@ -11,11 +11,13 @@ from .acquisition import Capture, capture_metadata
 class ZStage:
     simulated = False
 
-    def __init__(self, fixture, printer_z_max):
+    def __init__(self, fixture, printer_z_max, xy_calibration=None, printer_travel=None):
         self.fixture = fixture
         self.printer_z_max = printer_z_max
         self.opened = False
         self.cancelled = threading.Event()
+        self.xy_calibration = xy_calibration
+        self.printer_travel = printer_travel
 
     def check(self, z):
         f = self.fixture
@@ -28,16 +30,54 @@ class ZStage:
         import gantry_controls as gc
         if self.cancelled.is_set():
             raise InterruptedError("STOP requested")
+        self.fixture.validate_physical()
         gc.connect()
         self.opened = True
+        if self.cancelled.is_set():
+            raise InterruptedError("STOP requested")
         self.check(self.position())
 
     def position(self):
         import gantry_controls as gc
-        return gc.read_position()[2]
+        return gc.read_position(cancel=self.cancelled)[2]
+
+    def position_xyz(self):
+        import gantry_controls as gc
+        return gc.read_position(cancel=self.cancelled)
+
+    def check_xy(self, x, y, z):
+        c = self.xy_calibration
+        if c is None or self.printer_travel is None:
+            raise ValueError("XY motion requires a local measured mapping and printer travel limits")
+        c.validate(self.fixture)
+        self.check(z)
+        r = c.housing_radius_mm
+        if (not np.isfinite([x, y, z]).all()
+                or not c.safe_x_mm[0]+r <= x <= c.safe_x_mm[1]-r
+                or not c.safe_y_mm[0]+r <= y <= c.safe_y_mm[1]-r
+                or not self.printer_travel[0][0] <= x <= self.printer_travel[0][1]
+                or not self.printer_travel[1][0] <= y <= self.printer_travel[1][1]
+                or not c.safe_z_mm[0] <= z <= c.safe_z_mm[1]
+                or z-c.housing_below_nozzle_mm-c.target_height_mm < c.clearance_margin_mm):
+            raise ValueError("XY move outside housing envelope, printer travel or verified safe-Z/target clearance")
+
+    def move_xy_absolute(self, x, y, *, speed_mm_s=1.0):
+        import gantry_controls as gc
+        if self.cancelled.is_set():
+            raise InterruptedError("STOP requested")
+        if not self.opened:
+            raise RuntimeError("Optical stage must pass preflight before movement")
+        if not 0 < speed_mm_s <= 2:
+            raise ValueError("XY setup speed must be in 0..2 mm/s")
+        current = self.position_xyz()
+        self.check_xy(*current)
+        self.check_xy(x, y, current[2])
+        gc.move_absolute(x=x, y=y, XYfeed=speed_mm_s*60, cancel=self.cancelled)
 
     def move_z_absolute(self, z):
         import gantry_controls as gc
+        if not self.opened:
+            raise RuntimeError("Optical stage must pass preflight before movement")
         self.check(z)
         if self.cancelled.is_set():
             raise InterruptedError("STOP requested")
@@ -63,6 +103,16 @@ class SimStage:
         self.fixture, self.z = fixture, fixture.reference_z_mm
         self.calls = []
         self.stopped = False
+        self.x = self.y = 150.0
+
+    def position_xyz(self):
+        return self.x, self.y, self.z
+
+    def move_xy_absolute(self, x, y, *, speed_mm_s=1.0):
+        if self.stopped:
+            raise InterruptedError("STOP requested")
+        self.calls.append(("move_xy", x, y))
+        self.x, self.y = x, y
 
     def open(self):
         self.calls.append(("open",))
@@ -95,6 +145,8 @@ class SimCamera:
         self.frame_id = 0
         self.scale = 16
         self.rng = np.random.default_rng(7)
+        self.offset_px = np.zeros(2)
+        self.xy_jacobian = np.array([[-16, 3], [2, 16]])
 
     def open(self):
         pass
@@ -129,6 +181,10 @@ class SimCamera:
             patch = gaussian_filter(patch, sigma)
             px, py = int(x*scale)-radius, int(y*scale)-radius
             image[py:py+2*radius, px:px+2*radius] = patch
+        delta = self.offset_px + self.xy_jacobian @ (np.array([self.stage.x, self.stage.y]) - 150)
+        if np.any(delta):
+            image = cv2.warpAffine(image, np.float32([[1, 0, delta[0]], [0, 1, delta[1]]]),
+                                   (image.shape[1], image.shape[0]), borderValue=0.82)
         image += self.rng.normal(0, 0.0005, image.shape)
         fmt = self.recipe.pixel_format
         bits = 8 if fmt.endswith("8") else (12 if "12" in fmt else 10 if "10" in fmt else 16)

@@ -1,10 +1,11 @@
 """Qt-independent acquisition state machine with incremental persistence."""
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import threading
 import time
 
 from .chart import load_chart
-from .data import RunWriter
+from .data import RunWriter, storage_preflight
+from .acquisition import FrameGuard
 
 
 @dataclass(frozen=True)
@@ -28,22 +29,29 @@ class RunResult:
     state: str
     path: str
     message: str = ""
+    acquisition_complete: bool = False
+    analysis_complete: bool = False
+    measurement_valid: bool = False
+    details: dict = field(default_factory=dict)
 
 
 class ScanController:
     def __init__(self, recipe, settings, fixture, stage, camera, output_root, *,
                  printer_state=lambda: None, checks=OperatorChecks(), dry_run=False,
-                 on_event=lambda *args: None):
+                 on_event=lambda *args: None, setup_provenance=None):
         self.recipe, self.settings, self.fixture = recipe, settings, fixture
         self.stage, self.camera, self.output_root = stage, camera, output_root
         self.printer_state, self.checks, self.dry_run = printer_state, checks, dry_run
         self.on_event = on_event
+        self.setup_provenance = setup_provenance or {}
         self.cancel = threading.Event()
         self.state = "IDLE"
         self.writer = None
         self._stop_thread = None
+        self._stop_lock = threading.Lock()
         self._stop_error = ""
         self.simulated = bool(stage.simulated and camera.simulated)
+        self.frame_guard = FrameGuard()
         if stage.simulated != camera.simulated:
             raise ValueError("Do not mix simulated and physical devices")
 
@@ -73,22 +81,25 @@ class ScanController:
     def stop(self):
         """Nonblocking UI entry. STOP completion is joined before devices close."""
         self.cancel.set()
-        if self._stop_thread is None:
-            def stop_device():
-                try:
-                    self.stage.stop()
-                except Exception as exc:
-                    self._stop_error = str(exc)
-            self._stop_thread = threading.Thread(target=stop_device, daemon=True)
-            self._stop_thread.start()
+        if hasattr(self.camera, "cancel"):
+            self.camera.cancel.set()
+        with self._stop_lock:
+            if self._stop_thread is None:
+                def stop_device():
+                    try:
+                        self.stage.stop()
+                    except Exception as exc:
+                        self._stop_error = str(exc)
+                self._stop_thread = threading.Thread(target=stop_device, daemon=True)
+                self._stop_thread.start()
 
     def _capture_check(self, capture, after=0):
-        capture.validate()
+        self.frame_guard.check(capture, after)
         m = capture.metadata
         if not self.simulated and m.get("simulated"):
             raise ValueError("A simulated camera cannot be used with a physical stage")
-        if m["host_monotonic_ns"] <= after:
-            raise ValueError("Stale frame received after motion")
+        if not self.simulated and m.get('device_frame_id') is None:
+            raise ValueError("Physical acquisition requires native device frame IDs for sequence verification")
         if m["pixel_format"] != self.recipe.pixel_format:
             raise ValueError("Camera pixel format differs from recipe")
         if not self.simulated and str(m["camera_serial"]) != self.fixture.camera_serial:
@@ -110,9 +121,19 @@ class ScanController:
                 self.checks.validate(self.dry_run)
             self._printer_guard()
             chart = load_chart(self.recipe.chart_path)
+            from .acquisition import FORMATS
+            bits, channels = FORMATS[self.recipe.pixel_format]
+            frames = 0 if self.dry_run else len(self.recipe.schedule(self.fixture)) * self.recipe.frames_per_position
+            estimate = storage_preflight(self.output_root, frames,
+                self.recipe.expected_width_px * self.recipe.expected_height_px * channels * (1 if bits == 8 else 2))
             self.writer = RunWriter(self.output_root, self.recipe, self.fixture, self.settings, chart,
                                     simulated=self.simulated, dry_run=self.dry_run,
                                     operator_checks=asdict(self.checks))
+            self.writer.manifest["storage_preflight"] = estimate
+            self.writer.manifest['setup_provenance'] = self.setup_provenance
+            if not self.simulated:
+                from .calibration import validate_reference
+                self.writer.manifest["wd_reference"] = validate_reference(self.fixture)
             self._check_abort()
             self.stage.open()
             current = self.stage.position()
@@ -120,7 +141,9 @@ class ScanController:
                 raise ValueError("Initial Z outside fixture bounds; move manually to the validated interval")
             if not self.dry_run:
                 self.camera.open()
-                self._capture_check(self.camera.capture())
+                initial = self.camera.capture()
+                self._capture_check(initial)
+                self.writer.manifest["storage_preflight_actual"] = storage_preflight(self.output_root, frames, initial.pixels.nbytes)
             self._check_abort()
             self._state("READY")
             schedule = self.recipe.schedule(self.fixture)
@@ -155,13 +178,20 @@ class ScanController:
                         self.on_event("frame", record, capture.pixels)
                 self.on_event("progress", index+1, len(schedule))
             self._check_abort()
+            self.writer.manifest["acquisition_complete"] = True
             if analyze and not self.dry_run:
                 self._state("ANALYZING")
                 from .reports import analyze_run
                 summary = analyze_run(self.writer.path, should_abort=self.cancel.is_set, acquisition_complete=True,
                                       on_progress=lambda done, total: self.on_event("progress", done, total))
-                message = (f"Saved {len(self.writer.manifest['frames'])} frames; "
-                           f"{summary['valid_focus_fits']} / {summary['total_focus_fits']} valid focus fits")
+                self.writer.manifest.update(analysis_complete=True,
+                    qa_passed=summary.get('qa_passed', False), qa_rejection_reasons=summary.get('qa_rejection_reasons', []),
+                    measurement_valid=summary.get("measurement_valid", False),
+                    measurement_validated=summary.get("measurement_valid", False),
+                    measurement_rejection_reasons=summary.get("measurement_rejection_reasons", ["Unvalidated analysis"]))
+                message = (f"Acquisition complete: {len(self.writer.manifest['frames'])} frames; "
+                           f"{summary['valid_focus_fits']} / {summary['total_focus_fits']} valid focus fits. "
+                           f"Measurement valid: {self.writer.manifest['measurement_valid']}")
             elif self.dry_run:
                 message = "Motion-only dry run completed; no images acquired"
             else:
@@ -186,5 +216,12 @@ class ScanController:
             if self._stop_error:
                 outcome = "FAILED"
                 message += f"; STOP failed: {self._stop_error}"
+            if self.writer and outcome != "COMPLETED":
+                self.writer.manifest["measurement_valid"] = False
+                self.writer.manifest["measurement_validated"] = False
+                self.writer.manifest["measurement_rejection_reasons"] = [message or outcome]
             self._state(outcome, message)
-        return RunResult(outcome, str(self.writer.path) if self.writer else "", message)
+        manifest = self.writer.manifest if self.writer else {}
+        return RunResult(outcome, str(self.writer.path) if self.writer else "", message,
+                         manifest.get("acquisition_complete", False), manifest.get("analysis_complete", False),
+                         manifest.get("measurement_valid", False) if outcome == "COMPLETED" else False)

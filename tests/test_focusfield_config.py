@@ -14,7 +14,7 @@ def test_recipe_and_z_wd_sign():
     assert recipe.distances()[0] == 19.5 and recipe.distances()[-1] == 20.5
     assert fixture.z_for_wd(20.05) == pytest.approx(100.05)
     assert fixture.wd_for_z(100.05) == pytest.approx(20.05)
-    recipe.validate_fixture(fixture, SETTINGS.printer.z_max)
+    recipe.validate_fixture(fixture, SETTINGS.printer.z_max, simulation=True)
     recipe = replace(recipe, reverse_alternate=True)
     assert recipe.schedule(fixture)[21][1] == 20.5
     assert recipe.schedule(fixture)[-1][1] == 19.5
@@ -34,9 +34,9 @@ def test_unmeasured_bounds_and_clearance_are_rejected():
         Recipe().validate_fixture(SETTINGS.focusfield, SETTINGS.printer.z_max)
     fixture = replace(simulation_fixture(), safe_z_min_mm=100)
     with pytest.raises(ValueError, match="bounds"):
-        Recipe().validate_fixture(fixture, SETTINGS.printer.z_max)
+        Recipe().validate_fixture(fixture, SETTINGS.printer.z_max, simulation=True)
     with pytest.raises(ValueError, match="clearance"):
-        Recipe().validate_fixture(replace(simulation_fixture(), minimum_wd_mm=19.5), 273)
+        Recipe().validate_fixture(replace(simulation_fixture(), minimum_wd_mm=19.5), 273, simulation=True)
 
 
 def test_optional_profile_backwards_compatibility_and_invalid_settings():

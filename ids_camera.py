@@ -40,6 +40,7 @@ class IDS_Camera:
         # camera.close() has been called.
         self._closed = False
         self._lease = None
+        self._last_frame_info = {}
 
 
         # ===================================================================
@@ -145,6 +146,8 @@ class IDS_Camera:
                         self.remote_nodemap.FindNode(name).SetCurrentEntry("Off")
                     except Exception:
                         pass  # Capture readback is checked; physical processing verification is still required.
+                if self.remote_nodemap.FindNode("PixelFormat").CurrentEntry().SymbolicValue() != pixel_format:
+                    raise RuntimeError("Native pixel format readback differs from requested format")
 
 
             # =================================================================
@@ -401,6 +404,7 @@ class IDS_Camera:
             #
             # Therefore we make a completely independent NumPy copy.
             #
+            self._last_frame_info = self._buffer_info(buffer)
             return np.array(array, copy=True)
 
 
@@ -469,10 +473,33 @@ class IDS_Camera:
     def capture_info(self, pixel_format=None):
         from focusfield.acquisition import capture_metadata
         native = self.remote_nodemap.FindNode("PixelFormat").CurrentEntry().SymbolicValue()
-        return capture_metadata(pixel_format or native,
+        info = capture_metadata(pixel_format or native,
             self.remote_nodemap.FindNode("DeviceSerialNumber").Value(),
             self.remote_nodemap.FindNode("ExposureTime").Value(),
             self.remote_nodemap.FindNode("Gain").Value(), native_pixel_format=native, backend="ids_peak")
+        info.update(self._last_frame_info)
+        return info
+
+    def diagnostics(self):
+        from focusfield.camera_info import peak_inventory
+        return peak_inventory(self.remote_nodemap, peak)
+
+    def _buffer_info(self, buffer):
+        info = {"acquisition_status": "complete"}
+        try:
+            frame_id = buffer.FrameID()
+            if type(frame_id) is int:
+                info["device_frame_id"] = frame_id
+        except Exception:
+            pass  # Legacy RGB preview must not depend on optional metadata support.
+        try:
+            stamp = buffer.Timestamp_ns()
+            if type(stamp) is int:
+                info.update(device_timestamp=stamp, device_timestamp_unit="ns",
+                            device_clock_domain="camera; not synchronized to host; exposure meaning unverified")
+        except Exception:
+            pass
+        return info
 
     def capture_raw(self):
         from focusfield.acquisition import Capture
@@ -486,10 +513,21 @@ class IDS_Camera:
             if buffer.IsIncomplete():
                 raise RuntimeError("Incomplete IDS frame")
             native = ids_peak_ipl_extension.BufferToImage(buffer)
-            pixels = np.array(native.get_numpy_2D(), copy=True)
+            # The vendor bindings document get_numpy_2D as an 8-bit view.
+            # Unpacked Mono10/12/16 and BayerRG10/12 need the explicit 16-bit view.
+            view = native.get_numpy_2D() if info["bit_depth"] == 8 else native.get_numpy_2D_16()
+            pixels = np.array(view, copy=True)
+            from focusfield.camera_info import validate_raw_geometry
+            inventory = self.diagnostics()
+            validate_raw_geometry(inventory, info["pixel_format"])
+            self._last_frame_info = self._buffer_info(buffer)
             info = self.capture_info()
-            info["device_frame_id"] = int(buffer.FrameID())
-            return Capture(pixels, info)
+            features = inventory["features"]
+            info.update(camera_inventory=inventory, payload_bytes=features["PayloadSize"])
+            for node, key in (("Width", "width_px"), ("Height", "height_px")):
+                if type(features[node]) is int:
+                    info[key] = features[node]
+            return Capture(pixels, info).validate()
         finally:
             self.data_stream.QueueBuffer(buffer)
 
@@ -498,12 +536,14 @@ class IDS_Camera:
         if self._closed:
             raise RuntimeError("Camera has been closed.")
         self.remote_nodemap.FindNode("AcquisitionStop").Execute()
+        self.remote_nodemap.FindNode("AcquisitionStop").WaitUntilDone()
         self.data_stream.StopAcquisition(peak.AcquisitionStopMode_Default)
         self.data_stream.Flush(peak.DataStreamFlushMode_DiscardAll)
         for buffer in self.data_stream.AnnouncedBuffers():
             self.data_stream.QueueBuffer(buffer)
         self.data_stream.StartAcquisition()
         self.remote_nodemap.FindNode("AcquisitionStart").Execute()
+        self.remote_nodemap.FindNode("AcquisitionStart").WaitUntilDone()
 
 
     # =========================================================================

@@ -147,6 +147,19 @@ class FocusFixture:
     wd_uncertainty_mm: float = 0.0
     position_tolerance_mm: float = 0.02
     z_speed_mm_s: float = 1.0
+    motion_safety_verified: bool = False
+    camera_pipeline_verified: bool = False
+    frame_timing_verified: bool = False
+    wd_reference_record: str = ""
+    sfr_reference_verified: bool = False
+    sfr_validation_id: str = ""
+
+    def validate_physical(self):
+        if not (self.enabled and self.measured and self.motion_safety_verified
+                and self.camera_pipeline_verified and self.frame_timing_verified):
+            raise ValueError("Physical motion requires measured fixture, clearance, camera pipeline and frame timing verification")
+        from focusfield.calibration import validate_reference
+        validate_reference(self)
 
     def z_for_wd(self, wd):
         return self.reference_z_mm + wd - self.reference_wd_mm
@@ -318,7 +331,7 @@ def parse(data, where="settings"):
                            residual_tol=float, cone_F1="xyz_or_empty", cone_F2="xyz_or_empty",
                            cone_F3="xyz_or_empty"),
         focusfield=(_build(FocusFixture, data, "focusfield", where,
-                          **{k: type(v) for k, v in vars(FocusFixture()).items()})
+                          **{k: type(v) for k, v in vars(FocusFixture()).items() if k in data["focusfield"]})
                     if "focusfield" in data else FocusFixture()),
     )
     _check(s, where)
@@ -344,7 +357,8 @@ def save_values(section, values, path=None):
             if isinstance(value, bool):
                 text = "true" if value else "false"
             elif isinstance(value, str):
-                text = f'"{value}"'
+                import json
+                text = json.dumps(value, ensure_ascii=False)
             elif isinstance(value, (list, tuple)):
                 text = "[" + ", ".join(f"{float(v):.3f}" for v in value) + "]"
             else:

@@ -8,6 +8,7 @@ in tests; this is not an ISO 12233 conformance claim.
 from dataclasses import dataclass
 import numpy as np
 from scipy.signal.windows import tukey
+from .quality import QualityThresholds
 
 
 @dataclass
@@ -21,7 +22,8 @@ class SFRResult:
 
 
 def slanted_edge(roi, fixed_frequency_cpp=0.1, oversampling=4, *, horizontal=False,
-                 sensor_pitch=1.0):
+                 sensor_pitch=1.0, quality=None):
+    quality = quality or QualityThresholds()
     a = np.asarray(roi, dtype=float)
     if horizontal:
         a = a.T
@@ -31,9 +33,9 @@ def slanted_edge(roi, fixed_frequency_cpp=0.1, oversampling=4, *, horizontal=Fal
         raise ValueError("Fixed frequency exceeds analysis sampling Nyquist")
     low, high = np.percentile(a, [10, 90])
     contrast = (high - low) / max(high + low, 1e-12)
-    if contrast < 0.1 or high - low < 0.05:
+    if contrast < quality.min_contrast or high - low < quality.min_edge_span:
         raise ValueError("Low edge contrast")
-    if np.mean((a <= 0) | (a >= 1)) > 0.02:
+    if np.mean((a <= 0) | (a >= 1)) > quality.max_clipped_fraction:
         raise ValueError("Clipped edge ROI")
     derivative = np.abs(np.diff(a, axis=1))
     x = np.arange(a.shape[1] - 1) + 0.5
@@ -47,11 +49,11 @@ def slanted_edge(roi, fixed_frequency_cpp=0.1, oversampling=4, *, horizontal=Fal
         raise ValueError("Edge not visible throughout ROI")
     centres = (weights * x).sum(axis=1) / np.maximum(mass, 1e-12)
     slope, intercept = np.polyfit(y[good], centres[good], 1)
-    if np.std(centres[good] - (slope * y[good] + intercept)) > 0.8:
+    if np.std(centres[good] - (slope * y[good] + intercept)) > quality.max_edge_residual_px:
         raise ValueError("Edge is curved, distorted or poorly localized")
     angle = float(np.degrees(np.arctan(abs(slope))))
-    if not 2 <= angle <= 12:
-        raise ValueError(f"Edge angle {angle:.2f} degrees outside 2..12")
+    if not quality.min_angle_deg <= angle <= quality.max_angle_deg:
+        raise ValueError(f"Edge angle {angle:.2f} degrees outside configured limits")
     yy, xx = np.indices(a.shape)
     distance = (xx - slope * yy - intercept) / np.sqrt(1 + slope * slope)
     radius = min(32, int(min(-distance.min(), distance.max())) - 2)

@@ -9,12 +9,13 @@ import numpy as np
 import tifffile
 
 from . import __version__
-from .acquisition import Capture, analysis_plane
-from .chart import detect_chart, edge_rois, load_chart
+from .acquisition import Capture, FrameGuard, analysis_plane
+from .chart import edge_rois, load_chart, register_chart
 from .config import Recipe
 from .data import atomic_json
 from .focus_fit import apparent_plane, fit_peak
 from .sfr import slanted_edge
+from .quality import assess_field, required_regions, usable_edges
 
 
 def _csv(path, rows, fields):
@@ -36,11 +37,26 @@ def validate_run(path, manifest, recipe, *, allow_partial=False, acquisition_com
             or (manifest["state"] != "COMPLETED" and not acquisition_complete))):
         raise ValueError("Incomplete run; explicitly choose partial reanalysis to inspect it")
     seen, images, times = set(), set(), []
+    guard = FrameGuard()
     f = manifest["wd_calibration"]
     from machine_settings import FocusFixture
     fixture = FocusFixture(**f)
     expected = {(rep, round(z, 6)): 0 for rep, _, z in recipe.schedule(fixture)}
     for frame in frames:
+        # Metadata-only ordering check; samples are validated when read below.
+        timestamp = frame["host_monotonic_ns"]
+        sequence = frame.get("capture_sequence")
+        if guard.last_time is not None and (timestamp < guard.last_time or
+                (timestamp == guard.last_time and sequence is None)):
+            raise ValueError("Frame timestamps moved backwards or lack ordered sequence")
+        if sequence is not None and guard.last_sequence is not None and sequence <= guard.last_sequence:
+            raise ValueError("Duplicate or reordered host capture sequence")
+        device_id = frame.get("device_frame_id")
+        if device_id is not None and guard.last_device_id is not None and device_id <= guard.last_device_id:
+            raise ValueError("Duplicate or reordered device frame ID")
+        if device_id is None and guard.last_device_id is not None:
+            raise ValueError("Device frame ID disappeared")
+        guard.last_time, guard.last_sequence, guard.last_device_id = timestamp, sequence, device_id
         if frame["image_id"] in seen:
             raise ValueError("Duplicate image ID")
         seen.add(frame["image_id"])
@@ -70,8 +86,6 @@ def validate_run(path, manifest, recipe, *, allow_partial=False, acquisition_com
         expected[key] += 1
     if not allow_partial and any(n != recipe.frames_per_position for n in expected.values()):
         raise ValueError("Incorrect frame count at a scheduled position")
-    if any(b <= a for a, b in zip(times, times[1:])):
-        raise ValueError("Frame timestamps are not strictly increasing")
 
 
 def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquisition_complete=False,
@@ -91,7 +105,9 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
         base = dict(image_id=frame["image_id"], repetition=frame["repetition"],
                     wd_mm=frame["nominal_working_distance_mm"])
         try:
-            h, error = detect_chart(gray, chart)
+            registration = register_chart(gray, chart, sensor_pitch=pitch,
+                max_reprojection_rms_px=recipe.quality.max_marker_reprojection_px)
+            h, error = registration['homography'], registration['reprojection_rms_px']
             detection.append(dict(**base, valid=True, reason="", marker_error_px=error))
         except ValueError as exc:
             detection.append(dict(**base, valid=False, reason=str(exc)))
@@ -108,7 +124,8 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
             for label, horizontal, roi, px, py in rois:
                 row = dict(**info, edge=label, x_px=px*pitch, y_px=py*pitch)
                 try:
-                    sfr = slanted_edge(roi, recipe.fixed_frequency_cpp, horizontal=horizontal, sensor_pitch=pitch)
+                    sfr = slanted_edge(roi, recipe.fixed_frequency_cpp, horizontal=horizontal, sensor_pitch=pitch,
+                                       quality=recipe.quality)
                     row.update(valid=True, reason="", mtf50_cpp=sfr.mtf50_cpp, fixed_mtf=sfr.fixed_mtf,
                                angle_deg=sfr.angle_deg, contrast=sfr.contrast)
                 except ValueError as exc:
@@ -162,16 +179,46 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
               "apparent_plane_y", "apparent_plane_intercept", "apparent_plane_residual_mm"]
     _csv(path / "focus_results.csv", fits, fields)
     valid_count = sum(f["valid"] for f in fits)
+    qa_reasons = assess_field(chart, fits, detection, recipe)
+    required = required_regions(chart)
+    good_frames = 0
+    for frame in manifest["frames"]:
+        regions = {r for r in required if usable_edges({row['edge'] for row in results
+                   if row["image_id"] == frame["image_id"] and row["region"] == r and row["valid"]}, recipe.quality)}
+        if required[0] in regions and len(regions & set(required[1:])) >= recipe.quality.min_peripheral_regions:
+            good_frames += 1
+    if good_frames / max(1, len(manifest["frames"])) < recipe.quality.min_valid_frame_fraction:
+        qa_reasons.append("Insufficient frames with usable center/peripheral edges (blur, clipping or edge-fit failure)")
+    reasons = list(qa_reasons)
+    if allow_partial:
+        reasons.append("Partial acquisition")
+    if manifest["simulated"]:
+        reasons.append("Synthetic data; physical measurement not validated")
+    if recipe.pixel_format == "RGB8":
+        reasons.append("RGB8 processing is provisional for quantitative MTF")
+    f = manifest["wd_calibration"]
+    if not (f.get("sfr_reference_verified") and f.get("sfr_validation_id")):
+        reasons.append("Independent same-image SFR reference validation has not been verified")
+    if not all(f.get(k) for k in ("motion_safety_verified", "camera_pipeline_verified", "frame_timing_verified", "wd_reference_record")):
+        reasons.append("Physical fixture, WD reference, camera pipeline or exposure timing not verified")
     summary = dict(analysis_version=__version__, acquisition_state=manifest["state"],
                    partial=allow_partial, simulated=manifest["simulated"], measurement_validated=False,
                    valid_focus_fits=valid_count, total_focus_fits=len(fits),
                    valid_frames=sum(d["valid"] for d in detection), total_frames=len(detection),
                    fixed_frequency_cpp=recipe.fixed_frequency_cpp)
+    summary.update(acquisition_complete=not allow_partial, analysis_complete=True,
+                   qa_passed=not qa_reasons, qa_rejection_reasons=qa_reasons,
+                   measurement_valid=not reasons, measurement_validated=not reasons,
+                   measurement_rejection_reasons=reasons, usable_field_frames=good_frames)
     if should_abort():
         raise InterruptedError("Analysis stopped")
     _plots(path, fits, results, recipe.nominal_wd_mm)
     atomic_json(path / "analysis.json", summary)
     _html(path, summary, recipe, fits)
+    # Keep online and offline status consistent without touching acquired originals.
+    manifest.update({k: summary[k] for k in ("acquisition_complete", "analysis_complete", "qa_passed", "qa_rejection_reasons", "measurement_valid", "measurement_validated",
+                                           "measurement_rejection_reasons")})
+    atomic_json(path / "manifest.json", manifest)
     return summary
 
 
@@ -231,6 +278,9 @@ def _html(path, summary, recipe, fits):
 <style>body{{font:16px system-ui;max-width:1100px;margin:40px auto}}td,th{{padding:6px;border:1px solid #ccc}}
 table{{border-collapse:collapse}}img{{max-width:100%}}.notice{{background:#fff1c2;padding:16px}}</style>
 <h1>Focus-Field / MTF</h1><p class="notice">{status}. Partial analysis: {summary['partial']}.</p>
+<p>Acquisition complete: {summary['acquisition_complete']}. Analysis complete: {summary['analysis_complete']}.
+Data QA passed: {summary['qa_passed']}. Measurement valid: {summary['measurement_valid']}.</p>
+<ul>{''.join('<li>' + html.escape(r) + '</li>' for r in summary['measurement_rejection_reasons'])}</ul>
 <p>Valid focus fits: {summary['valid_focus_fits']} / {summary['total_focus_fits']}.
 Valid chart frames: {summary['valid_frames']} / {summary['total_frames']}.</p>
 <p>Frequency: {recipe.fixed_frequency_cpp:g} cycles per original sensor pixel. RGB8 uses the green channel;
