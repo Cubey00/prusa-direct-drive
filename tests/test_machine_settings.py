@@ -114,3 +114,16 @@ def test_save_values_keeps_comments_and_refuses_bad_values(tmp_path):
     assert path.read_text(encoding="utf-8") == after       # nothing written
     with pytest.raises(ms.SettingsError, match="no \\[sensor\\] nope"):
         ms.save_values("sensor", {"nope": 1.0}, path)
+
+
+def test_cone_positions_save_and_load(tmp_path):
+    machine_settings = ms
+    path = tmp_path / "s.toml"
+    path.write_text(machine_settings.DEFAULT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    assert machine_settings.load(path).calibration.cone_position("F1") is None
+    machine_settings.save_values("calibration", {"cone_F1": [10.4, 105.2, 85.25]}, path)
+    s = machine_settings.load(path)
+    assert s.calibration.cone_position("F1") == (10.4, 105.2, 85.25)
+    assert "cone_F1 = [10.400, 105.200, 85.250]" in path.read_text(encoding="utf-8")
+    with pytest.raises(machine_settings.SettingsError, match="cone_F2"):
+        machine_settings.save_values("calibration", {"cone_F2": [10.0, 300.0, 85.0]}, path)

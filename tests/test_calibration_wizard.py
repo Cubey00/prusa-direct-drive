@@ -14,14 +14,15 @@ class FakeServer:
     """Stands in for the calibrator link: records what is sent, never launches anything."""
 
     def __init__(self):
-        self.gotos, self.homes, self.jogs, self.requests = [], [], [], []
+        self.gotos, self.homes, self.finals, self.jogs, self.requests = [], [], [], [], []
 
     def is_running(self):
         return True
 
-    def goto(self, x, y, z, label="", home_xy=False):
+    def goto(self, x, y, z, label="", home_xy=False, z_final=None):
         self.gotos.append((label, round(x, 3), round(y, 3), round(z, 3)))
         self.homes.append(home_xy)
+        self.finals.append(None if z_final is None else round(z_final, 3))
         return True
 
     def jog(self, dx, dy, dz, feed):
@@ -82,7 +83,7 @@ def do_point(w, p, x, y):
     msg(w, "goto_done", label=p, ok=True, message=f"At {p}")
     wiz.send_btn.click()
     assert w.server.requests[-1] == p
-    msg(w, "position", point=p, x=x, y=y, z=12.0)
+    msg(w, "position", point=p, x=x, y=y, z=85.2)
 
 
 def test_button_opens_the_wizard_and_asks_for_a_plate_first(win):
@@ -111,13 +112,13 @@ def test_one_step_at_a_time_and_ends_with_position_known(win, plate):
     # then the jogger, slow and small
     assert visible(wiz) == {"jogger"} and wiz.send_btn.text() == "Positie van kegel 1 insturen"
     wiz.jog_btns["X+"].click()
-    wiz.step_group.button(0).setChecked(True)               # 1 mm
+    wiz.step_group.button(1).setChecked(True)               # 1 mm
     wiz.jog_btns["Z-"].click()
     assert win.server.jogs == [(0.1, 0, 0, 120.0), (0, 0, -1.0, 120.0)]
     wiz.send_btn.click()
     assert win.server.requests == ["F1"] and not wiz.send_btn.isEnabled()
     # the head really ends up 0.6 mm right and 39.2 mm back of each cone (the true offset)
-    msg(win, "position", point="F1", x=fids["F1"]["x"] - 0.6, y=fids["F1"]["y"] + 39.2, z=12.0)
+    msg(win, "position", point="F1", x=fids["F1"]["x"] - 0.6, y=fids["F1"]["y"] + 39.2, z=85.2)
 
     # next: only "go to cone 2"
     assert visible(wiz) == {"go"} and wiz.go_btn.text() == "Ga naar kegel 2"
@@ -130,10 +131,26 @@ def test_one_step_at_a_time_and_ends_with_position_known(win, plate):
     assert "Kalibratie geslaagd! De printer weet nu waar de sensorkop t.o.v. de objecten is." in text
     assert "Positie bekend" in text and "opgeslagen" in text
     assert win.transform is not None
-    # the measured offset is kept for the next prediction
-    assert machine_settings.load().sensor.offset[:2] == pytest.approx((0.6, -39.2))
+    # the cone positions and the measured offset become the new standard
+    saved = machine_settings.load()
+    assert saved.sensor.offset == pytest.approx((0.6, -39.2, 5.0 - 85.2)) and saved.sensor.measured
+    assert saved.calibration.cone_position("F2") == pytest.approx(
+        (fids["F2"]["x"] - 0.6, fids["F2"]["y"] + 39.2, 85.2))
     wiz.finish_btn.click()
     assert not wiz.isVisible()
+
+    # the next calibration drives straight to those spots, 1 cm (hover_clearance) above them
+    win.start_calibration()
+    assert wiz.go_btn.text() == "Ga naar kegel 1" and "vorige kalibratie" in wiz.text_label.text()
+    wiz.go_btn.click()
+    label, x, y, z = win.server.gotos[-1]
+    assert (label, x, y) == ("F1", round(fids["F1"]["x"] - 0.6, 3), round(fids["F1"]["y"] + 39.2, 3))
+    assert win.server.finals[-1] == 95.2 and z >= 95.2 and win.server.homes[-1] is True
+    msg(win, "goto_done", label="F1", ok=True, message="At F1")
+    assert "1 cm boven" in wiz.text_label.text()
+    wiz.step_group.button(0).setChecked(True)               # 5 mm to come down fast
+    wiz.jog_btns["Z-"].click()
+    assert win.server.jogs[-1] == (0, 0, -5.0, 120.0)
 
 
 def test_a_mixed_up_point_is_flagged_not_called_a_success(win, plate):

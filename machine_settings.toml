@@ -103,3 +103,11 @@ guard_release_g = 50.0             # ...until the force is below this
 min_distance = 10.0                # mm: calibration points closer than this are refused
 scale_tol = 0.02                   # warn if the fitted scale differs more than this from 1
 residual_tol = 0.5                 # mm: warn if a point is further than this off the 3-point fit
+# Head position (machine X, Y, Z in mm) where the sensor stood on each cone in the last good
+# calibration; "Start kalibratie" saves them. The sensor sits the same way every time, so the
+# next calibration drives straight there, [sensor] hover_clearance higher, instead of predicting
+# it from the offset. [] = not known yet. They hold as long as the cones stay where they are
+# ([work_area], [fiducials]); clear them after changing those.
+cone_F1 = []
+cone_F2 = []
+cone_F3 = []

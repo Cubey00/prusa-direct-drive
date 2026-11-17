@@ -12,9 +12,10 @@ Message contract (dicts, all with "v": 1):
     {"v": 1, "type": "status", "ok": bool, "message": str}       e.g. why a position could not be sent
     {"v": 1, "type": "bye"}                                     calibrator closing
   path programmer -> calibrator
-    {"v": 1, "type": "goto", "x": float, "y": float, "z": float, "label": str, "home_xy": bool}
+    {"v": 1, "type": "goto", "x": float, "y": float, "z": float, "label": str, "home_xy": bool,
+     "z_final": float | None}
         move the head to this absolute position: Z first (bed down to the travel height), then
-        (home_xy) G28 X Y, then X/Y
+        (home_xy) G28 X Y, then X/Y, then (z_final) Z to that height
     {"v": 1, "type": "jog", "dx": float, "dy": float, "dz": float, "feed": float}
         small relative move (mm, feed in mm/min) for fine-tuning onto a cone
     {"v": 1, "type": "request_position", "point": "F1" | "F2" | "F3"}
@@ -35,9 +36,9 @@ VERSION = 1
 KEY_ENV = "PRINTERPROJECT_LINK_KEY"
 
 
-def goto_msg(x, y, z, label="", home_xy=False):
+def goto_msg(x, y, z, label="", home_xy=False, z_final=None):
     return {"v": VERSION, "type": "goto", "x": float(x), "y": float(y), "z": float(z), "label": str(label),
-            "home_xy": bool(home_xy)}
+            "home_xy": bool(home_xy), "z_final": None if z_final is None else float(z_final)}
 
 
 def jog_msg(dx, dy, dz, feed):
@@ -105,8 +106,8 @@ class CalibratorServer:
                 self.conn = None
                 return False
 
-    def goto(self, x, y, z, label="", home_xy=False):
-        return self.send(goto_msg(x, y, z, label, home_xy))
+    def goto(self, x, y, z, label="", home_xy=False, z_final=None):
+        return self.send(goto_msg(x, y, z, label, home_xy, z_final))
 
     def jog(self, dx, dy, dz, feed):
         return self.send(jog_msg(dx, dy, dz, feed))

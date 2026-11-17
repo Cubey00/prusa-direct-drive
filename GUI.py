@@ -258,10 +258,12 @@ class App:
         label = msg.get("label", "")
         try:
             x, y, z = float(msg["x"]), float(msg["y"]), float(msg["z"])
+            z_final = None if msg.get("z_final") is None else float(msg["z_final"])
         except (KeyError, TypeError, ValueError):
             return
         (x0, x1), (y0, y1) = SETTINGS.printer.travel
-        if not (x0 <= x <= x1 and y0 <= y <= y1 and 0 <= z <= SETTINGS.printer.z_max):
+        if not (x0 <= x <= x1 and y0 <= y <= y1 and 0 <= z <= SETTINGS.printer.z_max
+                and (z_final is None or 0 <= z_final <= SETTINGS.printer.z_max)):
             text = f"Refused to go to X{x:.1f} Y{y:.1f} Z{z:.1f}: outside the travel limits"
             self.progress_label.config(text=text)
             self.link.send_goto_done(label, False, text)
@@ -290,7 +292,10 @@ class App:
                 if home:
                     home_xy()          # the head may have been moved by hand; Z is kept (sensor!)
                 move_absolute(x=x, y=y, XYfeed=feed)
-                ok, text = True, f"At {label}: X{x:.2f} Y{y:.2f} Z{z:.2f}. Fine-jog, then send the position."
+                if z_final is not None:
+                    move_absolute(z=z_final)                           # above the cone, at the saved spot
+                zz = z if z_final is None else z_final
+                ok, text = True, f"At {label}: X{x:.2f} Y{y:.2f} Z{zz:.2f}. Fine-jog, then send the position."
             except Exception as e:
                 ok, text = False, f"Going to {label} failed: {e}"
             self.motion.halt()                                         # next jog starts from the real position

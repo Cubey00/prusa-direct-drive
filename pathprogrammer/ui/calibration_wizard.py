@@ -8,8 +8,10 @@ Per cone there is only one thing to do at a time:
      nozzle probes the bed for that, and the sensor below it would hit the bed).
   2. The jogger: small, slow moves to put the sensor exactly on the tip.
   3. "Positie van kegel N insturen": the calibrator sends the head's position back.
-After F3 the 3-point fit decides: "Kalibratie geslaagd" (and the measured sensor offset is saved
-for the next prediction) or what to check.
+After F3 the 3-point fit decides: "Kalibratie geslaagd" or what to check. A good calibration saves
+the head position on each cone (machine_settings.toml [calibration] cone_F1..3) and the sensor
+offset measured from them; the next calibration drives straight to the saved spots, hover_clearance
+(1 cm) higher, so only a short way down is left to jog.
 """
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QButtonGroup, QDialog, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
@@ -21,7 +23,7 @@ from .. import calibration
 PLACE = {"F1": "linksvoor", "F2": "rechtsvoor", "F3": "linksachter"}
 GOTO_ANSWER_MS = 20000      # no reply from the calibrator within this time: tell the user why
 HOME_ANSWER_MS = 90000      # the same when it homes X/Y first
-JOG_STEPS = (1.0, 0.5, 0.1, 0.05)       # mm
+JOG_STEPS = (5.0, 1.0, 0.5, 0.1, 0.05)  # mm
 JOG_FEED = 120.0                        # mm/min = 2 mm/s: slow, for fine-tuning
 OK_COLOR, WARN_COLOR, ERR_COLOR = "#1b7a1b", "#b36b00", "#c00000"
 BIG = "font-size: 16px; padding: 10px;"
@@ -40,6 +42,7 @@ class CalibrationWizard(QDialog):
         self.index = 0                 # which cone: 0, 1, 2 -> F1, F2, F3
         self.state = NO_PLATE
         self.success = False
+        self.sent = {}                 # fiducial -> (x, y, z) head position the calibrator sent
 
         self.step_label = QLabel("")
         self.step_label.setStyleSheet("font-size: 18px; font-weight: bold;")
@@ -135,15 +138,30 @@ class CalibrationWizard(QDialog):
         tallest = max([f["z"] for f in m["fiducials"]] + [p["size"][2] for p in m["parts"]]) if m else 0
         return tallest + self.settings.sensor.hover_clearance - self.settings.sensor.offset[2]
 
-    def predicted_head(self, name):
-        """Head X/Y/Z that puts the sensor above fiducial `name`, at the travel height."""
+    def saved(self, name):
+        """Head position (x, y, z) on this cone from the last good calibration, or None."""
+        return self.settings.calibration.cone_position(name)
+
+    def target(self, name):
+        """(x, y, travel z, final z or None, saved?) for fiducial `name`: the saved head position
+        hover_clearance higher if there is one, else predicted from the sensor offset at the
+        travel height."""
+        pos = self.saved(name)
+        if pos:
+            z_final = pos[2] + self.settings.sensor.hover_clearance
+            return pos[0], pos[1], max(self.travel_z(), z_final), z_final, True
         f = self.fiducials()[name]
         ox, oy, _ = self.settings.sensor.offset
-        return f["x"] - ox, f["y"] - oy, self.travel_z()
+        return f["x"] - ox, f["y"] - oy, self.travel_z(), None, False
 
-    def reachable(self, x, y, z):
+    def predicted_head(self, name):
+        """Where the head ends up for fiducial `name` (x, y, z)."""
+        x, y, z, z_final, _ = self.target(name)
+        return x, y, z if z_final is None else z_final
+
+    def reachable(self, x, y, *zs):
         (x0, x1), (y0, y1) = self.settings.printer.travel
-        return x0 <= x <= x1 and y0 <= y <= y1 and 0 <= z <= self.settings.printer.z_max
+        return x0 <= x <= x1 and y0 <= y <= y1 and all(0 <= z <= self.settings.printer.z_max for z in zs)
 
     # ---------------- view ----------------
     def refresh(self):
@@ -170,31 +188,37 @@ class CalibrationWizard(QDialog):
                                     "programmer</i>.</span>")
         elif self.state in (GOTO, MOVING):
             self.step_label.setText(f"Kegel {n} van {total} ({p}, {PLACE[p]})")
-            x, y, z = self.predicted_head(p)
-            if not self.reachable(x, y, z):
+            x, y, z, z_final, from_saved = self.target(p)
+            where = ("Hij gaat naar de plek van de vorige kalibratie, 1 cm erboven." if from_saved else
+                     "Hij gaat naar de plek die de sensorafstand voorspelt (nog geen opgeslagen plek).")
+            if not self.reachable(x, y, z, *([z_final] if z_final is not None else [])):
                 self.go_btn.setEnabled(False)
                 self.text_label.setText(
                     f"<span style='color:{ERR_COLOR}'>Kegel {n} ligt buiten bereik (kop X{x:.1f} Y{y:.1f} "
-                    f"Z{z:.1f}). Controleer de sensorafstand in machine_settings.toml.</span>")
+                    f"Z{z:.1f}). Controleer de sensorafstand en de opgeslagen kegelposities in "
+                    "machine_settings.toml.</span>")
             elif self.state == GOTO and self.homes():
                 self.text_label.setText(
                     "Laat de geprinte plaat op het bed liggen en zet de sensor op de kop. Zet de printer "
                     "niet uit: dan blijft de hoogte (Z) van de print bekend.<br><br>"
                     "Klik op de knop: het bed zakt eerst naar een veilige hoogte, dan zoekt de kop "
                     "X en Y opnieuw op (homen, de kop gaat naar rechtsvoor) en rijdt daarna naar de kegel. "
-                    "Z wordt niet gehomed: dat doet de printer met de nozzle op het bed, en daar zit "
-                    "nu de sensor onder.")
+                    f"{where} Z wordt niet gehomed: dat doet de printer met de nozzle op het bed, en daar "
+                    "zit nu de sensor onder.")
             elif self.state == GOTO:
                 self.text_label.setText("Klik op de knop: het bed zakt eerst naar een veilige hoogte, "
-                                        "daarna rijdt de kop naar de kegel.")
+                                        f"daarna rijdt de kop naar de kegel. {where}")
             else:
                 self.text_label.setText(f"Kop rijdt naar kegel {n}: eerst Z{z:.1f} (bed omlaag), "
                                         + ("dan X/Y homen, " if self.homes() else "")
                                         + f"dan X{x:.1f} Y{y:.1f} ...")
         elif self.state in (JOG, SENDING):
             self.step_label.setText(f"Kegel {n} van {total}: fijn afstellen")
-            self.text_label.setText("Zet het midden van de sensor precies boven de top van de kegel. "
-                                    "Begin met 1 mm, eindig met 0,1 of 0,05 mm. Breng het bed rustig "
+            down = ("De sensor hangt 1 cm boven de vorige plek: breng het bed ongeveer 10 mm omhoog "
+                    "(2x 5 mm met <b>Bed omhoog</b>, het laatste stuk met kleinere stappen). "
+                    if self.saved(p) else "")
+            self.text_label.setText(down + "Zet het midden van de sensor precies boven de top van de kegel. "
+                                    "Begin grof, eindig met 0,1 of 0,05 mm. Breng het bed rustig "
                                     "omhoog tot vlak onder de sensor. Klik daarna op <b>Positie van kegel "
                                     f"{n} insturen</b>.")
         elif self.state == DONE:
@@ -221,8 +245,8 @@ class CalibrationWizard(QDialog):
         if self.state != GOTO or not self.ensure_calibrator():
             return
         p = self.point()
-        x, y, z = self.predicted_head(p)
-        if not self.main.server.goto(x, y, z, p, home_xy=self.homes()):
+        x, y, z, z_final, _ = self.target(p)
+        if not self.main.server.goto(x, y, z, p, home_xy=self.homes(), z_final=z_final):
             self.link_label.setText("De calibrator is nog niet verbonden. Wacht even en probeer opnieuw.")
             return
         self.link_label.setText("")
@@ -278,6 +302,7 @@ class CalibrationWizard(QDialog):
             if self.state == SENDING:
                 self.set_state(JOG)
         elif kind == "position" and msg.get("point") == self.point() and self.state != DONE:
+            self.sent[msg["point"]] = (float(msg["x"]), float(msg["y"]), float(msg.get("z", 0.0)))
             self.link_label.setText(f"Kegel {self.index + 1} ingestuurd: X{msg['x']:.2f} Y{msg['y']:.2f}.")
             self.index += 1
             if self.index >= len(calibration.POINTS):
@@ -304,7 +329,7 @@ class CalibrationWizard(QDialog):
                         + " ".join(i.msg for i in issues) + f"</span><br>{details}<br>"
                         "Klik <b>Opnieuw beginnen</b>.")
             else:
-                saved = self.save_measured_offset()
+                saved = self.save_calibration()
                 text = (f"<span style='color:{OK_COLOR}; font-size: 16px;'><b>Kalibratie geslaagd! De printer "
                         "weet nu waar de sensorkop t.o.v. de objecten is.</b></span><br><br>"
                         f"Positie bekend. {details}" + (f"<br>{saved}" if saved else ""))
@@ -322,18 +347,33 @@ class CalibrationWizard(QDialog):
             return None
         return sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
 
-    def save_measured_offset(self):
-        """Keep the measured X/Y offset, so the next calibration starts right above the cones."""
-        off = self.measured_offset()
-        if off is None:
+    def measured_offset_z(self):
+        """Sensor-nozzle Z offset: the sensor was jogged onto each cone tip (bed Z of the tip)."""
+        fids = self.fiducials()
+        zs = [fids[p]["z"] - self.sent[p][2] for p in calibration.POINTS if p in self.sent and p in fids]
+        return sum(zs) / len(zs) if len(zs) == len(calibration.POINTS) else None
+
+    def save_calibration(self):
+        """Keep the head positions on the cones (the next calibration drives straight there) and
+        the sensor offset measured from them, as the new standard in machine_settings.toml."""
+        if any(p not in self.sent for p in calibration.POINTS):
             return ""
+        off, off_z = self.measured_offset(), self.measured_offset_z()
         try:
-            self.settings = machine_settings.save_values("sensor", {"offset_x": round(off[0], 2),
-                                                                    "offset_y": round(off[1], 2)})
+            self.settings = machine_settings.save_values(
+                "calibration", {f"cone_{p}": [round(v, 3) for v in self.sent[p]] for p in calibration.POINTS})
+            if off is not None and off_z is not None:
+                self.settings = machine_settings.save_values(
+                    "sensor", {"offset_x": round(off[0], 2), "offset_y": round(off[1], 2),
+                               "offset_z": round(off_z, 2), "measured": True})
         except machine_settings.SettingsError as e:
-            return f"Gemeten sensorafstand niet opgeslagen: {e}"
-        return (f"Gemeten sensorafstand (X {off[0]:+.2f} mm, Y {off[1]:+.2f} mm) opgeslagen in "
-                "machine_settings.toml.")
+            return f"Niet opgeslagen: {e}"
+        text = ("Posities van de kegels opgeslagen in machine_settings.toml: de volgende kalibratie rijdt "
+                "er direct heen, 1 cm erboven.")
+        if off is not None and off_z is not None:
+            text += (f" Gemeten sensorafstand: X {off[0]:+.2f}, Y {off[1]:+.2f}, Z {off_z:+.2f} mm "
+                     "(ook opgeslagen).")
+        return text
 
     def restart(self):
         cal = self.main.left.cal_points()
@@ -342,6 +382,7 @@ class CalibrationWizard(QDialog):
         self.main.left.set_cal_points(cal)
         self.index = 0
         self.success = False
+        self.sent = {}
         self.link_label.setText("")
         self.set_state(GOTO if self.manifest() is not None else NO_PLATE)
 

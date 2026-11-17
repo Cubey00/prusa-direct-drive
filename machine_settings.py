@@ -121,6 +121,13 @@ class Calibration:
     min_distance: float
     scale_tol: float
     residual_tol: float
+    cone_F1: tuple                # (x, y, z) head position on that cone, or () if not known
+    cone_F2: tuple
+    cone_F3: tuple
+
+    def cone_position(self, name):
+        """Saved head position (x, y, z) on fiducial `name` (F1/F2/F3), or None."""
+        return getattr(self, f"cone_{name}", ()) or None
 
 
 @dataclass(frozen=True)
@@ -167,6 +174,11 @@ def _get(data, section, key, kind, where):
                 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for p in value for v in p)):
             raise SettingsError(f"{where}: [{section}] {key} must be a list of [x, y] pairs, got {value!r}")
         return tuple((float(x), float(y)) for x, y in value)
+    if kind == "xyz_or_empty":
+        if (not isinstance(value, list) or len(value) not in (0, 3)
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in value)):
+            raise SettingsError(f"{where}: [{section}] {key} must be [] or [x, y, z], got {value!r}")
+        return tuple(float(v) for v in value)
     if kind == "pair":
         if (not isinstance(value, list) or len(value) != 2
                 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in value)):
@@ -201,6 +213,10 @@ def _check(s, where):
         if not (tx0 <= px <= tx1 and ty0 <= py <= ty1):
             fail(f"[printing] bed probe point ({px:g}, {py:g}) is outside what the nozzle can reach "
                  f"(X {tx0:g}..{tx1:g}, Y {ty0:g}..{ty1:g})")
+    for name in ("F1", "F2", "F3"):
+        pos = s.calibration.cone_position(name)
+        if pos and not (tx0 <= pos[0] <= tx1 and ty0 <= pos[1] <= ty1 and 0 <= pos[2] <= s.printer.z_max):
+            fail(f"[calibration] cone_{name} {list(pos)} is outside the printer's travel")
     se = s.sensor
     reach = {"nozzle": (s.printer.travel_x, s.printer.travel_y),
              "sensor": ((s.printer.travel_x[0] + se.offset_x, s.printer.travel_x[1] + se.offset_x),
@@ -257,7 +273,8 @@ def parse(data, where="settings"):
         forces=_build(Forces, data, "forces", where, contact_g=float, max_force_g=float,
                       guard_trip_g=float, guard_release_g=float),
         calibration=_build(Calibration, data, "calibration", where, min_distance=float, scale_tol=float,
-                           residual_tol=float),
+                           residual_tol=float, cone_F1="xyz_or_empty", cone_F2="xyz_or_empty",
+                           cone_F3="xyz_or_empty"),
     )
     _check(s, where)
     return s
@@ -279,8 +296,14 @@ def save_values(section, values, path=None):
         m = re.match(r"(\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)([^#\n]*?)(\s*(#.*)?)(\r?\n)?$", line)
         if current == section and m and m.group(2) in todo:
             value = todo.pop(m.group(2))
-            text = ("true" if value else "false") if isinstance(value, bool) else (
-                f'"{value}"' if isinstance(value, str) else repr(float(value)))
+            if isinstance(value, bool):
+                text = "true" if value else "false"
+            elif isinstance(value, str):
+                text = f'"{value}"'
+            elif isinstance(value, (list, tuple)):
+                text = "[" + ", ".join(f"{float(v):.3f}" for v in value) + "]"
+            else:
+                text = repr(float(value))
             lines[i] = f"{m.group(1)}{m.group(2)}{m.group(3)}{text}{m.group(5) or ''}{m.group(7) or ''}"
     if todo:
         raise SettingsError(f"{path.name}: no [{section}] {', '.join(todo)} to change")
