@@ -111,3 +111,15 @@ def test_home_xy_homes_only_x_and_y_and_keeps_them_powered(fake_port):
     assert sent.index("G28 X Y") > next(i for i, c in enumerate(sent) if c.startswith("G1 Z"))
     assert sent[-1] == f"M84 S{gc.XY_HOLD_S}"
     gc.disconnect(wait=0.5)
+
+
+@pytest.mark.parametrize("dz, force, refused", [
+    (-1.0, 60.0, False),     # bed up, below the limit (drift, light contact)
+    (-1.0, 120.0, True),     # bed up while the sensor already presses
+    (-1.0, -120.0, True),    # sign of the load cell doesn't matter
+    (-1.0, None, True),      # no tared force data: can't tell
+    (1.0, 300.0, False),     # bed down is always allowed (moves away)
+    (0.0, 300.0, False),     # X/Y jog
+])
+def test_bed_up_jog_refused_when_the_sensor_touches(dz, force, refused):
+    assert (gc.bed_up_refusal(dz, force, 100.0) is not None) == refused

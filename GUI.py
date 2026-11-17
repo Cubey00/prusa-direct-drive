@@ -14,7 +14,7 @@ from PIL import Image, ImageTk
 #from imaging import single_image, set_photo_folder
 from gantry_controls import (MotionController, force_guard, home, motionstop, _stop, enable_metrics,
                              disconnect, move_absolute, _quickstop as quickstop, _lock as gantry_lock,
-                             home_xy, send_gcode, read_position)
+                             home_xy, send_gcode, read_position, bed_up_refusal)
 from machine_settings import SETTINGS
 from strain_gauge import StrainGauge
 
@@ -328,6 +328,12 @@ class App:
             return
         if max(abs(dx), abs(dy), abs(dz)) > 10 or not 30 <= feed <= 1200:
             self.link.send_status(False, "Jog refused: steps up to 10 mm, speed 0.5-20 mm/s")
+            return
+        force = self.gauge.force_g(16) if self._tared else None
+        refusal = bed_up_refusal(dz, force, SETTINGS.forces.jog_stop_g)
+        if refusal:
+            self.link.send_status(False, refusal)
+            self.root.after(0, lambda: self.progress_label.config(text=refusal))
             return
         # the serial lock taken while no jog is queued: something else waits (e.g. M334 for a
         # confirmation on the printer's screen); queued jogs would only pile up behind it

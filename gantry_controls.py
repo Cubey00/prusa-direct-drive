@@ -231,6 +231,20 @@ def enable_metrics(port=8514, pc_ip=None):
 
 # ---------------- motion ----------------
 
+def bed_up_refusal(dz, force_g, limit_g):
+    """Why a jog must not run, or None. Moving the bed up (dz < 0) is refused once the sensor
+    already feels more than limit_g grams, or while the force is unknown (no tared data):
+    otherwise a jog could press the sensor into the plate."""
+    if dz >= 0:
+        return None
+    if force_g is None:
+        return "Bed up refused: no force data yet (the load cell is not tared); wait a moment."
+    if abs(force_g) > limit_g:
+        return (f"Bed up refused: the sensor already feels {abs(force_g):.0f} g (limit {limit_g:g} g). "
+                "It touches the cone; lower the bed or move X/Y.")
+    return None
+
+
 def read_position():
     m = _POS_RE.search(send_gcode("M114"))
     if not m:

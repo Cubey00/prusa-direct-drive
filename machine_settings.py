@@ -114,6 +114,7 @@ class Forces:
     max_force_g: float
     guard_trip_g: float
     guard_release_g: float
+    jog_stop_g: float
 
 
 @dataclass(frozen=True)
@@ -246,6 +247,8 @@ def _check(s, where):
         fail("[forces] needs 0 < contact_g < max_force_g < guard_trip_g")
     if not 0 < fo.guard_release_g < fo.guard_trip_g:
         fail("[forces] needs 0 < guard_release_g < guard_trip_g")
+    if not fo.contact_g < fo.jog_stop_g < fo.guard_trip_g:
+        fail("[forces] needs contact_g < jog_stop_g < guard_trip_g")
     if s.camera.mm_per_px < 0:
         fail("[camera] mm_per_px cannot be negative")
     if s.camera.measured and s.camera.mm_per_px == 0:
@@ -271,7 +274,7 @@ def parse(data, where="settings"):
                       hover_clearance=float),
         camera=_build(Camera, data, "camera", where, mm_per_px=float, centre_px="pair", measured=bool),
         forces=_build(Forces, data, "forces", where, contact_g=float, max_force_g=float,
-                      guard_trip_g=float, guard_release_g=float),
+                      guard_trip_g=float, guard_release_g=float, jog_stop_g=float),
         calibration=_build(Calibration, data, "calibration", where, min_distance=float, scale_tol=float,
                            residual_tol=float, cone_F1="xyz_or_empty", cone_F2="xyz_or_empty",
                            cone_F3="xyz_or_empty"),

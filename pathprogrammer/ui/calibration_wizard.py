@@ -215,7 +215,8 @@ class CalibrationWizard(QDialog):
         elif self.state in (JOG, SENDING):
             self.step_label.setText(f"Kegel {n} van {total}: fijn afstellen")
             down = ("De sensor hangt 1 cm boven de vorige plek: breng het bed ongeveer 10 mm omhoog "
-                    "(2x 5 mm met <b>Bed omhoog</b>, het laatste stuk met kleinere stappen). "
+                    "(1x 5 mm met <b>Bed omhoog</b>, daarna met 1 mm en kleinere stappen: de plaat kan "
+                    "iets hoger liggen dan de vorige keer). "
                     if self.saved(p) else "")
             self.text_label.setText(down + "Zet het midden van de sensor precies boven de top van de kegel. "
                                     "Begin grof, eindig met 0,1 of 0,05 mm. Breng het bed rustig "
