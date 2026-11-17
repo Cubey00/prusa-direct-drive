@@ -14,7 +14,7 @@ from PIL import Image, ImageTk
 #from imaging import single_image, set_photo_folder
 from gantry_controls import (MotionController, force_guard, home, motionstop, _stop, enable_metrics,
                              disconnect, move_absolute, _quickstop as quickstop, _lock as gantry_lock,
-                             home_xy, send_gcode)
+                             home_xy, send_gcode, read_position)
 from machine_settings import SETTINGS
 from strain_gauge import StrainGauge
 
@@ -22,6 +22,9 @@ script_folder = Path(__file__).resolve().parent
 
 CANVASHEIGHT = 120
 CANVASWIDTH = 400
+
+GUARD_TRIP_G = SETTINGS.forces.guard_trip_g   # force guard: drop the bed above this |force| (g)
+GUARD_WINDOW = 16           # samples (~50 ms) averaged by the guard, and by the force label
 
 
 class State(Enum):
@@ -47,12 +50,24 @@ class App:
         self._probing = False
         self._gauge_running = False
         self._tared = False
+        self._alert_job = None        # pending after() id of the flashing alert
+        self._alert_end = 0.0
         self._calib_points = []       # (reading, grams) pairs
         self.calib_a, self.calib_b = None, None
 
         # --- Load cell display ---
-        self.gauge_label = tk.Label(root, text="Load cell: --", font=("Arial", 16))
-        self.gauge_label.pack()
+        # fixed labels, only the numbers change: right-aligned in fixed-width monospace fields
+        big, num = ("Arial", 16), ("Consolas", 16)
+        readout = tk.Frame(root)
+        tk.Label(readout, text="Load cell:", font=big).pack(side="left")
+        self.force_var = tk.StringVar(value="--")
+        tk.Label(readout, textvariable=self.force_var, font=num, width=6, anchor="e").pack(side="left")
+        tk.Label(readout, text="g      peak:", font=big).pack(side="left")
+        self.peak_var = tk.StringVar(value="--")
+        self.peak_label = tk.Label(readout, textvariable=self.peak_var, font=num, width=6, anchor="e")
+        self.peak_label.pack(side="left")
+        tk.Label(readout, text="g", font=big).pack(side="left")
+        readout.pack()
         self.gauge_canvas = tk.Canvas(root, width=CANVASWIDTH, height=CANVASHEIGHT, bg="black")
         self.gauge_canvas.pack()
 
@@ -159,6 +174,7 @@ class App:
         self.capture_btn.pack(pady=10)
         self.progress_label = tk.Label(root, text="")
         self.progress_label.pack()
+        self._label_bg, self._label_font = self.progress_label.cget("bg"), self.progress_label.cget("font")
 
         # start the strain gauge display when everything is in place
         root.after_idle(self.start_gauge)
@@ -356,7 +372,27 @@ class App:
 
     def _on_guard_trip(self):
         self.motion.halt()      # drop queued nudges
-        self.root.after(0, lambda: self.progress_label.config(text="FORCE LIMIT: bed dropped"))
+        self.root.after(0, lambda: self.alert("FORCE LIMIT: bed dropped"))
+
+    ALERT_S = 10.0          # how long an alert stays
+    ALERT_BLINK_MS = 400
+
+    def alert(self, text):
+        """Flashing message (white on red <-> black on default) in the bottom label, cleared
+        after ALERT_S. A new alert restarts the time."""
+        self._alert_end = time.monotonic() + self.ALERT_S
+        self.progress_label.config(text=text, font=("Arial", 14, "bold"))
+        if self._alert_job is None:
+            self._blink(True)
+
+    def _blink(self, on):
+        lbl = self.progress_label
+        if time.monotonic() >= self._alert_end:
+            lbl.config(text="", bg=self._label_bg, fg="black", font=self._label_font)
+            self._alert_job = None
+            return
+        lbl.config(bg="red" if on else self._label_bg, fg="white" if on else "black")
+        self._alert_job = self.root.after(self.ALERT_BLINK_MS, self._blink, not on)
 
     def _on_motion_error(self, err):
         self.root.after(0, lambda: messagebox.showerror("Printer", str(err)))
@@ -387,8 +423,19 @@ class App:
                 self.root.after(0, failed)
                 return
 
+            # the printer only streams pos_x/y/z while moving: start from M114 (exact when idle)
+            try:
+                pos = read_position()
+            except Exception as e:
+                print(f"Initial position read failed: {e}")
+                pos = None
+
             def started():
                 self.gauge.start()
+                if pos:
+                    for k, v in zip("xyz", pos):
+                        if self.gauge.pos[k] is None:
+                            self.gauge.pos[k] = v
                 self.poll_gauge()
                 self.progress_label.config(text="Printer connected; force data is coming in.")
             self.root.after(0, started)
@@ -413,9 +460,15 @@ class App:
         self.update_position_labels()
         if self.gauge.drain():
             s = self.gauge.grams(self.gauge.view_smoothed(self.get_smoothing()))  # grams, like the label and the line
-            stable = self.gauge.force_g()
-            if stable is not None:
-                self.gauge_label.config(text=f"Load cell: {stable:+.1f} g")
+            # same 16-sample window as the force guard (a 300-sample average hid ~100 ms jabs of
+            # 800 g as ~80-250 g), plus the peak over the buffered history (~3 s)
+            now = self.gauge.force_g(GUARD_WINDOW)
+            if now is not None:
+                hist = self.gauge.grams(self.gauge.view_smoothed(GUARD_WINDOW))
+                peak = max(hist, key=abs) if hist else now
+                self.force_var.set(f"{now:+.0f}")
+                self.peak_var.set(f"{peak:+.0f}")
+                self.peak_label.config(fg="red" if abs(peak) > GUARD_TRIP_G * 0.8 else "black")
             c = self.gauge_canvas
             c.delete("all")
             # tare automatically once enough data points are in
@@ -424,7 +477,8 @@ class App:
                 if self._tared:
                     # over 500 g: stop everything and drop the bed until under 50 g, plus extra_s
                     # (only armed once tared, the raw offset would trip it)
-                    force_guard(self.gauge, trip_g=SETTINGS.forces.guard_trip_g, release_g=SETTINGS.forces.guard_release_g,
+                    force_guard(self.gauge, trip_g=SETTINGS.forces.guard_trip_g,
+                                release_g=SETTINGS.forces.guard_release_g, window=GUARD_WINDOW,
                                 on_trip=self._on_guard_trip)
             if len(s) > 1:
                 lv = self.get_line_value()

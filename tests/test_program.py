@@ -50,3 +50,20 @@ def test_compare_model():
     assert pm.compare_model(p, "model.3mf", "abc", [[1, 0, 0], [0, 1, 0], [0, 0, 1]]) == []
     w = pm.compare_model(p, "other.3mf", "xyz", [[0, -1, 0], [1, 0, 0], [0, 0, 1]])
     assert len(w) == 2
+
+
+def test_image_step_roundtrip_and_old_files():
+    from pathprogrammer import program as pm
+    prog = pm.Program(points=[pm.TouchPoint(1, 2, pm.TouchMode.FORCE, 50, 0.5, 5.0)])
+    d = pm.to_dict(prog)
+    assert pm.from_dict(d).points[0].image_step == 5.0
+    del d["points"][0]["image_step"]
+    assert pm.from_dict(d).points[0].image_step == 0.0
+
+
+def test_image_step_validation():
+    from pathprogrammer import program as pm
+    pt = pm.TouchPoint(1, 2, pm.TouchMode.FORCE, 50, 0.5, 60.0)
+    assert any("image step" in i.msg for i in pm.validate(pm.Program(points=[pt]), (10, 10)))
+    pt.image_step = 0.1
+    assert any("images exceeds" in i.msg for i in pm.validate(pm.Program(points=[pt]), (10, 10)))

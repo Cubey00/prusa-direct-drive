@@ -11,7 +11,8 @@ class Hardware(Protocol):
     def open(self): ...
     def position(self): ...                          # (x, y, z)
     def move_xy(self, x, y, speed): ...              # mm, mm/s; blocks until done
-    def touch(self, point, settings): ...            # -> touch.TouchResult
+    def touch(self, point, settings, capture=None): ...   # -> touch.TouchResult
+    def snap(self): ...                              # one camera frame (numpy array)
     def stop(self): ...                              # thread-safe, from the UI thread
     def close(self): ...
 
@@ -19,8 +20,10 @@ class Hardware(Protocol):
 class PrinterHardware:
     """Owns the serial port and the UDP metrics port for the length of a run."""
 
-    def __init__(self, on_status=print):
+    def __init__(self, on_status=print, use_camera=False):
         self.on_status = on_status
+        self.use_camera = use_camera
+        self.camera = None
         self.gauge = None
         self._guard_stop = None
         self._last_contact_z = None      # the next point's contact is expected near here
@@ -32,6 +35,10 @@ class PrinterHardware:
         from strain_gauge import StrainGauge
         self._last_contact_z = None
         self._cancel.clear()
+        if self.use_camera:          # first, so a missing camera fails before the printer is touched
+            from ids_camera import IDS_Camera
+            self.camera = IDS_Camera()
+            self.camera.set_exposure(config.CAMERA_EXPOSURE_US)
         gc.connect()
         self.safe_z = gc.read_position()[2]
         gc.enable_metrics()
@@ -53,13 +60,21 @@ class PrinterHardware:
         import gantry_controls as gc
         gc.move_absolute(x, y, None, XYfeed=speed * 60)
 
-    def touch(self, point, settings):
+    def snap(self):
+        """A frame exposed entirely while the bed stands still: stale frames are dropped and so is the
+        next one (its exposure may have started during the stop)."""
+        self.camera.flush()
+        self.camera.snap()
+        return self.camera.snap()
+
+    def touch(self, point, settings, capture=None):
         from touch import touch
         res = touch(self.gauge, point.mode.value, point.value, point.speed,
                     approach_speed=settings.approach_speed, contact_g=settings.contact_g,
                     max_force_g=config.MAX_FORCE_G, max_travel=settings.max_travel,
                     hold=config.HOLD_S, expect_z=self._last_contact_z,
-                    search_speed=config.SEARCH_SPEED, cancel=self._cancel, on_status=self.on_status)
+                    search_speed=config.SEARCH_SPEED, cancel=self._cancel, on_status=self.on_status,
+                    image_step=point.image_step, capture=capture)
         if res.contact_z is not None:
             self._last_contact_z = res.contact_z
         return res
@@ -88,6 +103,11 @@ class PrinterHardware:
             self._retreat(gc)
         if self.gauge:
             self.gauge.stop()
+        if self.camera:
+            try:
+                self.camera.close()
+            except Exception as e:
+                self.on_status(f"Camera close failed: {e}")
         gc.disconnect()
 
     def _retreat(self, gc):
@@ -132,7 +152,12 @@ class SimHardware:
         self._sleep(math.hypot(x - self.pos[0], y - self.pos[1]) / speed)
         self.pos[0], self.pos[1] = x, y
 
-    def touch(self, point, settings):
+    def snap(self):
+        import numpy as np
+        self.calls.append(("snap",))
+        return np.zeros((8, 8, 3), dtype=np.uint8)
+
+    def touch(self, point, settings, capture=None):
         from touch import TouchResult
         self.calls.append(("touch", point.mode.value, point.value, point.speed))
         self._touches += 1
@@ -147,6 +172,14 @@ class SimHardware:
             res.status = "ok"
             res.end_z = res.contact_z - (point.value if point.mode.value == "depth" else 0.3)
             res.peak_g = res.final_g = point.value if point.mode.value == "force" else 80.0
+            if capture is not None and point.image_step > 0:
+                for k in range(1, point.n_images() + 1):
+                    target = k * point.image_step
+                    capture(k, target)
+                    f = target if point.mode.value == "force" else 80.0 * k / point.n_images()
+                    res.images.append({"increment": k, "target": target, "force_before_g": f,
+                                       "force_after_g": f, "force_g": f, "z": res.contact_z - 0.01 * k,
+                                       "t": 0.0})
         return res
 
     def stop(self):

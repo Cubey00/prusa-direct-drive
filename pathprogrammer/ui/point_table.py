@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QComboBox, Q
 from .. import config
 from ..program import TouchMode, TouchPoint
 from .left_panel import SelectAllSpinBox
-from .point_model import COL_SPEED, COL_TYPE, COL_VALUE, COL_X, COL_Y
+from .point_model import COL_IMG, COL_SPEED, COL_TYPE, COL_VALUE, COL_X, COL_Y
 
 EDIT_TRIGGERS = (QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
                  | QAbstractItemView.SelectedClicked)
@@ -40,6 +40,10 @@ class PointDelegate(QStyledItemDelegate):
         elif c == COL_SPEED:
             spin.setRange(*config.TOUCH_SPEED_RANGE)
             spin.setSuffix(" mm/s")
+        elif c == COL_IMG:
+            spin.setRange(0.0, p.value)
+            spin.setSuffix(f" {p.mode.unit}")
+            spin.setSpecialValueText("off")
         return spin
 
     def setEditorData(self, editor, index):
@@ -116,11 +120,17 @@ class PointTable(QWidget):
         self.tpl_speed.setRange(*config.TOUCH_SPEED_RANGE)
         self.tpl_speed.setSuffix(" mm/s")
         self.tpl_speed.setValue(config.TOUCH_SPEED)
+        self.tpl_image = SelectAllSpinBox()
+        self.tpl_image.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.tpl_image.setDecimals(2)
+        self.tpl_image.setSpecialValueText("no images")
+        self._tpl_images = dict((TouchMode(k), v) for k, v in config.IMAGE_STEP_DEFAULT.items())
+        self.tpl_image.valueChanged.connect(lambda v: self._tpl_images.__setitem__(self._tpl_mode(), v))
         self._tpl_values = {TouchMode.FORCE: 50.0, TouchMode.DEPTH: 2.0}   # remembered per type
         self.tpl_type.currentIndexChanged.connect(self._tpl_type_changed)
         self.tpl_value.valueChanged.connect(lambda v: self._tpl_values.__setitem__(self._tpl_mode(), v))
         self._tpl_type_changed()
-        for w in (self.tpl_type, self.tpl_value, self.tpl_speed):
+        for w in (self.tpl_type, self.tpl_value, self.tpl_speed, QLabel("image every"), self.tpl_image):
             tpl.addWidget(w)
         lay.addLayout(tpl)
 
@@ -162,10 +172,16 @@ class PointTable(QWidget):
         self.tpl_value.setSuffix(f" {mode.unit}")
         self.tpl_value.setValue(value)
         self.tpl_value.blockSignals(False)
+        self.tpl_image.blockSignals(True)
+        self.tpl_image.setRange(0.0, mode.value_range[1])
+        self.tpl_image.setSuffix(f" {mode.unit}")
+        self.tpl_image.setValue(self._tpl_images[mode])
+        self.tpl_image.blockSignals(False)
 
     def template(self):
         """TouchPoint carrying the type/value/speed for new points (x, y unused)."""
-        return TouchPoint(0, 0, self._tpl_mode(), self.tpl_value.value(), self.tpl_speed.value())
+        return TouchPoint(0, 0, self._tpl_mode(), self.tpl_value.value(), self.tpl_speed.value(),
+                          self.tpl_image.value())
 
     def selection_model(self):
         return self.view.selectionModel()

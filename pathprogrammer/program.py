@@ -34,6 +34,10 @@ class TouchPoint:
     mode: TouchMode = TouchMode.FORCE
     value: float = 100.0
     speed: float = config.TOUCH_SPEED      # mm/s after contact
+    image_step: float = 0.0                # take an image every this much (g or mm, like value); 0 = none
+
+    def n_images(self):
+        return 0 if self.image_step <= 0 else int(self.value / self.image_step + 1e-9)
 
     def describe(self):
         return f"{self.mode.label} = {self.value:g}{self.mode.unit}"
@@ -79,6 +83,10 @@ def validate(program, face_size, transform=None):
         if not _in(p.value, p.mode.value_range):
             lo, hi = p.mode.value_range
             issues.append(Issue("error", f"Point {i}: {p.describe()} outside {lo:g}-{hi:g} {p.mode.unit}."))
+        if p.image_step < 0 or p.image_step > p.value:
+            issues.append(Issue("error", f"Point {i}: image step {p.image_step:g} {p.mode.unit} outside 0-{p.value:g}."))
+        elif p.n_images() > config.MAX_IMAGES_PER_POINT:
+            issues.append(Issue("error", f"Point {i}: {p.n_images()} images exceeds {config.MAX_IMAGES_PER_POINT}."))
         if not _in(p.speed, config.TOUCH_SPEED_RANGE):
             issues.append(Issue("error", f"Point {i}: speed {p.speed:g} mm/s outside {config.TOUCH_SPEED_RANGE}."))
         if transform is not None:
@@ -108,7 +116,8 @@ def to_dict(program):
             **program.calibration.to_dict(),
             "transform": program.transform.to_dict() if program.transform else None},
         "settings": asdict(program.settings),
-        "points": [{"x": p.x, "y": p.y, "mode": p.mode.value, "value": p.value, "speed": p.speed}
+        "points": [{"x": p.x, "y": p.y, "mode": p.mode.value, "value": p.value, "speed": p.speed,
+                    "image_step": p.image_step}
                    for p in program.points],
     }
 
@@ -118,7 +127,8 @@ def from_dict(d):
         raise ValueError(f"Unsupported schema version {d.get('schema_version')}")
     m = d["model"]
     prog = Program(
-        points=[TouchPoint(p["x"], p["y"], TouchMode(p["mode"]), p["value"], p["speed"]) for p in d["points"]],
+        points=[TouchPoint(p["x"], p["y"], TouchMode(p["mode"]), p["value"], p["speed"],
+                            p.get("image_step", 0.0)) for p in d["points"]],
         settings=RunSettings(**d["settings"]),
         model=ModelRef(m["filename"], m["sha256"], m["orientation"], tuple(m["face_size_mm"])),
     )
