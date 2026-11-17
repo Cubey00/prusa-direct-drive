@@ -1,9 +1,11 @@
-"""Left panel: model file, outer dimensions, calibration points and the visual calibrator link."""
+"""Model files and outer dimensions (this widget), plus the calibration box (`cal_box`), which the
+main window places on its own: calibration points and the visual calibrator link."""
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QDoubleSpinBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
                                QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 from ..calibration import LABELS, POINTS, CalPoints
+from .style import ACCENT, ACCENT_DARK, action_button
 
 
 class SelectAllSpinBox(QDoubleSpinBox):
@@ -31,9 +33,10 @@ class LeftPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 0, 4, 4)
 
         # --- file ---
-        file_box = QGroupBox("Files")
+        self.file_box = file_box = QGroupBox("Files")
         fl = QGridLayout(file_box)
         self.open_btn = QPushButton("Open model...")
         self.save_folder_btn = QPushButton("Programs folder...")
@@ -62,7 +65,7 @@ class LeftPanel(QWidget):
         lay.addWidget(file_box)
 
         # --- dimensions ---
-        dim_box = QGroupBox("Landscape dimensions")
+        self.dim_box = dim_box = QGroupBox("Landscape dimensions")
         dl = QGridLayout(dim_box)
         dl.addWidget(QLabel("Outer dimensions"), 0, 0)
         self.dim_x, self.dim_y = _spin(0.01), _spin(0.01)
@@ -82,15 +85,15 @@ class LeftPanel(QWidget):
         lay.addWidget(dim_box)
 
         # --- calibration ---
-        cal_box = QGroupBox("Calibration")
+        self.cal_box = cal_box = QGroupBox("Kalibratie")
         cv = QVBoxLayout(cal_box)
         self.calib_btn = QPushButton("Start kalibratie")
         self.calib_btn.setToolTip("Stap voor stap de sensor op kegel 1, 2 en 3 zetten; start ook de calibrator")
-        self.calib_btn.setStyleSheet("font-size: 15px; padding: 8px;")
+        action_button(self.calib_btn, ACCENT, ACCENT_DARK)
         cv.addWidget(self.calib_btn)
         self.link_label = QLabel("Calibrator not running")
         self.link_label.setWordWrap(True)
-        self.link_label.setStyleSheet("color: gray;")
+        self.link_label.setStyleSheet("color: gray; font-weight: normal;")
         cv.addWidget(self.link_label)
         self.diag_label = QLabel("")
         self.diag_label.setWordWrap(True)
@@ -108,7 +111,6 @@ class LeftPanel(QWidget):
             self.machine_fields[p] = self._xy_row(cl, r)
         self.points_box.setVisible(False)
         cv.addWidget(self.points_box)
-        lay.addWidget(cal_box)
 
         lay.addStretch()
 
@@ -178,5 +180,5 @@ class LeftPanel(QWidget):
 
     def set_diagnostics(self, text, level):
         color = {"ok": "#1b7a1b", "warning": "#b36b00", "error": "#c00000"}.get(level, "gray")
-        self.diag_label.setStyleSheet(f"color: {color};")
+        self.diag_label.setStyleSheet(f"color: {color}; font-weight: normal;")
         self.diag_label.setText(text)

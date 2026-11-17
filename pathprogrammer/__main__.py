@@ -4,6 +4,7 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
 from .ui.main_window import MainWindow
+from .ui.style import APP_STYLESHEET
 
 
 def light_palette():
@@ -26,9 +27,7 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")             # follows the palette, unlike the native style in Windows dark mode
     app.setPalette(light_palette())
-    app.setStyleSheet("QCheckBox::indicator { width: 13px; height: 13px; border: 1px solid #7a7a7a;"
-                      " border-radius: 2px; background: white; }"
-                      "QCheckBox::indicator:checked { background: #2d7be5; border-color: #1f5fb8; }")
+    app.setStyleSheet(APP_STYLESHEET)
     win = MainWindow()
     if len(sys.argv) > 1 and sys.argv[1].lower().endswith(".3mf"):
         win.open_model(sys.argv[1])

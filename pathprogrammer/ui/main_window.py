@@ -1,4 +1,5 @@
-"""Main window: print plates + left panel | face view + rotate controls | point list + run controls."""
+"""Main window: print plates, printer and calibration | Foto control + model preview + model control
+(folded) | points (folded), force graph and run controls."""
 import re
 from datetime import datetime
 from pathlib import Path
@@ -6,6 +7,9 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (QFileDialog, QGridLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
                                QScrollArea, QSplitter, QVBoxLayout, QWidget)
+
+from .collapsible import CollapsibleBox
+from .photo_panel import PhotoPanel
 
 from .. import calibration, config, program as prog_mod
 from ..executor import ExecutorWorker
@@ -42,6 +46,7 @@ class MainWindow(QMainWindow):
         self._render_cache = {}
         self.thread = self.worker = None
         self.wizard = None                # 'Start kalibratie' window, made on first use
+        self.model_path = None            # file the current model was opened from
 
         self.points = PointTableModel(self.program.points)
         self.left = LeftPanel()
@@ -52,14 +57,28 @@ class MainWindow(QMainWindow):
         self.run = RunControls()
         self.run_settings = RunSettingsBox()
         self.graph = ForceGraph()
+        self.photo = PhotoPanel(self.settings)
         self._running_row = None
         self.view.set_selection_model(self.table.selection_model())
         self.run_settings.set_settings(self.program.settings)
 
-        # centre: view + model controls
+        # centre: Foto control, a small model preview and the (folded) model controls
         centre = QWidget()
         cl = QVBoxLayout(centre)
-        cl.addWidget(self.view, 1)
+        cl.setContentsMargins(4, 4, 4, 4)
+        cl.addWidget(self.photo, 3)
+        view_box = QWidget()
+        vl = QVBoxLayout(view_box)
+        vl.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("Model")
+        title.setStyleSheet("font-weight: 600; color: #334155;")
+        vl.addWidget(title)
+        vl.addWidget(self.view, 1)
+        self.view.setMinimumHeight(160)
+        cl.addWidget(view_box, 2)
+        model_ctl = QWidget()
+        mcl = QVBoxLayout(model_ctl)
+        mcl.setContentsMargins(6, 0, 6, 6)
         ctl = QGridLayout()
         self.rot_btns = {}
         for key, text, r, c in (("up", "^", 0, 2), ("left", "<", 1, 1), ("spin", "rotate", 1, 2),
@@ -69,9 +88,6 @@ class MainWindow(QMainWindow):
             ctl.addWidget(b, r, c)
             self.rot_btns[key] = b
             b.clicked.connect(lambda _=False, k=key: self.rotate(k))
-        lbl = QLabel("model controls")
-        lbl.setStyleSheet("font-size: 16px;")
-        ctl.addWidget(lbl, 1, 0)
         fit = QPushButton("Fit view")
         fit.clicked.connect(self.view.fit)
         ctl.addWidget(fit, 2, 0)
@@ -79,28 +95,44 @@ class MainWindow(QMainWindow):
         ctl.addWidget(self.run_settings, 0, 5, 3, 1)
         hint = QLabel("Click the face to add a point, drag to move it. Wheel zooms, middle-drag pans.")
         hint.setStyleSheet("color: gray;")
-        cl.addLayout(ctl)
-        cl.addWidget(hint)
+        mcl.addLayout(ctl)
+        mcl.addWidget(hint)
+        mcl.addWidget(self.left)
+        self.model_box = CollapsibleBox("Model control", model_ctl, expanded=False,
+                                        settings=self.settings, key="ui/model_control_open")
+        cl.addWidget(self.model_box)
 
+        # right: points (folded), force graph, run controls
         right = QWidget()
         rl = QVBoxLayout(right)
-        rl.addWidget(self.table, 1)
-        rl.addWidget(self.graph)
-        rl.addWidget(self.run)
+        rl.setContentsMargins(4, 4, 4, 4)
+        self.table.title_label.hide()
+        self.points_box = CollapsibleBox("Points in ascending order", self.table, expanded=False,
+                                         settings=self.settings, key="ui/points_open")
+        rl.addWidget(self.points_box)
+        rl.addWidget(self.graph, 1)
+        run_box = QWidget()
+        run_box.setObjectName("runBox")
+        run_box.setStyleSheet("QWidget#runBox { background: #ffffff; border: 1px solid #dde2ea; "
+                              "border-radius: 8px; }")
+        QVBoxLayout(run_box).addWidget(self.run)
+        rl.addWidget(run_box)
 
+        # left: print plates, printer, calibration
         left_col = QWidget()
         lcl = QVBoxLayout(left_col)
-        lcl.setContentsMargins(0, 0, 0, 0)
+        lcl.setContentsMargins(4, 4, 4, 4)
         lcl.addWidget(self.plates)
         lcl.addWidget(self.printer)
-        lcl.addWidget(self.left)
+        lcl.addWidget(self.left.cal_box)
+        lcl.addStretch()
         left_scroll = QScrollArea()
         left_scroll.setWidget(left_col)
         left_scroll.setWidgetResizable(True)
         split = QSplitter(Qt.Horizontal)
         for w in (left_scroll, centre, right):
             split.addWidget(w)
-        split.setSizes([470, 700, 470])
+        split.setSizes([430, 760, 430])
         self.setCentralWidget(split)
 
         # wiring
@@ -121,7 +153,7 @@ class MainWindow(QMainWindow):
         self.run.load_btn.clicked.connect(self.load_program_dialog)
         self.run.save_btn.clicked.connect(self.save_program_dialog)
         self.calibratorMessage.connect(self.on_calibrator_message)
-        self.plates.openPlateRequested.connect(self.open_model)
+        self.plates.openPlateRequested.connect(self.open_plate)
         self.plates.plate_list.currentRowChanged.connect(lambda _: self.printer.refresh())
         self.run_settings.changed.connect(self.update_graph_lines)
         self.table.selection_model().selectionChanged.connect(self.update_graph_lines)
@@ -133,6 +165,7 @@ class MainWindow(QMainWindow):
         self.left.runs_folder_label.setText(f"Runs folder: {self.runs_folder()}")
         self.refit()
         self.update_graph_lines()
+        self.plates.restore_last()        # the last plates again, the selected one opened as the model
         geo = self.settings.value("geometry")
         if geo is not None:
             self.restoreGeometry(geo)
@@ -186,6 +219,12 @@ class MainWindow(QMainWindow):
             self.settings.setValue("model_folder", str(Path(path).parent))
             self.open_model(path)
 
+    def open_plate(self, path):
+        """A plate selected in the Print plates box: open it, unless it already is."""
+        if self.model is not None and self.model_path == Path(path):
+            return True
+        return self.open_model(path)
+
     def open_model(self, path, orientation=None):
         try:
             self.model = load_model(path)
@@ -193,6 +232,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open model", f"Could not load {path}:\n{e}")
             return False
         self._render_cache.clear()
+        self.model_path = Path(path)
         self.orientation = orientation or Orientation()
         self.left.file_label.setText(self.model.filename)
         self.left.units_label.setText(self.model.units_note)
@@ -409,7 +449,10 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Execute program", msg) != QMessageBox.Yes:
             return
 
-        hw = SimHardware(on_status=print) if simulate else PrinterHardware(on_status=print, use_camera=n_images > 0)
+        use_camera = not simulate and n_images > 0
+        if use_camera:
+            self.photo.release()              # one owner at a time: the run opens the camera itself
+        hw = SimHardware(on_status=print) if simulate else PrinterHardware(on_status=print, use_camera=use_camera)
         self.points.clear_states()
         self.run.progress.setRange(0, len(prog.points))
         self.run.progress.setValue(0)
@@ -457,6 +500,7 @@ class MainWindow(QMainWindow):
         self.thread.wait()
         self.thread = self.worker = None
         self.graph.set_source(None)
+        self.photo.resume()
         self._running_row = None
         self.update_graph_lines()
         self.set_running(False)
@@ -476,6 +520,7 @@ class MainWindow(QMainWindow):
         self.table.set_editable(not on)
         self.view.set_editable(not on)
         self.left.setEnabled(not on)
+        self.left.cal_box.setEnabled(not on)
         self.run_settings.setEnabled(not on)
         for b in self.rot_btns.values():
             b.setEnabled(not on)
@@ -495,6 +540,7 @@ class MainWindow(QMainWindow):
                 return
             self.plates.shutdown()
         self.printer.shutdown()
+        self.photo.shutdown()
         self.settings.setValue("geometry", self.saveGeometry())
         self.server.close()
         super().closeEvent(e)

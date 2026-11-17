@@ -98,7 +98,7 @@ class PointTable(QWidget):
         self.model = model
         lay = QVBoxLayout(self)
         top = QHBoxLayout()
-        title = QLabel("Points in ascending order")
+        self.title_label = title = QLabel("Points in ascending order")
         title.setStyleSheet("font-weight: bold; font-size: 14px;")
         top.addWidget(title)
         top.addStretch()

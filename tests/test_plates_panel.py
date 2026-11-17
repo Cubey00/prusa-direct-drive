@@ -148,3 +148,21 @@ def test_filament_choice_is_remembered_and_passed_to_the_import(panel, qtbot, mo
     panel.import_mini_testset()
     qtbot.waitUntil(lambda: panel.result is not None, timeout=30000)
     assert seen["filament"] == "Test PETG @COREONE HF0.4"
+
+
+def test_last_plates_come_back_and_open_by_themselves(qtbot, tmp_path):
+    """No 'Open plate in programmer' any more: selecting a plate opens it, also after a restart."""
+    from pathprogrammer.ui.main_window import MainWindow
+    from slicing.testset import write_mini_testset
+    write_mini_testset(tmp_path / "set")
+    pipeline.run(tmp_path / "set", tmp_path / "out", do_slice=False, on_status=lambda m: None)
+    assert pipeline.load_result(tmp_path / "out")["manifests"][0]["model"] == "plate_01.3mf"
+    assert pipeline.load_result(tmp_path / "nothing") is None
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat)
+    settings.setValue("plates/last_out", str(tmp_path / "out"))
+    w = MainWindow(settings)
+    qtbot.addWidget(w)
+    assert w.plates.plate_list.count() == 1 and "last import" in w.plates.status.text()
+    assert w.model is not None and w.model_path == tmp_path / "out" / "plate_01.3mf"
+    assert all(w.left.cal_points().face[p] is not None for p in ("F1", "F2", "F3"))
+    w.server.close()
