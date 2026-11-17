@@ -80,7 +80,8 @@ class PhotoPanel(QGroupBox):
         self.exposure.setRange(*EXPOSURE_MS_RANGE)
         self.exposure.setDecimals(2)
         self.exposure.setSuffix(" ms")
-        self.exposure.setToolTip("Belichtingstijd van de camera (live beeld en foto's)")
+        self.exposure.setToolTip("Sluitertijd van de camera: hoe lang de sensor per beeld licht opvangt. "
+                                 "Langer = lichter beeld. De LED-verlichting staat hier los van.")
         self.exposure.setValue(self.settings.value("camera/exposure_ms", config.CAMERA_EXPOSURE_US / 1000,
                                                    type=float))
         self.gain = QDoubleSpinBox()
@@ -97,7 +98,7 @@ class PhotoPanel(QGroupBox):
         lay.addWidget(self.view, 1)
         lay.addWidget(self.state_label)
         srow = QHBoxLayout()
-        for text, w in (("Belichting", self.exposure), ("Gain", self.gain)):
+        for text, w in (("Sluitertijd", self.exposure), ("Gain", self.gain)):
             lbl = QLabel(text)
             lbl.setStyleSheet("font-weight: normal;")
             srow.addWidget(lbl)

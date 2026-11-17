@@ -10,3 +10,6 @@ matplotlib
 pytest
 pytest-qt
 requests
+tifffile
+ids_peak; sys_platform != "darwin"
+ids_peak_ipl; sys_platform != "darwin"

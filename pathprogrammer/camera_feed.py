@@ -125,7 +125,7 @@ class CameraFeed:
         return True
 
     def set_settings(self, exposure_us=None, gain=None):
-        """Belichting (us) and gain; applied in the feed thread, also to a camera plugged in later."""
+        """Exposure time (us, "sluitertijd") and gain; applied in the feed thread, also to a camera plugged in later."""
         with self._lock:
             if exposure_us is not None:
                 self._settings["exposure_us"] = float(exposure_us)
@@ -142,7 +142,7 @@ class CameraFeed:
                 try:
                     getattr(cam, setter)(settings[key])
                 except Exception as e:
-                    problems.append(f"{'belichting' if key == 'exposure_us' else 'gain'}: {e}")
+                    problems.append(f"{'sluitertijd' if key == 'exposure_us' else 'gain'}: {e}")
         if problems:
             self._set_state(True, "Camera verbonden; niet ingesteld: " + "; ".join(problems))
 
