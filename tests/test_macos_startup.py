@@ -82,7 +82,16 @@ def test_existing_manual_window(tmp_path):
              patch.object(GUI.StrainGauge, 'start') as gauge_start:
             root = tk.Tk()
             window = GUI.App(root)
-            root.update()
+            # Force-stream startup is asynchronous. Tk callbacks posted by that
+            # worker need a real main loop, not a single root.update() iteration.
+            def startup_finished():
+                if gauge_start.called:
+                    root.quit()
+                else:
+                    root.after(10, startup_finished)
+            root.after(0, startup_finished)
+            root.after(5000, root.quit)
+            root.mainloop()
             assert root.winfo_exists()
             metrics.assert_called_once_with()
             gauge_start.assert_called_once_with()
