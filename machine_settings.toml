@@ -34,6 +34,14 @@ user = "maker"
 # own profile bundle, on top of slicing/profiles/coreone.ini. "" = the filament in that profile.
 # The Print plates box can pick another one per laptop.
 filament = "Generic PETG @COREONE HF0.4"
+# Bed levelling before each print. Prusa's own start G-code probes the whole first layer plus
+# about 30 mm around it (42 points on our plates). We don't print that precisely: the printer
+# probes only these spots (bed X/Y in mm; each snaps to the nearest point of the printer's probe
+# grid) and fills in the rest of the mesh itself. [] = Prusa's full probing.
+bed_probe_points = [[10, 66], [190, 66], [10, 169], [190, 169], [100, 117]]
+# After the bed reaches its temperature, wait until the whole bed frame has warmed up as well
+# ("Absorbing heat" on the printer's screen). Takes minutes from a cold bed; false skips it.
+wait_for_bed_frame = false
 
 [work_area]
 # Plates and fiducials stay inside this rectangle (bed coordinates). It must be reachable by the

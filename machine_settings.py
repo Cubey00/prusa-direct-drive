@@ -44,6 +44,8 @@ class PrusaLinkSettings:
 @dataclass(frozen=True)
 class Printing:
     filament: str
+    bed_probe_points: tuple       # ((x, y), ...) bed mm; () = probe the whole print area
+    wait_for_bed_frame: bool
 
 
 @dataclass(frozen=True)
@@ -194,6 +196,11 @@ def _check(s, where):
         if ux0 - m < px < ux1 + m and uy0 - m < py < uy1 + m:
             fail(f"[work_area] probe point ({px:g}, {py:g}) is within {m:g} mm of the usable area: the "
                  "nozzle probes the bed there on every G28, so keep usable_x / usable_y clear of it")
+    (tx0, tx1), (ty0, ty1) = s.printer.travel
+    for px, py in s.printing.bed_probe_points:
+        if not (tx0 <= px <= tx1 and ty0 <= py <= ty1):
+            fail(f"[printing] bed probe point ({px:g}, {py:g}) is outside what the nozzle can reach "
+                 f"(X {tx0:g}..{tx1:g}, Y {ty0:g}..{ty1:g})")
     se = s.sensor
     reach = {"nozzle": (s.printer.travel_x, s.printer.travel_y),
              "sensor": ((s.printer.travel_x[0] + se.offset_x, s.printer.travel_x[1] + se.offset_x),
@@ -235,7 +242,8 @@ def parse(data, where="settings"):
         printer=_build(Printer, data, "printer", where, model=str, bed_size="pair", z_max=float,
                        travel_x="pair", travel_y="pair"),
         prusalink=_build(PrusaLinkSettings, data, "prusalink", where, host=str, user=str),
-        printing=_build(Printing, data, "printing", where, filament=str),
+        printing=_build(Printing, data, "printing", where, filament=str, bed_probe_points="points",
+                        wait_for_bed_frame=bool),
         work_area=_build(WorkArea, data, "work_area", where, usable_x="pair", usable_y="pair",
                          probe_points="points"),
         raster=_build(Raster, data, "raster", where, margin_x=float, margin_y=float, cell_pitch=float,

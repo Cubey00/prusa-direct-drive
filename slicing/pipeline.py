@@ -3,13 +3,15 @@ Used by `python -m slicing` and by the path programmer's import buttons."""
 import json
 from pathlib import Path
 
+from machine_settings import SETTINGS
 from . import config as cfg
 from .layout import make_grid
 from .plate import build_plates, write_manifest
 from .filaments import Bundle, FilamentError, printer_suffix, write_filament_ini
+from .startgcode import write_start_ini
 from .slicer import SlicerError, check_compatible, find_slicer, read_profile, slice_plate, slicer_version
 
-_OUTPUT_PATTERNS = ("filament.ini", "plate_*.3mf", "plate_*.json", "plate_*.gcode", "plate_*.bgcode",
+_OUTPUT_PATTERNS = ("filament.ini", "start_gcode.ini", "plate_*.3mf", "plate_*.json", "plate_*.gcode", "plate_*.bgcode",
                     "plate_*_slicer.log", "summary.json")
 
 
@@ -64,6 +66,8 @@ def run(dataset, out_dir, pitch=cfg.CELL_PITCH, profile=cfg.SLICER_PROFILE, do_s
             filament_ini = prepare_filament(filament, profile_values, out_dir)
             used_filament = filament or profile_values.get("filament_settings_id", "").strip('"')
             on_status(f"Filament: {used_filament}")
+            start_ini, notes = write_start_ini(profile_values, out_dir, SETTINGS.printing)
+            on_status("Start of print: " + "; ".join(notes))
         except SlicerError as e:
             slice_error = str(e)
             on_status(f"Not sliced: {e}")
@@ -72,7 +76,7 @@ def run(dataset, out_dir, pitch=cfg.CELL_PITCH, profile=cfg.SLICER_PROFILE, do_s
                 model = out_dir / m["model"]
                 on_status(f"Slicing {model.name} ({len(m['parts'])} parts) ...")
                 try:
-                    gcode, log = slice_plate(model, exe, profile, filament_ini)
+                    gcode, log = slice_plate(model, exe, profile, filament_ini, start_ini)
                 except SlicerError as e:
                     on_status(f"  {e}")
                     failed.append(m["model"])
