@@ -103,7 +103,9 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
         Capture(pixels, frame).validate()
         gray, pitch = analysis_plane(pixels, frame)
         base = dict(image_id=frame["image_id"], repetition=frame["repetition"],
-                    wd_mm=frame["nominal_working_distance_mm"])
+                    wd_mm=frame["nominal_working_distance_mm"],
+                    commanded_wd_mm=(manifest['wd_calibration']['reference_wd_mm']
+                        + frame['printer_z_command_mm'] - manifest['wd_calibration']['reference_z_mm']))
         try:
             registration = register_chart(gray, chart, sensor_pitch=pitch,
                 max_reprojection_rms_px=recipe.quality.max_marker_reprojection_px)
@@ -144,15 +146,13 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
                            scan_direction="reverse" if recipe.reverse_alternate and repetition % 2 else "forward",
                            x_mm=square["center_mm"][0], y_mm=square["center_mm"][1],
                            nominal_fixed_mtf=None, nominal_mtf50_cpp=None)
-                xs = sorted({r["wd_mm"] for r in rows})
-                # Interpolation at the nominal plane only, never use peak sharpness as nominal.
-                if len(xs) >= 2 and xs[0] <= recipe.nominal_wd_mm <= xs[-1]:
-                    for metric, key in (("fixed_mtf", "nominal_fixed_mtf"), ("mtf50_cpp", "nominal_mtf50_cpp")):
-                        finite_rows = [r for r in rows if r.get(metric) is not None]
-                        positions = sorted({r["wd_mm"] for r in finite_rows})
-                        if len(positions) >= 2 and positions[0] <= recipe.nominal_wd_mm <= positions[-1]:
-                            means = [np.mean([r[metric] for r in finite_rows if r["wd_mm"] == x]) for x in positions]
-                            fit[key] = float(np.interp(recipe.nominal_wd_mm, positions, means))
+                # Nominal sharpness must come from that requested command, not
+                # an interpolated value or the midpoint/peak of a focus sweep.
+                nominal_rows = [r for r in rows if abs(r['commanded_wd_mm']-recipe.nominal_wd_mm) < 1e-6]
+                for metric, key in (("fixed_mtf", "nominal_fixed_mtf"), ("mtf50_cpp", "nominal_mtf50_cpp")):
+                    values = [r[metric] for r in nominal_rows if r.get(metric) is not None]
+                    if values:
+                        fit[key] = float(np.mean(values))
                 fits.append(fit)
     for fit in fits:
         peers = [f["best_wd_mm"] for f in fits if f["valid"] and f["region"] == fit["region"]
@@ -169,9 +169,9 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
                            apparent_plane_y=float(coeff[1]), apparent_plane_intercept=float(coeff[2]),
                            apparent_plane_residual_mm=float(delta))
     _csv(path / "chart_detection.csv", detection,
-         ["image_id", "repetition", "wd_mm", "valid", "reason", "marker_error_px"])
+         ["image_id", "repetition", "wd_mm", "commanded_wd_mm", "valid", "reason", "marker_error_px"])
     _csv(path / "sfr_results.csv", results,
-         ["image_id", "repetition", "wd_mm", "region", "edge", "x_mm", "y_mm", "x_px", "y_px",
+         ["image_id", "repetition", "wd_mm", "commanded_wd_mm", "region", "edge", "x_mm", "y_mm", "x_px", "y_px",
           "valid", "reason", "mtf50_cpp", "fixed_mtf", "angle_deg", "contrast"])
     fields = ["region", "edge", "repetition", "scan_direction", "x_mm", "y_mm", "valid", "reason", "best_wd_mm",
               "fit_uncertainty_mm", "fit_rmse", "best_metric", "nominal_fixed_mtf", "nominal_mtf50_cpp",
@@ -181,6 +181,24 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
     valid_count = sum(f["valid"] for f in fits)
     qa_reasons = assess_field(chart, fits, detection, recipe)
     required = required_regions(chart)
+    f = manifest['wd_calibration']
+    nominal_z = f['reference_z_mm'] + recipe.nominal_wd_mm - f['reference_wd_mm']
+    nominal_frames = [frame for frame in manifest['frames'] if abs(frame['printer_z_command_mm']-nominal_z) < 1e-6]
+    nominal_measured = all(len([frame for frame in nominal_frames if frame['repetition'] == rep])
+                           >= recipe.frames_per_position for rep in range(recipe.repetitions))
+    nominal_usable = True
+    if not nominal_measured:
+        qa_reasons.append(f"Separate measurement at requested {recipe.nominal_wd_mm:g} mm WD is required; "
+                          "no complete acquisition at that commanded plane")
+        nominal_usable = False
+    else:
+        for rep in range(recipe.repetitions):
+            regions = {region for region in required if usable_edges({row['edge'] for row in results
+                       if row['region'] == region and row['repetition'] == rep and row['valid']
+                       and abs(row['commanded_wd_mm']-recipe.nominal_wd_mm) < 1e-6}, recipe.quality)}
+            if required[0] not in regions or len(regions & set(required[1:])) < recipe.quality.min_peripheral_regions:
+                nominal_usable = False
+                qa_reasons.append(f"Sweep {rep}: requested nominal-plane center/peripheral edges are unusable")
     good_frames = 0
     for frame in manifest["frames"]:
         regions = {r for r in required if usable_edges({row['edge'] for row in results
@@ -207,6 +225,8 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
                    valid_frames=sum(d["valid"] for d in detection), total_frames=len(detection),
                    fixed_frequency_cpp=recipe.fixed_frequency_cpp)
     summary.update(acquisition_complete=not allow_partial, analysis_complete=True,
+                   requested_nominal_wd_mm=recipe.nominal_wd_mm, nominal_plane_measured=nominal_measured,
+                   nominal_plane_qa_passed=nominal_usable, separate_nominal_plane_required=not nominal_measured,
                    qa_passed=not qa_reasons, qa_rejection_reasons=qa_reasons,
                    measurement_valid=not reasons, measurement_validated=not reasons,
                    measurement_rejection_reasons=reasons, usable_field_frames=good_frames)
@@ -217,6 +237,7 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
     _html(path, summary, recipe, fits)
     # Keep online and offline status consistent without touching acquired originals.
     manifest.update({k: summary[k] for k in ("acquisition_complete", "analysis_complete", "qa_passed", "qa_rejection_reasons", "measurement_valid", "measurement_validated",
+                                           "requested_nominal_wd_mm", "nominal_plane_measured", "nominal_plane_qa_passed", "separate_nominal_plane_required",
                                            "measurement_rejection_reasons")})
     atomic_json(path / "manifest.json", manifest)
     return summary
@@ -280,6 +301,9 @@ table{{border-collapse:collapse}}img{{max-width:100%}}.notice{{background:#fff1c
 <h1>Focus-Field / MTF</h1><p class="notice">{status}. Partial analysis: {summary['partial']}.</p>
 <p>Acquisition complete: {summary['acquisition_complete']}. Analysis complete: {summary['analysis_complete']}.
 Data QA passed: {summary['qa_passed']}. Measurement valid: {summary['measurement_valid']}.</p>
+<p>Requested nominal WD: {recipe.nominal_wd_mm:g} mm. Nominal-plane command acquired: {summary['nominal_plane_measured']}.
+Separate nominal-plane measurement required: {summary['separate_nominal_plane_required']}.
+Absolute physical WD retains the fixture calibration uncertainty.</p>
 <ul>{''.join('<li>' + html.escape(r) + '</li>' for r in summary['measurement_rejection_reasons'])}</ul>
 <p>Valid focus fits: {summary['valid_focus_fits']} / {summary['total_focus_fits']}.
 Valid chart frames: {summary['valid_frames']} / {summary['total_frames']}.</p>

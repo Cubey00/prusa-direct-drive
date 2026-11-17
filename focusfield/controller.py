@@ -19,9 +19,11 @@ class OperatorChecks:
 
     def validate(self, dry_run=False):
         required = (self.fixture_and_clearance, self.increasing_z_lowers_bed,
-                    self.firmware_and_stop_verified, self.lens_locked_and_chart_checked)
-        if not all(required) or (not dry_run and not self.collision_free_dry_run):
-            raise ValueError("Confirm fixture, Z direction, firmware/STOP, chart/lens and collision-free dry run")
+                    self.firmware_and_stop_verified)
+        if not all(required):
+            raise ValueError("Confirm measured fixture/clearance, Z direction and verified firmware/STOP")
+        if not dry_run and not (self.lens_locked_and_chart_checked and self.collision_free_dry_run):
+            raise ValueError("Confirm lens/chart and a completed collision-free dry run before image operations")
 
 
 @dataclass
@@ -38,11 +40,12 @@ class RunResult:
 class ScanController:
     def __init__(self, recipe, settings, fixture, stage, camera, output_root, *,
                  printer_state=lambda: None, checks=OperatorChecks(), dry_run=False,
-                 on_event=lambda *args: None, setup_provenance=None):
+                 on_event=lambda *args: None, setup_provenance=None, operator_confirmed=False):
         self.recipe, self.settings, self.fixture = recipe, settings, fixture
         self.stage, self.camera, self.output_root = stage, camera, output_root
         self.printer_state, self.checks, self.dry_run = printer_state, checks, dry_run
         self.on_event = on_event
+        self.operator_confirmed = operator_confirmed
         self.setup_provenance = setup_provenance or {}
         self.cancel = threading.Event()
         self.state = "IDLE"
@@ -50,9 +53,9 @@ class ScanController:
         self._stop_thread = None
         self._stop_lock = threading.Lock()
         self._stop_error = ""
-        self.simulated = bool(stage.simulated and camera.simulated)
+        self.simulated = bool(stage.simulated) if dry_run else bool(stage.simulated and camera.simulated)
         self.frame_guard = FrameGuard()
-        if stage.simulated != camera.simulated:
+        if not dry_run and stage.simulated != camera.simulated:
             raise ValueError("Do not mix simulated and physical devices")
 
     def _state(self, state, message=""):
@@ -81,7 +84,7 @@ class ScanController:
     def stop(self):
         """Nonblocking UI entry. STOP completion is joined before devices close."""
         self.cancel.set()
-        if hasattr(self.camera, "cancel"):
+        if not self.dry_run and hasattr(self.camera, "cancel"):
             self.camera.cancel.set()
         with self._stop_lock:
             if self._stop_thread is None:
@@ -116,8 +119,11 @@ class ScanController:
         try:
             self._state("PREFLIGHT")
             self._check_abort()
-            self.recipe.validate_fixture(self.fixture, self.settings.printer.z_max, simulation=self.simulated)
+            self.recipe.validate_fixture(self.fixture, self.settings.printer.z_max,
+                                         simulation=self.simulated, dry_run=self.dry_run)
             if not self.simulated:
+                if self.operator_confirmed is not True:
+                    raise ValueError("Explicit operator approval of this physical motion is required")
                 self.checks.validate(self.dry_run)
             self._printer_guard()
             chart = load_chart(self.recipe.chart_path)
@@ -131,6 +137,7 @@ class ScanController:
                                     operator_checks=asdict(self.checks))
             self.writer.manifest["storage_preflight"] = estimate
             self.writer.manifest['setup_provenance'] = self.setup_provenance
+            self.writer.manifest['operator_confirmed'] = self.operator_confirmed
             if not self.simulated:
                 from .calibration import validate_reference
                 self.writer.manifest["wd_reference"] = validate_reference(self.fixture)
@@ -189,6 +196,10 @@ class ScanController:
                     measurement_valid=summary.get("measurement_valid", False),
                     measurement_validated=summary.get("measurement_valid", False),
                     measurement_rejection_reasons=summary.get("measurement_rejection_reasons", ["Unvalidated analysis"]))
+                for key in ('requested_nominal_wd_mm', 'nominal_plane_measured',
+                            'nominal_plane_qa_passed', 'separate_nominal_plane_required'):
+                    if key in summary:
+                        self.writer.manifest[key] = summary[key]
                 message = (f"Acquisition complete: {len(self.writer.manifest['frames'])} frames; "
                            f"{summary['valid_focus_fits']} / {summary['total_focus_fits']} valid focus fits. "
                            f"Measurement valid: {self.writer.manifest['measurement_valid']}")
@@ -207,7 +218,7 @@ class ScanController:
                 self.stop()
             if self._stop_thread:
                 self._stop_thread.join()
-            for device in (self.camera, self.stage):
+            for device in ((self.stage,) if self.dry_run else (self.camera, self.stage)):
                 try:
                     device.close()
                 except Exception as exc:

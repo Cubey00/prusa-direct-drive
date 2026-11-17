@@ -75,7 +75,7 @@ def detect_chart(gray, chart):
     return registration["homography"], registration["reprojection_rms_px"]
 
 
-def regional_metrics(capture, chart, recipe, *, optical_center_px=None):
+def regional_metrics(capture, chart, recipe, *, optical_center_px=None, require_usable_edges=True):
     from .acquisition import analysis_plane
     from .quality import required_regions, usable_edges
     from .sfr import slanted_edge
@@ -104,9 +104,11 @@ def regional_metrics(capture, chart, recipe, *, optical_center_px=None):
             failures.append(str(exc))
         if usable_edges(set(labels), recipe.quality):
             metrics[region] = float(np.median(values))
+        elif not failures:
+            failures.append("Insufficient usable edges or orientation coverage")
         flags[region] = failures
     missing = set(required) - metrics.keys()
-    if missing:
+    if missing and require_usable_edges:
         raise ValueError("Unusable center/peripheral edges: " + "; ".join(f"{r}: {flags[r]}" for r in sorted(missing)))
     return registration, metrics, flags
 
@@ -124,8 +126,10 @@ def edge_rois(gray, h, square):
     radius = int(scale * 0.95)
     x0, y0 = int(px) - radius, int(py) - radius
     x1, y1 = int(px) + radius, int(py) + radius
-    if x0 < 0 or y0 < 0 or x1 >= gray.shape[1] or y1 >= gray.shape[0] or scale < 30:
-        raise ValueError("Square outside frame or too small")
+    if x0 < 0 or y0 < 0 or x1 >= gray.shape[1] or y1 >= gray.shape[0]:
+        raise ValueError("Square search ROI crosses image border")
+    if scale < 30:
+        raise ValueError("Square too small for reliable edge analysis")
     patch = gray[y0:y1, x0:x1]
     low, high = np.percentile(patch, [10, 90])
     mask = np.uint8(patch < (low+high)/2) * 255

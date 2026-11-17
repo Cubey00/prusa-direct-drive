@@ -93,8 +93,18 @@ The mapping is `WD = reference_wd_mm + reported_Z - reference_z_mm`: increasing 
 the Core One bed. Verify this sign on the actual fixture. The tactile `[camera] mm_per_px`
 and unmeasured sensor offsets are not used as optical calibration.
 
-All three physical verification flags ship **false**. An older profile with `enabled=true`
-also fails the new physical preflight until those checks and the WD record are present.
+All three physical verification flags ship **false**. A supervised **motion-only dry run**
+requires an enabled/measured fixture, verified mechanical clearance, measured WD reference,
+safe travel/minimum-WD bounds, firmware/STOP and Z-direction checks, idle-printer checks and
+explicit operator approval. It neither creates nor opens a camera, and does not require
+camera pipeline/timing or lens/chart acquisition checks. A successful motion-only run
+still acquires no optical data and never marks a measurement valid.
+
+**Image-acquiring motion operations (scans, centering and scouting)** additionally require camera pipeline and
+frame timing verification, lens/chart checks and a completed collision-free dry run.
+The motion adapter enforces mechanical prerequisites; the controller enforces the
+operation-specific acquisition prerequisites. Older enabled profiles remain blocked
+until the applicable checks and the measured WD record are supplied.
 Setting flags is an operator attestation, not something inferred from a successful software test.
 The software does not perform those physical verifications or authorize unattended use.
 
@@ -127,6 +137,13 @@ correction solves `J * delta_machine = -error_image`. Never copy tactile `mm_per
 Calibrate from supervised small known displacements; fit/validate the local mapping and
 its residual/uncertainty over a limited image radius. A wide-angle/global image scale is
 insufficient. No mapping-calibration movement is performed by this software.
+
+There is currently **no in-app procedure to measure the XY Jacobian or lens distortion**.
+The JSON must come from an independently supervised calibration. For the actual wide-angle
+lens, validate intrinsics/distortion and the local chart-center mapping before relying on
+physical centering. A passing homography reprojection check alone does not establish that
+calibration. Distorted-image registration failures remain blocking; the threshold is not
+relaxed for centering or scouting. Actual SFR continues to use original sensor samples.
 
 Example profile structure (illustrative numbers; **not a physical calibration**):
 
@@ -171,12 +188,19 @@ separate `ScoutRecipe`, not the final acquisition recipe. Default coarse step 0.
 fine step 0.025 mm, one full-resolution frame/position, maximum 101 positions. The initial
 interval must contain at least five positions, and all commands have 0.001 mm precision.
 
-The runner first checks center plus four peripheral regions at the current position.
-It then measures median usable-edge fixed-frequency MTF at coarse positions. It retains
-raw frames and flags. Only an unbracketed curve can trigger one extension to the already
-measured fixture's full safe Z envelope. This extension is included in the operator's
-approval and total position budget. Flat, noisy, missing-marker, clipped or unusable data
-stop the scout; a boundary/outside peak never authorizes travel beyond that envelope.
+The runner first requires all four chart IDs, full-field visibility and acceptable
+reprojection at the current position. Initial slanted edges may be defocused/unusable:
+the scout retains those frames/flags and searches only inside the verified mechanical
+envelope. At each position, only edges that pass the unchanged strict MTF checks
+contribute metrics; missing regional metrics are never filled or treated as focus peaks.
+Each region still needs at least five usable positions with two on either side of its peak.
+
+An unbracketed curve or insufficient usable edge samples can trigger one extension to
+the already measured fixture's full safe Z envelope. This extension is included in the
+operator's approval and total position budget. Flat/noisy usable curves, lost markers,
+clipping, image-border failure or excessive reprojection stop the scout. No fine scan
+is proposed without strict center/peripheral peak coverage; a boundary/outside peak
+never authorizes travel beyond that envelope.
 There is no unbounded search or image-derived collision-clearance inference.
 
 Every required regional peak needs two coarse positions on each side. The numerical
@@ -189,8 +213,14 @@ The proposed fine interval surrounds all required peaks with at least two fine s
 on either side, inside both measured and already sampled bounds. Widely separated peaks
 produce an explicit **broader scan required** result. Best-focus WD estimate, statistical
 fit uncertainty and absolute WD calibration uncertainty remain separate. The proposed
-nominal plane is the calibrated midpoint of that interval; it is never silently called
-20 mm. The operator may load the proposal into the editor; **Start scan** is a separate
+recipe **retains the user's requested nominal WD**, normally 20 mm; scouting never
+changes it to the interval midpoint or a focus peak. When the nominal plane lies in
+the proposed interval, the fine grid is anchored to that command so it is sampled.
+If the focus interval excludes it, `separate_nominal_plane_required=true` is saved in
+the proposal/recipe. The UI displays a persistent warning that a separate measurement
+at the requested distance is needed; no extra move outside the proposed bounds occurs.
+
+The operator may load the proposal into the editor; **Start scan** is a separate
 action requiring its own physical-motion approval. Setup result/history and the proposal
 are linked into the subsequent acquisition manifest. Setup logs are not full field reports.
 
@@ -373,7 +403,15 @@ and reverse results can be compared.
 
 Maps separate horizontal/vertical image-edge groups. Best WD, fixed nominal-plane MTF,
 best fitted MTF and apparent tilt-plane residual are separate outputs. Nominal-plane
-values are interpolated only within observed data, never substituted with peak sharpness.
+values come only from frames commanded at the requested nominal WD. They are not
+interpolated from neighboring distances or replaced with a peak/midpoint value.
+Missing nominal-plane acquisition leaves those CSV/map values empty and sets
+`nominal_plane_measured=false`, `separate_nominal_plane_required=true` and explicit
+measurement QA rejection reasons. The report also requires usable center/peripheral
+edges at the nominal plane. A focus-only sweep may finish successfully while the
+requested 20 mm measurement objective remains incomplete. Reported actual Z and
+absolute WD calibration uncertainty still apply; a 20 mm command does not prove an
+exact physical 20.000 mm distance.
 The fitted plane is labelled **apparent tilt**; subtracting it does not isolate intrinsic
 lens curvature. Optical distortion, flatness, chart quality, camera/bed alignment and
 sensor processing remain contributors to measured system performance.

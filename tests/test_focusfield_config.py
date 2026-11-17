@@ -51,3 +51,19 @@ def test_optional_profile_backwards_compatibility_and_invalid_settings():
     data["focusfield"]["reference_wd_mm"] = math.nan
     with pytest.raises(SettingsError, match="finite"):
         parse(data)
+
+
+def test_nominal_outside_focus_sweep_needs_explicit_separate_measurement_flag():
+    with pytest.raises(ValueError, match='Nominal WD'):
+        Recipe(wd_start_mm=20.2, wd_end_mm=20.4)
+    recipe = Recipe(wd_start_mm=20.2, wd_end_mm=20.4, separate_nominal_plane_required=True)
+    assert recipe.nominal_wd_mm == 20
+    assert Recipe(**recipe.to_dict()) == recipe
+    assert 20 not in recipe.distances()
+
+
+def test_motion_and_camera_prerequisites_are_separate(verified_optical_fixture):
+    f = replace(verified_optical_fixture, camera_pipeline_verified=False, frame_timing_verified=False)
+    Recipe().validate_fixture(f, 273, dry_run=True)
+    with pytest.raises(ValueError, match='camera pipeline'):
+        Recipe().validate_fixture(f, 273)

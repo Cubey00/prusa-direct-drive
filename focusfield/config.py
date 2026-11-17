@@ -33,6 +33,7 @@ class Recipe:
     expected_width_px: int = 4056
     expected_height_px: int = 3040
     quality: QualityThresholds = field(default_factory=QualityThresholds)
+    separate_nominal_plane_required: bool = False
 
     def __post_init__(self):
         if isinstance(self.quality, dict):
@@ -50,8 +51,13 @@ class Recipe:
                 raise ValueError(f"{name} must be finite")
         if not 0 < self.wd_start_mm < self.wd_end_mm or self.step_mm < 0.001:
             raise ValueError("WD interval must increase, with step >= 0.001 mm")
-        if not self.wd_start_mm <= self.nominal_wd_mm <= self.wd_end_mm:
+        if type(self.separate_nominal_plane_required) is not bool or self.nominal_wd_mm <= 0:
+            raise ValueError("Nominal WD must be positive and separate_nominal_plane_required boolean")
+        nominal_inside = self.wd_start_mm <= self.nominal_wd_mm <= self.wd_end_mm
+        if not nominal_inside and not self.separate_nominal_plane_required:
             raise ValueError("Nominal WD must lie within scan")
+        if nominal_inside and self.separate_nominal_plane_required:
+            raise ValueError("Separate nominal-plane flag is only valid when the requested plane is outside the sweep")
         for key in ("frames_per_position", "repetitions", "discard_frames"):
             v = getattr(self, key)
             if type(v) is not int or not 1 <= v <= 100:
@@ -83,11 +89,14 @@ class Recipe:
             result.extend((rep, wd, fixture.z_for_wd(wd)) for wd in distances)
         return result
 
-    def validate_fixture(self, fixture, printer_z_max, *, simulation=False):
+    def validate_fixture(self, fixture, printer_z_max, *, simulation=False, dry_run=False):
         if not simulation and not (fixture.enabled and fixture.measured):
             raise ValueError("Optical fixture is disabled or unmeasured in machine_settings.toml")
         if not simulation:
-            fixture.validate_physical()
+            if dry_run:
+                fixture.validate_motion_safety()
+            else:
+                fixture.validate_physical()
         for _, wd, z in self.schedule(fixture):
             if not (math.isfinite(z) and 0 <= fixture.safe_z_min_mm <= z <= fixture.safe_z_max_mm <= printer_z_max):
                 raise ValueError(f"Z {z:g} is outside measured fixture / printer bounds")

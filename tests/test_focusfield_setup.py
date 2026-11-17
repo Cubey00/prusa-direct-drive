@@ -137,6 +137,37 @@ def test_scout_proposes_bracketed_safe_fine_range_and_separate_uncertainties():
     assert proposal['absolute_wd_uncertainty_mm'] == 0.01
     assert all('fit_uncertainty_mm' in r for r in proposal['regional_estimates'].values())
     Recipe(**proposal['suggested_recipe']).validate_fixture(simulation_fixture(), 273, simulation=True)
+    fine = Recipe(**proposal['suggested_recipe'])
+    assert fine.nominal_wd_mm == 20 and 20 in fine.distances()
+    assert not proposal['separate_nominal_plane_required']
+
+
+def test_scout_keeps_20mm_objective_when_focus_peaks_are_at_20_3mm():
+    proposal = propose_fine_scan(scout_samples([100.3]*5), ScoutRecipe(), simulation_fixture(), Recipe())
+    fine = Recipe(**proposal['suggested_recipe'])
+    assert fine.wd_start_mm > 20 and fine.nominal_wd_mm == 20
+    assert proposal['requested_nominal_wd_mm'] == 20
+    assert proposal['separate_nominal_plane_required'] and fine.separate_nominal_plane_required
+    assert 'Separate measurement at requested 20 mm' in proposal['nominal_plane_message']
+    assert 20 not in fine.distances()  # no implicit return to a different physical plane
+    fine.validate_fixture(simulation_fixture(), 273, simulation=True)
+
+
+def test_scout_grid_samples_requested_nominal_with_fractional_wd_reference():
+    f = replace(simulation_fixture(), reference_wd_mm=20.003)
+    proposal = propose_fine_scan(scout_samples([100, 100.1, 100.15, 100.2, 100.05]), ScoutRecipe(), f, Recipe())
+    fine = Recipe(**proposal['suggested_recipe'])
+    assert fine.nominal_wd_mm == 20
+    assert 20 in fine.distances()
+    assert not fine.separate_nominal_plane_required
+    fine.validate_fixture(f, 273, simulation=True)
+
+
+def test_scout_keeps_a_custom_user_nominal_not_only_20mm():
+    recipe = Recipe(nominal_wd_mm=20.1)
+    proposal = propose_fine_scan(scout_samples([100.3]*5), ScoutRecipe(), simulation_fixture(), recipe)
+    assert proposal['suggested_recipe']['nominal_wd_mm'] == 20.1
+    assert proposal['requested_nominal_wd_mm'] == 20.1
 
 
 @pytest.mark.parametrize('case', ['flat', 'monotonic', 'outside', 'noise', 'missing'])
@@ -173,6 +204,47 @@ def test_scout_integration_retains_frames_and_never_starts_fine_scan(setup_rig):
     assert len(moves) == 11
     assert all(99 <= m[1] <= 101 for m in moves)
     assert len(setup_rig.writer.manifest['frames']) == 12
+
+
+def test_scout_searches_from_registered_but_defocused_initial_image(setup_rig):
+    setup_rig.operation = 'scout'
+    setup_rig.stage.z = 99
+    camera = setup_rig.camera
+    original = camera.capture
+    def defocused():
+        frame = original()
+        if setup_rig.stage.z < 99.7:
+            # Keep all four real tags; remove only unresolved slanted squares.
+            for square in camera.chart['slanted_squares']:
+                x, y = np.array(square['center_mm'])*camera.scale + camera.offset_px
+                radius = int(square['side_mm']*camera.scale*0.95)
+                frame.pixels[int(y)-radius:int(y)+radius, int(x)-radius:int(x)+radius] = 50000
+        return frame
+    camera.capture = defocused
+    result = setup_rig.run()
+    assert result.state == 'COMPLETED', result.message
+    samples = setup_rig.writer.manifest['setup_samples']
+    assert not samples[0]['quality_usable'] and samples[0]['unusable_regions']
+    assert any(s['quality_usable'] for s in samples[1:])
+    assert setup_rig.writer.manifest['setup_result']['regional_estimates']
+    assert all(99 <= c[1] <= 101 for c in setup_rig.stage.calls if c[0] == 'move')
+
+
+@pytest.mark.parametrize('fault', ['missing_tags', 'clipping'])
+def test_scout_tolerance_never_bypasses_initial_identification_or_clipping(setup_rig, fault):
+    setup_rig.operation = 'scout'
+    original = setup_rig.camera.capture
+    def invalid():
+        frame = original()
+        if fault == 'missing_tags':
+            frame.pixels[:] = 0
+        else:
+            frame.pixels[:] = np.where(frame.pixels > 32768, 65535, 0)
+        return frame
+    setup_rig.camera.capture = invalid
+    result = setup_rig.run()
+    assert result.state == 'FAILED'
+    assert not any(c[0] in {'move', 'move_xy'} for c in setup_rig.stage.calls)
 
 
 def test_scout_widens_once_only_within_verified_bounds(setup_rig, monkeypatch):

@@ -41,7 +41,7 @@ def rig(tmp_path, verified_optical_fixture):
     r = Recipe(wd_start_mm=19.8, wd_end_mm=20.2, step_mm=0.1, frames_per_position=2,
                repetitions=1, settle_s=0, pixel_format="Mono12")
     stage, camera = SimStage(f), FakeCamera()
-    return ScanController(r, SETTINGS, f, stage, camera, tmp_path)
+    return ScanController(r, SETTINGS, f, stage, camera, tmp_path, operator_confirmed=True)
 
 
 def test_schedule_readback_metadata_and_lossless_frames(rig):
@@ -166,6 +166,64 @@ def test_motion_only_dry_run_has_no_images(rig):
     rig.dry_run = True
     assert rig.run().state == "COMPLETED"
     assert rig.camera.captures == 0 and not rig.writer.manifest["frames"]
+
+
+def mechanical_dry_run(rig):
+    rig.dry_run, rig.simulated, rig.stage.simulated = True, False, False
+    rig.camera = None
+    rig.fixture = replace(rig.fixture, camera_pipeline_verified=False, frame_timing_verified=False)
+    rig.checks = OperatorChecks(True, True, True)
+    rig.printer_state = lambda: 'IDLE'
+    return rig
+
+
+def test_physical_dry_run_uses_mechanical_checks_without_any_camera(rig):
+    controller = mechanical_dry_run(rig)
+    result = controller.run()
+    assert result.state == 'COMPLETED', result.message
+    assert len([c for c in controller.stage.calls if c[0] == 'move']) == 5
+    assert not controller.writer.manifest['frames']
+    assert controller.writer.manifest['operator_confirmed'] is True
+    assert not controller.writer.manifest['wd_calibration']['camera_pipeline_verified']
+    assert not result.measurement_valid
+
+
+@pytest.mark.parametrize('gate', ['enabled', 'measured', 'motion_safety_verified', 'wd_reference',
+                                 'stop', 'z_direction', 'clearance', 'approval', 'bounds', 'minimum_wd', 'printing'])
+def test_physical_dry_run_still_blocks_missing_mechanical_prerequisites(rig, gate):
+    controller = mechanical_dry_run(rig)
+    if gate in {'enabled', 'measured', 'motion_safety_verified'}:
+        controller.fixture = replace(controller.fixture, **{gate: False})
+    elif gate == 'wd_reference':
+        controller.fixture = replace(controller.fixture, wd_reference_record='')
+    elif gate == 'stop':
+        controller.checks = replace(controller.checks, firmware_and_stop_verified=False)
+    elif gate == 'z_direction':
+        controller.checks = replace(controller.checks, increasing_z_lowers_bed=False)
+    elif gate == 'clearance':
+        controller.checks = replace(controller.checks, fixture_and_clearance=False)
+    elif gate == 'approval':
+        controller.operator_confirmed = False
+    elif gate == 'bounds':
+        controller.fixture = replace(controller.fixture, safe_z_min_mm=100)
+    elif gate == 'minimum_wd':
+        controller.fixture = replace(controller.fixture, minimum_wd_mm=19.9)
+    else:
+        controller.printer_state = lambda: 'PRINTING'
+    result = controller.run()
+    assert result.state == 'FAILED', result.message
+    assert ('open',) not in controller.stage.calls
+    assert not any(c[0] == 'move' for c in controller.stage.calls)
+
+
+def test_physical_image_scan_still_requires_camera_verification_after_mechanical_preflight(rig):
+    rig.fixture = replace(rig.fixture, camera_pipeline_verified=False, frame_timing_verified=False)
+    rig.stage.simulated = rig.camera.simulated = rig.simulated = False
+    rig.checks = OperatorChecks(True, True, True, True, True)
+    rig.printer_state = lambda: 'IDLE'
+    result = rig.run()
+    assert result.state == 'FAILED' and 'camera pipeline' in result.message
+    assert ('open',) not in rig.stage.calls
 
 
 def test_stop_during_analysis_marks_run_aborted(rig, monkeypatch):

@@ -30,7 +30,7 @@ class ZStage:
         import gantry_controls as gc
         if self.cancelled.is_set():
             raise InterruptedError("STOP requested")
-        self.fixture.validate_physical()
+        self.fixture.validate_motion_safety()
         gc.connect()
         self.opened = True
         if self.cancelled.is_set():

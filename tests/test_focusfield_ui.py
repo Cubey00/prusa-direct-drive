@@ -92,6 +92,51 @@ def test_loading_unsupported_backend_recipe_does_not_silently_select_rgb(window,
     assert p.recipe is old and p.format.currentText() == 'RGB8'
 
 
+def test_nominal_plane_warning_is_persistent_and_preserves_user_distance(window):
+    p = window.focusfield
+    p.fields['wd_start_mm'].setValue(20.2)
+    p.fields['wd_end_mm'].setValue(20.4)
+    recipe = p.current_recipe()
+    assert recipe.nominal_wd_mm == 20 and recipe.separate_nominal_plane_required
+    assert 'Separate measurement at requested 20 mm' in p.nominal_note.text()
+    p.fields['wd_start_mm'].setValue(19.9)
+    p.fields['wd_end_mm'].setValue(20.1)
+    assert not p.current_recipe().separate_nominal_plane_required
+    assert 'on the sweep grid' in p.nominal_note.text()
+
+
+@pytest.mark.parametrize('approved', [False, True])
+def test_physical_motion_only_workflow_never_constructs_a_camera(window, qtbot, monkeypatch,
+                                                               verified_optical_fixture, approved):
+    from dataclasses import replace
+    from focusfield.hardware import SimStage
+    from machine_settings import SETTINGS
+    from pathprogrammer.ui import focusfield_panel
+    f = replace(verified_optical_fixture, camera_pipeline_verified=False, frame_timing_verified=False)
+    settings = replace(SETTINGS, focusfield=f)
+    stage = SimStage(f)
+    stage.simulated = False
+    monkeypatch.setattr(focusfield_panel, 'load_settings', lambda: settings)
+    monkeypatch.setattr(focusfield_panel, 'ZStage', lambda *args: stage)
+    def forbidden_camera(*args):
+        raise AssertionError('A motion-only dry run must not construct a camera')
+    monkeypatch.setattr(focusfield_panel, 'CameraAdapter', forbidden_camera)
+    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.Yes if approved else QMessageBox.No)
+    p = window.focusfield
+    p.simulate.setChecked(False)
+    p.dry_run.setChecked(True)
+    p.fields['settle_s'].setValue(0)
+    for name in ('fixture_and_clearance', 'increasing_z_lowers_bed', 'firmware_and_stop_verified', 'manual_printer_idle'):
+        p.checks[name].setChecked(True)
+    p.start_scan()
+    if approved:
+        qtbot.waitUntil(lambda: p.thread is None, timeout=10000)
+        assert 'Motion-only dry run completed' in p.status.toPlainText()
+        assert len([call for call in stage.calls if call[0] == 'move']) == 42
+    else:
+        assert p.thread is None and not any(call[0] == 'move' for call in stage.calls)
+
+
 @pytest.mark.parametrize('finish', ['stop', 'window_close', 'disconnect'])
 def test_physical_preview_cancel_disconnect_and_close_release_camera_in_worker(window, qtbot, monkeypatch, finish):
     import threading

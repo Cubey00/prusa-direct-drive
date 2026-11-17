@@ -73,12 +73,15 @@ class ScoutRecipe:
 def propose_fine_scan(samples, scout, fixture, recipe):
     """Propose only interpolated, bracketed intervals; never extrapolate optical distance."""
     regions = required_regions(load_chart(recipe.chart_path))
-    if not samples or len(set(regions)) != 5 or any(set(regions)-sample['metrics'].keys() for sample in samples):
+    if not samples or len(set(regions)) != 5:
         raise ValueError("Scout requires center and four peripheral regions")
     fits = {}
     for region in regions:
         z = sorted({s['z_mm'] for s in samples if region in s['metrics']})
-        values = [float(np.median([s['metrics'][region] for s in samples if s['z_mm'] == p])) for p in z]
+        if len(z) < 5:
+            raise ValueError(f"Insufficient usable scout samples for {region}; need five positions with strict edge quality")
+        values = [float(np.median([s['metrics'][region] for s in samples
+                                  if s['z_mm'] == p and region in s['metrics']])) for p in z]
         if np.ptp(values) < scout.min_metric_span:
             raise ValueError(f"Flat scout curve for {region}; check lens, illumination and chart manually")
         fit = fit_peak(z, values)
@@ -97,22 +100,32 @@ def propose_fine_scan(samples, scout, fixture, recipe):
     peaks = [f['best_focus_z_mm'] for f in fits.values()]
     step = scout.fine_step_mm
     margin = max(2*step, scout.step_mm)
-    lo = math.floor((min(peaks)-margin)/step+1e-8)*step
-    hi = math.ceil((max(peaks)+margin)/step-1e-8)*step
+    # Anchor the grid to the requested nominal command, so it is actually
+    # sampled whenever the focus interval includes it. Never move that plane.
+    anchor = fixture.z_for_wd(recipe.nominal_wd_mm)
+    lo = anchor + math.floor((min(peaks)-margin-anchor)/step+1e-8)*step
+    hi = anchor + math.ceil((max(peaks)+margin-anchor)/step-1e-8)*step
     sampled_lo, sampled_hi = min(s['z_mm'] for s in samples), max(s['z_mm'] for s in samples)
-    lo = max(lo, math.ceil(max(fixture.safe_z_min_mm, sampled_lo)/step-1e-8)*step)
-    hi = min(hi, math.floor(min(fixture.safe_z_max_mm, sampled_hi)/step+1e-8)*step)
+    lo = max(lo, anchor + math.ceil((max(fixture.safe_z_min_mm, sampled_lo)-anchor)/step-1e-8)*step)
+    hi = min(hi, anchor + math.floor((min(fixture.safe_z_max_mm, sampled_hi)-anchor)/step+1e-8)*step)
     if min(peaks)-lo < 2*step-1e-8 or hi-max(peaks) < 2*step-1e-8:
         raise ValueError("Safe/sampled bounds cannot provide two fine positions on each side of every peak")
     lo, hi = round(lo, 3), round(hi, 3)
+    separate_nominal = not lo-1e-8 <= anchor <= hi+1e-8
     fine = replace(recipe, wd_start_mm=round(fixture.wd_for_z(lo), 6),
                    wd_end_mm=round(fixture.wd_for_z(hi), 6), step_mm=step,
-                   nominal_wd_mm=round(fixture.wd_for_z((lo+hi)/2), 6))
+                   separate_nominal_plane_required=separate_nominal)
     fine.validate_fixture(fixture, fixture.safe_z_max_mm, simulation=True)
     broad = hi-lo > scout.max_narrow_span_mm
     return dict(z_start_mm=lo, z_end_mm=hi, regional_estimates=fits,
                 absolute_wd_uncertainty_mm=fixture.wd_uncertainty_mm,
                 broad_scan_required=broad, suggested_recipe=fine.to_dict(),
+                requested_nominal_wd_mm=recipe.nominal_wd_mm,
+                separate_nominal_plane_required=separate_nominal,
+                nominal_plane_message=(f"Separate measurement at requested {recipe.nominal_wd_mm:g} mm WD is required; "
+                                       "it is outside this focus sweep. No additional motion is scheduled."
+                                       if separate_nominal else
+                                       f"Requested {recipe.nominal_wd_mm:g} mm nominal plane is included on the fine-scan grid"),
                 reasoning=("No single narrow interval covers all regions; bounded broader scan proposed" if broad else
                            "Bracketed center/peripheral peaks with at least two fine samples on either side"),
                 approved=False, absolute_wd_source="independent fixture reference, never marker size or sharpness")
@@ -128,7 +141,7 @@ class SetupController(ScanController):
         self.xy_calibration, self.centering_limits, self.scout_recipe = xy_calibration, centering_limits, scout_recipe
         self.settled_at_ns = 0
 
-    def _capture(self, chart, *, optical_center_px=None):
+    def _capture(self, chart, *, optical_center_px=None, allow_defocus=False):
         self._check_abort()
         before = self.stage.position_xyz()
         self.camera.fresh()
@@ -148,10 +161,17 @@ class SetupController(ScanController):
         record = self.writer.add(capture, printer_xyz_mm=list(xyz), printer_z_reported_mm=xyz[2],
                                  nominal_working_distance_mm=self.fixture.wd_for_z(xyz[2]))
         self.on_event("frame", record, capture.pixels)
-        registration, metrics, flags = regional_metrics(capture, chart, self.recipe, optical_center_px=optical_center_px)
+        registration, metrics, flags = regional_metrics(capture, chart, self.recipe,
+            optical_center_px=optical_center_px, require_usable_edges=not allow_defocus)
+        if allow_defocus and any('Clipped' in reason or 'image border' in reason
+                                 for reasons in flags.values() for reason in reasons):
+            raise ValueError("Scout exposure is clipped or crosses an image border; correct setup before searching")
         registration.pop('homography')
         sample = dict(image_id=record['image_id'], z_mm=xyz[2], xyz_mm=list(xyz),
                       registration=registration, metrics=metrics, edge_quality_flags=flags)
+        missing = set(required_regions(chart)) - metrics.keys()
+        sample.update(quality_usable=not missing,
+                      unusable_regions={region: flags[region] for region in sorted(missing)})
         self.writer.manifest['setup_samples'].append(sample)
         self.writer.update(self.state)
         return sample, capture
@@ -213,8 +233,9 @@ class SetupController(ScanController):
     def _scout(self, chart):
         s = self.scout_recipe
         samples = []
-        # Successful current-position preview is required before the first motion.
-        self._capture(chart)
+        # Registration must be trustworthy before motion; defocused edges can be
+        # skipped while searching only the already verified mechanical envelope.
+        self._capture(chart, allow_defocus=True)
         def acquire(positions):
             for z in positions:
                 if any(abs(p['z_mm']-z) < 1e-6 for p in samples):
@@ -229,15 +250,17 @@ class SetupController(ScanController):
                     raise RuntimeError("Scout position readback mismatch")
                 self._settle()
                 for _ in range(s.frames_per_position):
-                    sample, _ = self._capture(chart)
+                    sample, _ = self._capture(chart, allow_defocus=True)
                     samples.append(sample)
                 self.on_event('progress', len({p['z_mm'] for p in samples}), s.max_positions)
         acquire(s.positions(s.z_start_mm, s.z_end_mm))
         try:
             return propose_fine_scan(samples, s, self.fixture, self.recipe)
         except ValueError as exc:
-            # Only unbracketed peaks allow one bounded extension. Flat/noisy/invalid data stop.
-            if not s.allow_widen or "Unbracketed" not in str(exc):
+            # Defocus/insufficient usable edges or unbracketed peaks allow one
+            # bounded extension. Registration/clipping and flat/noisy curves stop.
+            if not s.allow_widen or not any(reason in str(exc) for reason in
+                    ("Unbracketed", "Insufficient usable scout samples")):
                 raise
             self.writer.manifest['widen_reason'] = str(exc)
             acquire(s.positions(self.fixture.safe_z_min_mm, self.fixture.safe_z_max_mm))
@@ -253,7 +276,7 @@ class SetupController(ScanController):
             if self.dry_run:
                 raise ValueError("Centering and scouting need images; use a separate supervised motion-only preflight")
             if not self.simulated:
-                if not self.operator_confirmed:
+                if self.operator_confirmed is not True:
                     raise ValueError("Explicit operator approval of this bounded setup motion is required")
                 self.fixture.validate_physical()
                 self.checks.validate()

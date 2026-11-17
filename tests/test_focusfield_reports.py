@@ -32,6 +32,8 @@ def test_known_simulated_focus_surface_and_reports(optical_run):
     assert summary["valid_frames"] == 11
     assert summary["valid_focus_fits"] >= 115
     assert summary["measurement_validated"] is False
+    assert summary['requested_nominal_wd_mm'] == 20
+    assert summary['nominal_plane_measured'] and not summary['separate_nominal_plane_required']
     fits = list(csv.DictReader((path / "focus_results.csv").open()))
     errors = []
     for fit in fits:
@@ -101,3 +103,33 @@ def test_completed_acquisition_with_zero_usable_fits_is_not_a_valid_measurement(
     assert not manifest['measurement_valid'] and manifest['analysis_complete']
     assert (path / 'images/frame_000001.tiff').is_file()
     assert 'Measurement valid: False' in (path / 'report.html').read_text()
+
+
+@pytest.mark.parametrize('mode', ['outside_sweep', 'between_samples'])
+def test_unsampled_nominal_plane_is_explicitly_missing_not_interpolated(optical_run, tmp_path, mode):
+    import shutil
+    source, recipe = optical_run
+    path = tmp_path / mode
+    shutil.copytree(source, path)
+    manifest = json.loads((path / 'manifest.json').read_text())
+    if mode == 'outside_sweep':
+        # Relabel the same synthetic sensor data with a consistent WD offset.
+        # Focus fits remain usable, but no frame was acquired at requested 20 mm.
+        recipe = replace(recipe, wd_start_mm=20.5, wd_end_mm=21.5,
+                         nominal_wd_mm=20, separate_nominal_plane_required=True)
+        manifest['wd_calibration']['reference_wd_mm'] += 1
+        for frame in manifest['frames']:
+            frame['nominal_working_distance_mm'] += 1
+    else:
+        recipe = replace(recipe, nominal_wd_mm=20.05)
+    (path / 'config.json').write_text(json.dumps(recipe.to_dict()))
+    (path / 'manifest.json').write_text(json.dumps(manifest))
+    summary = analyze_run(path)
+    assert summary['valid_focus_fits'] >= 115
+    assert summary['requested_nominal_wd_mm'] == recipe.nominal_wd_mm
+    assert not summary['nominal_plane_measured'] and summary['separate_nominal_plane_required']
+    assert not summary['measurement_valid']
+    assert any('Separate measurement at requested' in r for r in summary['qa_rejection_reasons'])
+    rows = list(csv.DictReader((path / 'focus_results.csv').open()))
+    assert all(not row['nominal_fixed_mtf'] and not row['nominal_mtf50_cpp'] for row in rows)
+    assert 'Separate nominal-plane measurement required: True' in (path / 'report.html').read_text()

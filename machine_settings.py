@@ -154,12 +154,16 @@ class FocusFixture:
     sfr_reference_verified: bool = False
     sfr_validation_id: str = ""
 
-    def validate_physical(self):
-        if not (self.enabled and self.measured and self.motion_safety_verified
-                and self.camera_pipeline_verified and self.frame_timing_verified):
-            raise ValueError("Physical motion requires measured fixture, clearance, camera pipeline and frame timing verification")
+    def validate_motion_safety(self):
+        if not (self.enabled and self.measured and self.motion_safety_verified):
+            raise ValueError("Physical motion requires an enabled, measured fixture and verified mechanical clearance")
         from focusfield.calibration import validate_reference
         validate_reference(self)
+
+    def validate_physical(self):
+        self.validate_motion_safety()
+        if not (self.camera_pipeline_verified and self.frame_timing_verified):
+            raise ValueError("Physical image acquisition requires camera pipeline and frame timing verification")
 
     def z_for_wd(self, wd):
         return self.reference_z_mm + wd - self.reference_wd_mm

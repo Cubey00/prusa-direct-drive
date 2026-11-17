@@ -97,6 +97,9 @@ class FocusFieldPanel(QWidget):
             form.addRow(label, widget)
         self.reverse = QCheckBox("Alternate reverse sweeps (hysteresis check)")
         form.addRow(self.reverse)
+        self.nominal_note = QLabel()
+        self.nominal_note.setWordWrap(True)
+        form.addRow(self.nominal_note)
         self.format = QComboBox()
         self.format.addItems((["RGB8", "Mono8", "Mono16", "BayerRG8", "BayerRG10p", "BayerRG12p"] if sys.platform == 'darwin'
                               else ["RGB8", "Mono8", "Mono10", "Mono12", "Mono16", "BayerRG8", "BayerRG10", "BayerRG12"]))
@@ -112,7 +115,7 @@ class FocusFieldPanel(QWidget):
         for key, text in (("fixture_and_clearance", "Measured fixture and complete travel clearance verified"),
                           ("increasing_z_lowers_bed", "Verified: increasing Z lowers bed / increases WD"),
                           ("firmware_and_stop_verified", "Mounted firmware and global STOP tested"),
-                          ("lens_locked_and_chart_checked", "Lens locked, target scale and chart visibility checked"),
+                          ("lens_locked_and_chart_checked", "Image operations: lens locked, target scale and chart visibility checked"),
                           ("collision_free_dry_run", "Complete collision-free dry run already verified"),
                           ("manual_printer_idle", "If PrusaLink is unavailable: I verified printer idle manually")):
             checkbox = QCheckBox(text)
@@ -188,28 +191,48 @@ class FocusFieldPanel(QWidget):
         self.format.currentTextChanged.connect(self.invalidate_preview)
         for widget in self.fields.values():
             widget.valueChanged.connect(self.invalidate_preview)
+        self.update_nominal_note()
 
     def invalidate_preview(self, *args):
         self.last_preview = None
         self.scout_proposal = None
         self.center_btn.setEnabled(False)
         self.scout_btn.setEnabled(False)
+        self.update_nominal_note()
+
+    def update_nominal_note(self):
+        lo, hi, step, nominal = (self.fields[k].value() for k in
+                                ('wd_start_mm', 'wd_end_mm', 'step_mm', 'nominal_wd_mm'))
+        if not lo <= nominal <= hi:
+            message = (f"Separate measurement at requested {nominal:g} mm WD is required: "
+                       "this focus sweep does not include that plane. No extra move is scheduled.")
+        elif abs((nominal-lo)/step-round((nominal-lo)/step)) > 1e-7:
+            message = (f"Requested {nominal:g} mm WD is not on the sweep grid. Align bounds/step or "
+                       "take a separate nominal-plane measurement; interpolation is not a measurement.")
+        else:
+            message = f"Requested nominal {nominal:g} mm WD is on the sweep grid; absolute WD retains calibration uncertainty."
+        self.nominal_note.setText(message)
 
     def current_recipe(self):
-        return replace(self.recipe, **{key: w.value() for key, w in self.fields.items()},
+        values = {key: w.value() for key, w in self.fields.items()}
+        return replace(self.recipe, **values,
                        chart_path=self.chart.text(), pixel_format=self.format.currentText(),
+                       separate_nominal_plane_required=not values['wd_start_mm'] <= values['nominal_wd_mm'] <= values['wd_end_mm'],
                        reverse_alternate=self.reverse.isChecked())
 
-    def devices(self, recipe, fixture, *, xy=None):
+    def devices(self, recipe, fixture, *, xy=None, motion_only=False):
         if self.simulate.isChecked():
             if self._sim_stage is None:
                 self._sim_stage = SimStage(fixture)
             self._sim_stage.stopped = False
+            if motion_only:
+                return self._sim_stage, None
             camera = SimCamera(self._sim_stage, recipe, load_chart(recipe.chart_path))
             camera.offset_px = np.array([12., -8.])
             return self._sim_stage, camera
         settings = load_settings()
-        return ZStage(fixture, settings.printer.z_max, xy, settings.printer.travel), CameraAdapter(recipe)
+        return (ZStage(fixture, settings.printer.z_max, xy, settings.printer.travel),
+                None if motion_only else CameraAdapter(recipe))
 
     def record_wd_reference(self):
         try:
@@ -352,7 +375,8 @@ class FocusFieldPanel(QWidget):
             chart = load_chart(recipe.chart_path)
             settings = load_settings()
             fixture = simulation_fixture() if simulated else settings.focusfield
-            recipe.validate_fixture(fixture, settings.printer.z_max, simulation=simulated)
+            recipe.validate_fixture(fixture, settings.printer.z_max, simulation=simulated,
+                                    dry_run=self.dry_run.isChecked())
             checks = OperatorChecks(**{k: v.isChecked() for k, v in self.checks.items()})
             if not simulated:
                 checks.validate(self.dry_run.isChecked())
@@ -360,14 +384,16 @@ class FocusFieldPanel(QWidget):
                         f"Run supervised {'motion-only dry run' if self.dry_run.isChecked() else 'image scan'} at calibrated WD "
                         f"{recipe.wd_start_mm:g}–{recipe.wd_end_mm:g} mm, step {recipe.step_mm:g} mm? "
                         f"Absolute WD uncertainty: {fixture.wd_uncertainty_mm:g} mm. "
+                        f"{self.nominal_note.text()} "
                         "This is a separate operation from scouting and centering.",
                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                     return
-            stage, camera = self.devices(recipe, fixture)
+            stage, camera = self.devices(recipe, fixture, motion_only=self.dry_run.isChecked())
             # Construct PrusaLink from QSettings on the GUI thread; only network I/O runs in worker.
             link = link_from_settings(self.main.settings) if not simulated and self.main.printer.configured() else None
             self.controller = ScanController(recipe, settings, fixture, stage, camera,
                 Path(self.main.log_folder()) / "focusfield", checks=checks, dry_run=self.dry_run.isChecked(),
+                operator_confirmed=not simulated,
                 setup_provenance=dict(history=self.setup_history,
                                       scout_proposal=({**self.scout_proposal, 'approved': not simulated} if self.scout_proposal else None),
                                       operator_approved_fine_scan=bool(self.scout_proposal and not simulated)),
@@ -506,8 +532,12 @@ class FocusFieldPanel(QWidget):
             self.setup_history.append(dict(path=result.path, operation=manifest['operation'], result=details))
             if manifest['operation'] == 'scout':
                 self.status.append(details['reasoning'] + f". Absolute WD uncertainty {details['absolute_wd_uncertainty_mm']:g} mm.")
+                nominal_message = details.get('nominal_plane_message', '')
+                if nominal_message:
+                    self.status.append(nominal_message)
                 if QMessageBox.question(self, 'Proposed fine scan — no automatic motion',
                         f"{details['reasoning']}. Proposed Z {details['z_start_mm']:g}–{details['z_end_mm']:g} mm. "
+                        f"{nominal_message} "
                         "Load the proposed recipe into the editor? Start scan requires a separate action and approval.",
                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
                     from focusfield.config import Recipe

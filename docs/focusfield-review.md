@@ -7,13 +7,30 @@ branch in [PR #2](https://github.com/Cubey00/prusa-direct-drive/pull/2); no merg
 physical printer movement was performed. The attached review was used as requirements
 and evidence to investigate, rather than assuming its hardware-dependent claims were verified.
 
+## Follow-up review: motion-only preflight and the nominal measurement objective
+
+The second review at `05ca5cc` confirmed two workflow defects and a scout robustness issue:
+
+| Finding | Correction / status |
+| --- | --- |
+| Camera verification blocked a motion-only dry run | Mechanical fixture/reference/clearance validation is separate from camera pipeline/timing validation. Motion-only controllers do not create, open, cancel or close a camera. Measured bounds/minimum WD, firmware/STOP, Z sign, printer state and explicit operator approval remain mandatory. Image/setup operations still require all acquisition checks. Defaults remain disabled. |
+| Scout replaced the requested 20 mm plane with a midpoint | Fine proposals preserve `nominal_wd_mm`. Their grid is anchored to that requested command when it is inside the fine interval. An excluded nominal plane is retained with `separate_nominal_plane_required=true`, a persistent UI warning and no extra scheduled movement. Reports only use actual requested nominal-plane commands; missing acquisition or unusable nominal edges prevents measurement validity, even if focus fits succeed. |
+| Defocused initial edges could prevent scouting | Initial chart identity/full visibility/reprojection remain mandatory. Unusable slanted edges can be retained/skipped while searching the approved bounded Z interval. Every reported regional peak still requires five strictly usable positions and two samples on each side; lost markers, clipping, border errors and unsafe poses remain fatal. One budgeted extension within the already verified envelope can also handle insufficient usable samples. No artificial metrics or best-focus distances are inserted. |
+| Real-lens XY/distortion calibration remains external | **Unresolved hardware/calibration work.** There is no in-app Jacobian/intrinsic/distortion measurement procedure. The operator must supply a measured local mapping and validate the actual wide-angle lens. The registration threshold remains blocking and original SFR pixels remain unwarped. Passing simulation/CI is not that physical validation. |
+
+The follow-up changes are localized to `machine_settings.py`, `focusfield/config.py`,
+`focusfield/controller.py`, `focusfield/hardware.py`, `focusfield/chart.py`,
+`focusfield/setup.py`, `focusfield/reports.py`, `pathprogrammer/ui/focusfield_panel.py`,
+their existing tests and these documents. Analysis semantics advance to version 0.2.1.
+No dependency, default physical enablement, automatic calibration motion or PR merge is added.
+
 ## Confirmed regressions and corrections
 
 | Issue | Evidence / correction | Expected behavior |
 | --- | --- | --- |
 | Windows fresh frames falsely rejected | Original [Windows CI](https://github.com/Cubey00/prusa-direct-drive/actions/runs/44075563124) had 6 optical failures with `Stale frame received after motion`. A deterministic constant-clock test reproduces the strict-equality problem. | Equal host ticks are accepted with ordered capture sequences; backward times, old receive fences, duplicated/reordered device IDs and resets still fail. No artificial timestamp increments. |
 | Native high-depth IDS view was wrong | Inspected vendor `ids-peak-ipl` 1.18.0 Python bindings: `get_numpy_2D()` is an 8-bit view, while `get_numpy_2D_16()` is the explicit 16-bit view. | Native unpacked Mono10/12/16 and BayerRG10/12 use the 16-bit API, copy samples, and validate dtype/depth/shape/range. Known values including full scale are tested. No silent cast or packed-format guessing. |
-| Freshness relied too much on host receipt | Host receipt is not sensor exposure start; restart/discard was not auditable and IDs were not checked. | Adapter and controller ordering checks, restart command completion, discard-fence provenance and native clock domains are recorded. A separate physical timing attestation is required before motion. Counter resets fail conservatively. |
+| Freshness relied too much on host receipt | Host receipt is not sensor exposure start; restart/discard was not auditable and IDs were not checked. | Adapter and controller ordering checks, restart command completion, discard-fence provenance and native clock domains are recorded. A separate physical timing attestation is required before image operations. Counter resets fail conservatively. |
 | Preview STOP did not cancel preview | Preview had no cancellation event. | STOP and window-close cancel preview, wait for an active camera call to return, and close/release the camera in its worker. Disconnect and close/cancel paths are tested. |
 | A completed scan could have no usable optical field | Lifecycle completion had no separate QA/validity status. | Acquisition completion, analysis completion, data QA and measurement validity are separate; zero/invalid center/peripheral fits produce explicit rejection reasons while preserving originals. |
 | Geometry tolerance increased with resolution | A strong synthetic barrel-distortion fixture produced about 9.6 px marker RMS but passed the former 1%-of-frame tolerance. | Default maximum is 3 original sensor pixels, configurable/snapshotted; distortion/missing-marker failures are distinct from bad/low-contrast/clipped edges. No measurement pixels are warped. |
@@ -40,9 +57,10 @@ and evidence to investigate, rather than assuming its hardware-dependent claims 
   Neither is inferred from tactile camera scale, marker size or sharpness.
 
 `enabled`, `measured` and every new physical verification flag still ship **false**.
-Saving a WD record explicitly disables physical motion. New setup operations require
-their own operator approval in addition to measured calibration and collision-free
-dry-run checks. This implementation did not enable unattended scanning.
+Saving a WD record explicitly disables physical motion. Image-acquiring motion/setup
+operations require their own operator approval in addition to measured calibration and
+collision-free dry-run checks. A motion-only preflight requires the mechanical checks
+and approval but no camera validation. This implementation did not enable unattended scanning.
 
 ## Scientific validation gaps
 
@@ -80,8 +98,9 @@ dry-run checks. This implementation did not enable unattended scanning.
    printer-state/lease exclusion and asynchronous STOP. No automatic homing, Z clearance
    move or recovery move. Initial/final errors/XYZ and calibration/approval are logged.
 4. **Opt-in Z scout:** separate bounded scout recipe; center plus four peripheral metrics
-   and raw frames. Only an unbracketed peak permits one extension within prevalidated
-   bounds and the total position budget. Flat/noisy/clipped/lost-marker/outside peaks
+   and raw frames. Unbracketed peaks or insufficient usable samples permit one extension
+   within prevalidated bounds and the total position budget. Flat/noisy curves,
+   clipped/lost-marker data or peaks outside the full envelope
    fail. A fine-scan proposal spans bracketed regional peaks; broad spreads are flagged.
    Loading it does not start motion. Fine acquisition requires separate approval and
    records setup history/proposal. Estimated best-focus WD never establishes 20 mm.
@@ -114,7 +133,7 @@ Paths below are relative to the repository root, `Cubey00/prusa-direct-drive`.
 | `pathprogrammer/ui/optical_setup_dialogs.py` | Hardware-free WD audit and bounded scout forms. |
 | `pathprogrammer/ui/main_window.py` | Global STOP reaches optical preview/setup as well as acquisition; existing physical run stop remains available. |
 | `focusfield/validation.py`, `focusfield/__main__.py` | Camera-only evidence and exact-ROI reference-comparison CLI commands; no dependency additions. |
-| `focusfield/__init__.py` | Analysis version 0.2.0 for provenance; existing versioned snapshots remain readable. |
+| `focusfield/__init__.py` | Analysis version 0.2.1 for explicit nominal-plane acquisition semantics; existing versioned snapshots remain readable. |
 | `tests/test_macos_startup.py` | Separate test-only correction of the inherited asynchronous Tk startup race; production startup behavior unchanged. |
 | `tests/conftest.py` | Explicit synthetic calibration audit fixture for hardware stubs; no real calibration claim. |
 | `tests/test_focusfield_freshness.py` | Equal/coarse ticks, stale/duplicate/reordered/reset/gapped frames, queued old frames, restart failure/discards, cancellation, storage and partial camera evidence. |
@@ -144,8 +163,12 @@ QT_QPA_PLATFORM=offscreen PRUSA_CAMERA_BACKEND=simulated python -m pytest -q
 
 Localhost access is needed for existing IPC/PrusaLink tests; the sandbox-only run is not
 a valid platform baseline. Local full-suite and focused verification results are recorded
-with the PR update. The final local full review run passed **312 tests with 12 skips**,
+with the PR update. Revision `05ca5cc` passed **312 tests with 12 skips** locally,
 including the corrected inherited startup test and STOP/provenance/format cases.
+The follow-up adds camera-free physical dry-run gates, nominal-plane sampling/reporting,
+fractional-reference grid anchoring and registered-but-defocused scout regressions.
+Its local full suite passed **338 tests with 12 skips**; the focused follow-up suite
+passed **103 tests**. Python compilation and diff whitespace checks also passed.
 Windows and Ubuntu are verified by the repository's existing GitHub Actions matrix,
 not by claiming a Windows/Linux runtime on this Mac. Current platform results are visible
 in [PR #2 checks](https://github.com/Cubey00/prusa-direct-drive/pull/2/checks).
