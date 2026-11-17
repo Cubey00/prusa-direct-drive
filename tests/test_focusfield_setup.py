@@ -163,6 +163,12 @@ def test_scout_grid_samples_requested_nominal_with_fractional_wd_reference():
     fine.validate_fixture(f, 273, simulation=True)
 
 
+def test_scout_never_rounds_an_unrepresentable_nominal_plane_into_a_false_claim():
+    f = replace(simulation_fixture(), reference_wd_mm=20.0032)
+    with pytest.raises(ValueError, match='nominal WD is not representable'):
+        propose_fine_scan(scout_samples([100, 100.1, 100.15, 100.2, 100.05]), ScoutRecipe(), f, Recipe())
+
+
 def test_scout_keeps_a_custom_user_nominal_not_only_20mm():
     recipe = Recipe(nominal_wd_mm=20.1)
     proposal = propose_fine_scan(scout_samples([100.3]*5), ScoutRecipe(), simulation_fixture(), recipe)

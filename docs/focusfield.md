@@ -216,6 +216,9 @@ fit uncertainty and absolute WD calibration uncertainty remain separate. The pro
 recipe **retains the user's requested nominal WD**, normally 20 mm; scouting never
 changes it to the interval midpoint or a focus peak. When the nominal plane lies in
 the proposed interval, the fine grid is anchored to that command so it is sampled.
+If that command is not representable at the driver's 0.001 mm Z precision with the
+measured WD reference, the proposal fails explicitly instead of rounding the nominal
+measurement plane. Verify the reference/command; software must not invent calibration.
 If the focus interval excludes it, `separate_nominal_plane_required=true` is saved in
 the proposal/recipe. The UI displays a persistent warning that a separate measurement
 at the requested distance is needed; no extra move outside the proposed bounds occurs.

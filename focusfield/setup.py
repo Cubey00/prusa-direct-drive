@@ -110,6 +110,9 @@ def propose_fine_scan(samples, scout, fixture, recipe):
     hi = min(hi, anchor + math.floor((min(fixture.safe_z_max_mm, sampled_hi)-anchor)/step+1e-8)*step)
     if min(peaks)-lo < 2*step-1e-8 or hi-max(peaks) < 2*step-1e-8:
         raise ValueError("Safe/sampled bounds cannot provide two fine positions on each side of every peak")
+    if lo <= anchor <= hi and abs(anchor-round(anchor, 3)) > 1e-8:
+        raise ValueError("Requested nominal WD is not representable at the driver's 0.001 mm Z command precision; "
+                         "verify the measured reference and nominal command instead of rounding the measurement plane")
     lo, hi = round(lo, 3), round(hi, 3)
     separate_nominal = not lo-1e-8 <= anchor <= hi+1e-8
     fine = replace(recipe, wd_start_mm=round(fixture.wd_for_z(lo), 6),

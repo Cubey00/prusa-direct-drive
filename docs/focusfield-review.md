@@ -169,6 +169,9 @@ The follow-up adds camera-free physical dry-run gates, nominal-plane sampling/re
 fractional-reference grid anchoring and registered-but-defocused scout regressions.
 Its local full suite passed **338 tests with 12 skips**; the focused follow-up suite
 passed **103 tests**. Python compilation and diff whitespace checks also passed.
+A subsequent command-precision edge case explicitly rejects an unrepresentable nominal
+plane instead of rounding it into a false acquisition claim; the updated scout/setup
+suite, including that additional regression, passed **31 tests**.
 Windows and Ubuntu are verified by the repository's existing GitHub Actions matrix,
 not by claiming a Windows/Linux runtime on this Mac. Current platform results are visible
 in [PR #2 checks](https://github.com/Cubey00/prusa-direct-drive/pull/2/checks).
