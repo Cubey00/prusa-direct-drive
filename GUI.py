@@ -13,7 +13,8 @@ from PIL import Image, ImageTk
 
 #from imaging import single_image, set_photo_folder
 from gantry_controls import (MotionController, force_guard, home, motionstop, _stop, enable_metrics,
-                             disconnect, move_absolute, _quickstop as quickstop, _lock as gantry_lock)
+                             disconnect, move_absolute, _quickstop as quickstop, _lock as gantry_lock,
+                             home_xy, send_gcode)
 from machine_settings import SETTINGS
 from strain_gauge import StrainGauge
 
@@ -279,11 +280,15 @@ class App:
             self.progress_label.config(text="Note: no live position from the printer yet (metrics); moving anyway.")
         feed = self.get_speed() or 1200.0         # mm/min (get_speed converts the mm/s field)
         self.motion.halt()
-        self.progress_label.config(text=f"Going to {label}: Z{z:.1f}, then X{x:.1f} Y{y:.1f} ...")
+        home = bool(msg.get("home_xy"))
+        self.progress_label.config(text=f"Going to {label}: Z{z:.1f}, " + ("home X/Y, " if home else "")
+                                   + f"then X{x:.1f} Y{y:.1f} ...")
 
         def work():
             try:
                 move_absolute(z=z)                                     # bed to travel height first
+                if home:
+                    home_xy()          # the head may have been moved by hand; Z is kept (sensor!)
                 move_absolute(x=x, y=y, XYfeed=feed)
                 ok, text = True, f"At {label}: X{x:.2f} Y{y:.2f} Z{z:.2f}. Fine-jog, then send the position."
             except Exception as e:
@@ -603,6 +608,13 @@ class App:
         messagebox.showinfo("Finished", f"Images saved to {self.output_dir}")
 
     def on_close(self):
+        if gantry_lock.acquire(blocking=False):      # give the X/Y idle release back (home_xy kept them on)
+            try:
+                send_gcode("M84 S120", timeout=2)
+            except Exception:
+                pass
+            finally:
+                gantry_lock.release()
         _stop.set()             # stop the probe and any chunked move
         self.motion.halt()
         quickstop()             # M410 straight away; no thread that could keep the port busy

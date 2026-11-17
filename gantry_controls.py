@@ -241,6 +241,23 @@ def home():
         _homing.clear()
 
 
+XY_HOLD_S = 1800   # idle seconds before the printer releases X/Y (firmware default 120)
+
+
+def home_xy():
+    """Home X and Y only (G28 X Y): the head may have been moved by hand while X/Y were released
+    (the firmware releases them after 2 min idle and then forgets where they are). Z is not homed:
+    its motors stay on, so it keeps its position, and Z homing probes the bed with the nozzle,
+    which the mounted sensor would hit. Lower the bed first. Afterwards X/Y stay powered for
+    XY_HOLD_S of idle, long enough to fine-tune a calibration point."""
+    _homing.set()
+    try:
+        send_gcode("G28 X Y", timeout=120)
+        send_gcode(f"M84 S{XY_HOLD_S}")
+    finally:
+        _homing.clear()
+
+
 def move_relative(dx=0.0, dy=0.0, dz=0.0, XYfeed=XYFEEDRATE, Zfeed=ZFEEDRATE):
     """Relative move; XY and Z are separate so Z can have a lower speed cap."""
     with _lock:

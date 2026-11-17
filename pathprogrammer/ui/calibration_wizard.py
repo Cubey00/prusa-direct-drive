@@ -3,6 +3,9 @@
 Per cone there is only one thing to do at a time:
   1. "Ga naar kegel N": the calibrator drives the head to the predicted position (bed down to a
      safe travel height first, then X/Y), predicted from the sensor offset in machine_settings.toml.
+     For cone 1 it homes X and Y first (G28 X Y, after lowering the bed): the head may have been
+     moved by hand, and every later position counts on X/Y being right. Z is not homed (the
+     nozzle probes the bed for that, and the sensor below it would hit the bed).
   2. The jogger: small, slow moves to put the sensor exactly on the tip.
   3. "Positie van kegel N insturen": the calibrator sends the head's position back.
 After F3 the 3-point fit decides: "Kalibratie geslaagd" (and the measured sensor offset is saved
@@ -17,6 +20,7 @@ from .. import calibration
 
 PLACE = {"F1": "linksvoor", "F2": "rechtsvoor", "F3": "linksachter"}
 GOTO_ANSWER_MS = 20000      # no reply from the calibrator within this time: tell the user why
+HOME_ANSWER_MS = 90000      # the same when it homes X/Y first
 JOG_STEPS = (1.0, 0.5, 0.1, 0.05)       # mm
 JOG_FEED = 120.0                        # mm/min = 2 mm/s: slow, for fine-tuning
 OK_COLOR, WARN_COLOR, ERR_COLOR = "#1b7a1b", "#b36b00", "#c00000"
@@ -172,14 +176,21 @@ class CalibrationWizard(QDialog):
                 self.text_label.setText(
                     f"<span style='color:{ERR_COLOR}'>Kegel {n} ligt buiten bereik (kop X{x:.1f} Y{y:.1f} "
                     f"Z{z:.1f}). Controleer de sensorafstand in machine_settings.toml.</span>")
+            elif self.state == GOTO and self.homes():
+                self.text_label.setText(
+                    "Laat de geprinte plaat op het bed liggen en zet de sensor op de kop. Zet de printer "
+                    "niet uit: dan blijft de hoogte (Z) van de print bekend.<br><br>"
+                    "Klik op de knop: het bed zakt eerst naar een veilige hoogte, dan zoekt de kop "
+                    "X en Y opnieuw op (homen, de kop gaat naar rechtsvoor) en rijdt daarna naar de kegel. "
+                    "Z wordt niet gehomed: dat doet de printer met de nozzle op het bed, en daar zit "
+                    "nu de sensor onder.")
             elif self.state == GOTO:
-                first = ("Laat de geprinte plaat op het bed liggen en zet de sensor op de kop. "
-                         "<b>Niet homen</b> met de sensor erop.<br><br>") if self.index == 0 else ""
-                self.text_label.setText(first + "Klik op de knop: het bed zakt eerst naar een veilige hoogte, "
+                self.text_label.setText("Klik op de knop: het bed zakt eerst naar een veilige hoogte, "
                                         "daarna rijdt de kop naar de kegel.")
             else:
                 self.text_label.setText(f"Kop rijdt naar kegel {n}: eerst Z{z:.1f} (bed omlaag), "
-                                        f"dan X{x:.1f} Y{y:.1f} ...")
+                                        + ("dan X/Y homen, " if self.homes() else "")
+                                        + f"dan X{x:.1f} Y{y:.1f} ...")
         elif self.state in (JOG, SENDING):
             self.step_label.setText(f"Kegel {n} van {total}: fijn afstellen")
             self.text_label.setText("Zet het midden van de sensor precies boven de top van de kegel. "
@@ -188,6 +199,10 @@ class CalibrationWizard(QDialog):
                                     f"{n} insturen</b>.")
         elif self.state == DONE:
             self.step_label.setText("Kalibratie klaar" if self.success else "Kalibratie niet gelukt")
+
+    def homes(self):
+        """Cone 1 starts from a fresh X/Y home: the head may have been moved by hand."""
+        return self.index == 0
 
     def set_state(self, state):
         self.state = state
@@ -207,19 +222,20 @@ class CalibrationWizard(QDialog):
             return
         p = self.point()
         x, y, z = self.predicted_head(p)
-        if not self.main.server.goto(x, y, z, p):
+        if not self.main.server.goto(x, y, z, p, home_xy=self.homes()):
             self.link_label.setText("De calibrator is nog niet verbonden. Wacht even en probeer opnieuw.")
             return
         self.link_label.setText("")
         self.set_state(MOVING)
         # tied to this window: the timer dies with it instead of firing into a deleted object
-        QTimer.singleShot(GOTO_ANSWER_MS, self, lambda: self.goto_timed_out(p))
+        wait = HOME_ANSWER_MS if self.homes() else GOTO_ANSWER_MS
+        QTimer.singleShot(wait, self, lambda: self.goto_timed_out(p, wait))
 
-    def goto_timed_out(self, name):
+    def goto_timed_out(self, name, wait):
         if self.state != MOVING or self.point() != name:
             return
         self.link_label.setText(
-            f"<span style='color:{ERR_COLOR}'>De calibrator meldt na {GOTO_ANSWER_MS // 1000} s nog niets. "
+            f"<span style='color:{ERR_COLOR}'>De calibrator meldt na {wait // 1000} s nog niets. "
             "Kijk of er op het scherm van de printer een vraag openstaat (bijv. het metrics-adres "
             "bevestigen) en of het calibratorvenster reageert; klik daarna opnieuw.</span>")
         self.set_state(GOTO)

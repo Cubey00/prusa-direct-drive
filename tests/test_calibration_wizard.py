@@ -14,13 +14,14 @@ class FakeServer:
     """Stands in for the calibrator link: records what is sent, never launches anything."""
 
     def __init__(self):
-        self.gotos, self.jogs, self.requests = [], [], []
+        self.gotos, self.homes, self.jogs, self.requests = [], [], [], []
 
     def is_running(self):
         return True
 
-    def goto(self, x, y, z, label=""):
+    def goto(self, x, y, z, label="", home_xy=False):
         self.gotos.append((label, round(x, 3), round(y, 3), round(z, 3)))
+        self.homes.append(home_xy)
         return True
 
     def jog(self, dx, dy, dz, feed):
@@ -124,6 +125,7 @@ def test_one_step_at_a_time_and_ends_with_position_known(win, plate):
         do_point(win, p, fids[p]["x"] - 0.6, fids[p]["y"] + 39.2)
 
     assert visible(wiz) == {"finish"} and wiz.finish_btn.text() == "Afsluiten: positie bekend"
+    assert win.server.homes == [True, False, False]          # X/Y homed once, before cone 1
     text = wiz.text_label.text()
     assert "Kalibratie geslaagd! De printer weet nu waar de sensorkop t.o.v. de objecten is." in text
     assert "Positie bekend" in text and "opgeslagen" in text
@@ -182,6 +184,7 @@ def test_out_of_reach_cone_cannot_be_driven_to(win, plate):
 def test_no_answer_from_the_calibrator_is_explained(win, plate, qtbot, monkeypatch):
     from pathprogrammer.ui import calibration_wizard
     monkeypatch.setattr(calibration_wizard, "GOTO_ANSWER_MS", 100)
+    monkeypatch.setattr(calibration_wizard, "HOME_ANSWER_MS", 100)
     win.open_model(plate)
     win.start_calibration()
     wiz = win.wizard

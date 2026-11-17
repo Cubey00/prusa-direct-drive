@@ -95,3 +95,19 @@ def test_disconnect_does_not_hang_on_a_command_waiting_forever(fake_port):
 
 def test_quickstop_is_safe_without_a_connection(fake_port):
     gc._quickstop()                           # must not raise
+
+
+def test_home_xy_homes_only_x_and_y_and_keeps_them_powered(fake_port):
+    port = FakeSerial()
+    fake_port.append(port)
+    gc.connect()
+    sent_before = len(port.written)
+    gc.move_absolute(z=95.0)
+    gc.home_xy()
+    sent = [c for c in port.written[sent_before:] if not c.startswith("M118")]
+    assert "G1 Z95.000 F" in " ".join(sent)
+    homes = [c for c in sent if c.startswith("G28")]
+    assert homes == ["G28 X Y"]                       # never Z: the sensor sits below the nozzle
+    assert sent.index("G28 X Y") > next(i for i, c in enumerate(sent) if c.startswith("G1 Z"))
+    assert sent[-1] == f"M84 S{gc.XY_HOLD_S}"
+    gc.disconnect(wait=0.5)
