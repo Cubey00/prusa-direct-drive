@@ -5,6 +5,7 @@ frame through on_frame (a small copy) and saves a full-size TIFF when a photo is
 A camera can be used by one owner at a time: release() before a run opens it itself.
 """
 import os
+import sys
 import threading
 import time
 from datetime import datetime
@@ -20,16 +21,48 @@ PREVIEW_WIDTH = 960         # px of the copy sent to on_frame
 DISABLE_ENV = "PRINTERPROJECT_NO_CAMERA"   # set (e.g. by the tests): never open a camera
 
 
-def default_camera(exposure_us=None):
+GENTL_VAR = "GENICAM_GENTL64_PATH"         # set by the IDS peak SDK installer: where its drivers are
+
+
+def refresh_gentl_path():
+    """Windows: take GENTL_VAR from the system environment if this process started before the
+    IDS peak SDK was installed, so the camera works without restarting the app."""
+    if sys.platform != "win32" or os.environ.get(GENTL_VAR):
+        return
+    try:
+        import winreg
+        for root, key in ((winreg.HKEY_LOCAL_MACHINE,
+                           r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                          (winreg.HKEY_CURRENT_USER, "Environment")):
+            try:
+                with winreg.OpenKey(root, key) as k:
+                    value, _ = winreg.QueryValueEx(k, GENTL_VAR)
+            except OSError:
+                continue
+            if value:
+                os.environ[GENTL_VAR] = os.path.expandvars(value)
+                return
+    except ImportError:
+        pass
+
+
+def default_camera():
     """The IDS camera (on macOS the Scientific Camera Capture backend behind the same API)."""
+    refresh_gentl_path()
     from ids_camera import IDS_Camera
-    cam = IDS_Camera()
-    if exposure_us:
-        try:
-            cam.set_exposure(exposure_us)
-        except Exception:
-            pass
-    return cam
+    return IDS_Camera()
+
+
+def explain(error):
+    """What to do about an error from opening the camera, in words for the user."""
+    text = str(error)
+    if isinstance(error, ModuleNotFoundError) and "ids_peak" in text:
+        return "IDS-Python-pakketten ontbreken (pip install ids_peak ids_peak_ipl)"
+    if GENTL_VAR in text:
+        return "IDS peak SDK (camera-driver) is niet geïnstalleerd op deze computer"
+    if "No camera" in text or "Found 0" in text or "does not exist" in text:
+        return "geen camera aangesloten"
+    return text
 
 
 def preview_of(frame, width=PREVIEW_WIDTH):
@@ -56,6 +89,8 @@ class CameraFeed:
         self._thread = None
         self._photo = []                 # folders of photos asked for, taken from the next frame
         self._lock = threading.Lock()
+        self._settings = {}              # exposure_us / gain to apply (again after every reconnect)
+        self._settings_changed = False
         self.connected = False
 
     @staticmethod
@@ -89,6 +124,28 @@ class CameraFeed:
             self._photo.append(Path(folder))
         return True
 
+    def set_settings(self, exposure_us=None, gain=None):
+        """Belichting (us) and gain; applied in the feed thread, also to a camera plugged in later."""
+        with self._lock:
+            if exposure_us is not None:
+                self._settings["exposure_us"] = float(exposure_us)
+            if gain is not None:
+                self._settings["gain"] = float(gain)
+            self._settings_changed = True
+
+    def _apply_settings(self, cam):
+        with self._lock:
+            settings, self._settings_changed = dict(self._settings), False
+        problems = []
+        for key, setter in (("exposure_us", "set_exposure"), ("gain", "set_gain")):
+            if key in settings:
+                try:
+                    getattr(cam, setter)(settings[key])
+                except Exception as e:
+                    problems.append(f"{'belichting' if key == 'exposure_us' else 'gain'}: {e}")
+        if problems:
+            self._set_state(True, "Camera verbonden; niet ingesteld: " + "; ".join(problems))
+
     def _set_state(self, connected, message):
         self.connected = connected
         self.on_state(connected, message)
@@ -104,7 +161,7 @@ class CameraFeed:
                     try:
                         cam = self.open_camera()
                     except Exception as e:
-                        msg = f"Geen camera: {e}"
+                        msg = f"Geen camera: {explain(e)}"
                         if msg != last_error:
                             self._set_state(False, msg)
                             last_error = msg
@@ -112,6 +169,9 @@ class CameraFeed:
                         continue
                     last_error = None
                     self._set_state(True, "Camera verbonden")
+                    self._settings_changed = True
+                if self._settings_changed:
+                    self._apply_settings(cam)
                 try:
                     frame = cam.snap()
                 except Exception as e:

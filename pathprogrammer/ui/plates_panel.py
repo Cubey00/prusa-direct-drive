@@ -54,7 +54,7 @@ class PlatePreview(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.manifest = None
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(140)
         self.setMouseTracking(True)
 
     def set_manifest(self, manifest):
@@ -183,7 +183,7 @@ class PlatesPanel(QGroupBox):
         self.status = QLabel("Import a dataset or a test set.")
         self.status.setWordWrap(True)
         self.plate_list = QListWidget()
-        self.plate_list.setMaximumHeight(64)
+        self.plate_list.setFixedHeight(52)
         self.preview = PlatePreview()
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)

@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (QFileDialog, QGridLayout, QLabel, QMainWindow, QM
 
 from .collapsible import CollapsibleBox
 from .photo_panel import PhotoPanel
+from .sensor_offset import SensorOffsetDialog, offset_text
+import machine_settings
 
 from .. import calibration, config, program as prog_mod
 from ..executor import ExecutorWorker
@@ -129,6 +131,7 @@ class MainWindow(QMainWindow):
         left_scroll = QScrollArea()
         left_scroll.setWidget(left_col)
         left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         split = QSplitter(Qt.Horizontal)
         for w in (left_scroll, centre, right):
             split.addWidget(w)
@@ -140,6 +143,7 @@ class MainWindow(QMainWindow):
         self.left.save_folder_btn.clicked.connect(self.choose_save_folder)
         self.left.runs_folder_btn.clicked.connect(self.choose_runs_folder)
         self.left.calib_btn.clicked.connect(self.start_calibration)
+        self.left.offset_btn.clicked.connect(self.edit_sensor_offset)
         self.left.calibrationChanged.connect(self.refit)
         self.left.faceSizeChanged.connect(self.refit)
         self.view.faceClicked.connect(self.add_point_at)
@@ -166,6 +170,7 @@ class MainWindow(QMainWindow):
         self.refit()
         self.update_graph_lines()
         self.plates.restore_last()        # the last plates again, the selected one opened as the model
+        self.show_sensor_offset()
         geo = self.settings.value("geometry")
         if geo is not None:
             self.restoreGeometry(geo)
@@ -299,6 +304,28 @@ class MainWindow(QMainWindow):
             text += "\n" + "\n".join(i.msg for i in issues)
         self.left.set_diagnostics(text, "warning" if issues else "ok")
 
+    def show_sensor_offset(self, settings=None):
+        """Nozzle -> sensor offset from machine_settings.toml above the calibration button."""
+        try:
+            settings = settings or machine_settings.load()
+        except machine_settings.SettingsError as e:
+            self.left.offset_label.setText(f"<span style='color:#c00000'>machine_settings.toml: {e}</span>")
+            return
+        self.left.offset_label.setText(offset_text(settings.sensor))
+
+    def edit_sensor_offset(self):
+        try:
+            settings = machine_settings.load()
+        except machine_settings.SettingsError as e:
+            QMessageBox.warning(self, "Sensorafstand", str(e))
+            return
+        dlg = SensorOffsetDialog(settings, self)
+        if dlg.exec() and dlg.saved is not None:
+            self.show_sensor_offset(dlg.saved)
+            if self.wizard is not None:
+                self.wizard.settings = dlg.saved
+                self.wizard.refresh()
+
     def start_calibration(self):
         """'Start kalibratie': the step-by-step window; it starts the calibrator when needed."""
         if self.wizard is None:
@@ -339,6 +366,8 @@ class MainWindow(QMainWindow):
                                          f"X{msg['x']:.2f} Y{msg['y']:.2f} Z{msg['z']:.2f}")
         if self.wizard is not None:
             self.wizard.on_message(msg)
+            if self.wizard.state == "done":
+                self.show_sensor_offset(self.wizard.settings)    # a good calibration saves a new one
 
     # ---------------- points ----------------
     def add_point_at(self, x, y):
@@ -434,11 +463,11 @@ class MainWindow(QMainWindow):
             return
         simulate = self.run.simulate.isChecked()
         if not simulate and self.server.is_running():
-            r = QMessageBox.question(self, "Calibrator open",
-                                     "The visual calibrator holds the printer connection. Close it now?")
+            r = QMessageBox.question(self, "Kalibratie open",
+                                     "De kalibratie gebruikt de printerverbinding nog. Nu sluiten?")
             if r != QMessageBox.Yes:
                 return
-            self.server.terminate()
+            self.server.quit_calibrator()
         xs, ys = zip(*(self.transform.face_to_machine(p.x, p.y) for p in prog.points))
         run_dir, run_name = self.new_run_dir()
         n_images = sum(p.n_images() for p in prog.points)
@@ -542,5 +571,6 @@ class MainWindow(QMainWindow):
         self.printer.shutdown()
         self.photo.shutdown()
         self.settings.setValue("geometry", self.saveGeometry())
+        self.server.quit_calibrator()
         self.server.close()
         super().closeEvent(e)

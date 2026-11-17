@@ -1,6 +1,7 @@
 import sys
+from pathlib import Path
 
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import QApplication
 
 from .ui.main_window import MainWindow
@@ -23,8 +24,20 @@ def light_palette():
     return p
 
 
+ICON = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
+
+
 def main():
+    if sys.platform == "win32":          # own taskbar button with our icon, not python's
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("TUDelft.TouchPathProgrammer")
+        except Exception:
+            pass
     app = QApplication(sys.argv)
+    app.setApplicationDisplayName("Touch path programmer")
+    if ICON.exists():
+        app.setWindowIcon(QIcon(str(ICON)))
     app.setStyle("Fusion")             # follows the palette, unlike the native style in Windows dark mode
     app.setPalette(light_palette())
     app.setStyleSheet(APP_STYLESHEET)

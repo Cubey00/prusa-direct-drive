@@ -3,14 +3,16 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QImage, QPixmap
-from PySide6.QtWidgets import (QFileDialog, QGroupBox, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
-                               QVBoxLayout)
+from PySide6.QtWidgets import (QAbstractSpinBox, QDoubleSpinBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
+                               QPushButton, QSizePolicy, QVBoxLayout)
 
 from .. import config
 from ..camera_feed import CameraFeed, default_camera
 from .style import ACCENT, ACCENT_DARK, action_button
 
 PHOTOS_DIR = config.PROJECT_DIR / "photos"
+EXPOSURE_MS_RANGE = (0.05, 2000.0)
+GAIN_RANGE = (1.0, 16.0)
 
 
 def to_qimage(a):
@@ -74,10 +76,34 @@ class PhotoPanel(QGroupBox):
         self.saved_label.setWordWrap(True)
         self.saved_label.setStyleSheet("color: #64748b; font-weight: normal;")
         self.saved_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.exposure = QDoubleSpinBox()
+        self.exposure.setRange(*EXPOSURE_MS_RANGE)
+        self.exposure.setDecimals(2)
+        self.exposure.setSuffix(" ms")
+        self.exposure.setToolTip("Belichtingstijd van de camera (live beeld en foto's)")
+        self.exposure.setValue(self.settings.value("camera/exposure_ms", config.CAMERA_EXPOSURE_US / 1000,
+                                                   type=float))
+        self.gain = QDoubleSpinBox()
+        self.gain.setRange(*GAIN_RANGE)
+        self.gain.setDecimals(1)
+        self.gain.setSingleStep(0.5)
+        self.gain.setToolTip("Versterking (gain): hoger is lichter, maar met meer ruis")
+        self.gain.setValue(self.settings.value("camera/gain", 1.0, type=float))
+        for w in (self.exposure, self.gain):
+            w.setKeyboardTracking(False)
+            w.setButtonSymbols(QAbstractSpinBox.UpDownArrows)
 
         lay = QVBoxLayout(self)
         lay.addWidget(self.view, 1)
         lay.addWidget(self.state_label)
+        srow = QHBoxLayout()
+        for text, w in (("Belichting", self.exposure), ("Gain", self.gain)):
+            lbl = QLabel(text)
+            lbl.setStyleSheet("font-weight: normal;")
+            srow.addWidget(lbl)
+            srow.addWidget(w)
+        srow.addStretch()
+        lay.addLayout(srow)
         row = QHBoxLayout()
         row.addWidget(self.photo_btn, 2)
         row.addWidget(self.folder_btn)
@@ -92,11 +118,19 @@ class PhotoPanel(QGroupBox):
         self.stateChanged.connect(self._on_state)
         self.photoSaved.connect(self._on_saved)
         self.feed = CameraFeed(self.frameReady.emit, self.stateChanged.emit, self.photoSaved.emit,
-                               open_camera or (lambda: default_camera(config.CAMERA_EXPOSURE_US)))
+                               open_camera or default_camera)
+        self.exposure.valueChanged.connect(self._settings_changed)
+        self.gain.valueChanged.connect(self._settings_changed)
+        self._settings_changed()
         self._show_folder()
         if CameraFeed.disabled():
             self.state_label.setText("Camera uitgeschakeld (PRINTERPROJECT_NO_CAMERA)")
         self.feed.start()
+
+    def _settings_changed(self, *_):
+        self.settings.setValue("camera/exposure_ms", self.exposure.value())
+        self.settings.setValue("camera/gain", self.gain.value())
+        self.feed.set_settings(exposure_us=self.exposure.value() * 1000, gain=self.gain.value())
 
     # ---------------- folder ----------------
     def folder(self):

@@ -35,9 +35,10 @@ class State(Enum):
 
 
 class App:
-    def __init__(self, root, link=None):
+    def __init__(self, root, link=None, hidden=False):
         self.root = root
         self.link = link              # CalibratorClient when started by the path programmer
+        self.hidden = hidden and link is not None   # no window: messages go to the wizard instead
         self.root.title("PRUSA Core One load cell and control tool")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         #root.bind("<Escape>", lambda e: self.stop())
@@ -189,7 +190,7 @@ class App:
                 motionstop()
             except Exception as e:
                 msg = str(e)
-                self.root.after(0, lambda: messagebox.showerror("Printer stop error", msg))
+                self.root.after(0, lambda: self.report_error("Printer stop error", msg))
         threading.Thread(target=work, daemon=True).start()
 
     def get_step(self):
@@ -255,12 +256,22 @@ class App:
         self.root.focus_set()     # release the entry so live updates resume
         self.update_position_labels()
 
+    def report_error(self, title, msg):
+        """A pop-up, or (running hidden for the wizard) a status message the wizard shows."""
+        if self.hidden:
+            self.link.send_status(False, f"{title}: {msg}")
+        else:
+            messagebox.showerror(title, msg)
+
     def on_link_message(self, msg):
         """Message from the path programmer (main thread). "goto": drive the head to an absolute
         position for the calibration wizard: Z first (the bed goes to the travel height, so the
         sensor is clear of the plate), then X/Y. "jog": a small fine-tuning move from the wizard.
         "request_position": send the current position as that fiducial."""
         kind = msg.get("type")
+        if kind == "quit":
+            self.on_close()
+            return
         if kind == "jog":
             self.link_jog(msg)
             return
@@ -401,7 +412,7 @@ class App:
         self._alert_job = self.root.after(self.ALERT_BLINK_MS, self._blink, not on)
 
     def _on_motion_error(self, err):
-        self.root.after(0, lambda: messagebox.showerror("Printer", str(err)))
+        self.root.after(0, lambda: self.report_error("Printer", str(err)))
 
 
     # --- Load cell display ---
@@ -425,7 +436,7 @@ class App:
                 def failed():
                     self._gauge_running = False
                     self.progress_label.config(text=f"No force data: {msg}")
-                    messagebox.showerror("Metrics", msg)
+                    self.report_error("Geen krachtdata", msg)
                 self.root.after(0, failed)
                 return
 
@@ -695,13 +706,16 @@ class App:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--link", type=int, help="path programmer port (set by pathprogrammer)")
+    parser.add_argument("--hidden", action="store_true", help="no window (the path programmer's wizard drives it)")
     args = parser.parse_args()
     link = None
     if args.link:
         from pathprogrammer.ipc import CalibratorClient
         link = CalibratorClient(args.link)
     root = tk.Tk()
-    app = App(root, link)
+    if args.hidden and link is not None:
+        root.withdraw()
+    app = App(root, link, hidden=args.hidden)
     if link is not None:
         link.on_message = lambda msg: root.after(0, app.on_link_message, msg)
     root.mainloop()

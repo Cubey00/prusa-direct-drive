@@ -19,6 +19,7 @@ Message contract (dicts, all with "v": 1):
     {"v": 1, "type": "jog", "dx": float, "dy": float, "dz": float, "feed": float}
         small relative move (mm, feed in mm/min) for fine-tuning onto a cone
     {"v": 1, "type": "request_position", "point": "F1" | "F2" | "F3"}
+    {"v": 1, "type": "quit"}                                    close the calibrator (it runs hidden)
         answer with a "position" message for that point (the head's current position)
 Unknown types are ignored by the receiver, so either side can add messages.
 """
@@ -50,6 +51,10 @@ def request_position_msg(point):
     if point not in POINTS:
         raise ValueError(f"Unknown calibration point {point!r}")
     return {"v": VERSION, "type": "request_position", "point": point}
+
+
+def quit_msg():
+    return {"v": VERSION, "type": "quit"}
 
 
 def position_msg(point, x, y, z):
@@ -115,12 +120,24 @@ class CalibratorServer:
     def request_position(self, point):
         return self.send(request_position_msg(point))
 
-    def launch(self, script):
+    def launch(self, script, hidden=True):
+        """Start the calibrator. hidden: without its own window; the wizard drives it and shows
+        its messages (no extra window, no pop-ups)."""
         if self.is_running():
             return
         env = dict(os.environ, **{KEY_ENV: self.key.hex()})
-        self.proc = subprocess.Popen([sys.executable, str(script), "--link", str(self.port)],
-                                     cwd=os.path.dirname(str(script)), env=env)
+        args = [sys.executable, str(script), "--link", str(self.port)] + (["--hidden"] if hidden else [])
+        self.proc = subprocess.Popen(args, cwd=os.path.dirname(str(script)), env=env)
+
+    def quit_calibrator(self, wait=5.0):
+        """Ask the calibrator to close properly (M410, port released); kill it if it doesn't."""
+        if not self.is_running():
+            return
+        self.send(quit_msg())
+        try:
+            self.proc.wait(wait)
+        except subprocess.TimeoutExpired:
+            self.terminate()
 
     def is_running(self):
         return self.proc is not None and self.proc.poll() is None

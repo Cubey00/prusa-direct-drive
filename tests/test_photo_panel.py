@@ -24,6 +24,12 @@ class FakeCamera:
             raise RuntimeError("cable pulled")
         return np.full((300, 400, 3), self.n % 255, dtype=np.uint8)
 
+    def set_exposure(self, us):
+        self.exposure = us
+
+    def set_gain(self, g):
+        self.gain = g
+
     def close(self):
         FakeCamera.closed += 1
 
@@ -54,7 +60,7 @@ def test_feed_waits_for_a_camera_then_streams():
     feed.start()
     try:
         _wait(lambda: len(attempts) >= 2)
-        assert states == [(False, "Geen camera: No camera found")]     # said once, not every retry
+        assert states == [(False, "Geen camera: geen camera aangesloten")]     # said once, not every retry
         plugged.set()
         _wait(lambda: len(frames) >= 2)
         assert states[-1] == (True, "Camera verbonden") and feed.connected
@@ -111,3 +117,27 @@ def _wait(cond, timeout=5.0):
     while not cond():
         assert time.monotonic() < end, "timed out"
         time.sleep(0.01)
+
+
+def test_exposure_and_gain_reach_the_camera_also_after_a_reconnect(qtbot, tmp_path):
+    cams = []
+    panel = PhotoPanel(QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat),
+                       open_camera=lambda: cams.append(FakeCamera(fail_after=50)) or cams[-1])
+    qtbot.addWidget(panel)
+    try:
+        qtbot.waitUntil(lambda: bool(cams) and getattr(cams[0], "exposure", None) == 100_000, timeout=5000)
+        panel.exposure.setValue(20.0)
+        panel.gain.setValue(2.5)
+        qtbot.waitUntil(lambda: (cams[-1].exposure, getattr(cams[-1], "gain", None)) == (20_000, 2.5),
+                        timeout=5000)
+        qtbot.waitUntil(lambda: len(cams) >= 2, timeout=10000)      # 50 frames, then "unplugged"
+        qtbot.waitUntil(lambda: getattr(cams[-1], "exposure", None) == 20_000, timeout=5000)
+    finally:
+        panel.shutdown()
+    assert QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat).value("camera/exposure_ms", type=float) == 20.0
+
+
+def test_errors_are_explained():
+    assert "SDK" in camera_feed.explain(Exception("GENICAM_GENTL64_PATH environment variable not found!"))
+    assert "pip install" in camera_feed.explain(ModuleNotFoundError("No module named 'ids_peak'"))
+    assert camera_feed.explain(RuntimeError("No camera found.")) == "geen camera aangesloten"

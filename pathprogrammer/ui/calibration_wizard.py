@@ -393,4 +393,5 @@ class CalibrationWizard(QDialog):
                     != QMessageBox.Yes:
                 e.ignore()
                 return
+        self.main.server.quit_calibrator()     # it runs without a window: close it with the wizard
         super().closeEvent(e)
