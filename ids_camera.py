@@ -16,7 +16,7 @@ class IDS_Camera:
         image = camera.snap()
     """
 
-    def __init__(self, camera_index=0):
+    def __init__(self, camera_index=0, *, pixel_format=None):
         """
         Open the IDS camera and prepare it for image acquisition.
 
@@ -39,6 +39,7 @@ class IDS_Camera:
         # We use this to prevent accidentally using the camera after
         # camera.close() has been called.
         self._closed = False
+        self._lease = None
 
 
         # ===================================================================
@@ -48,6 +49,8 @@ class IDS_Camera:
 
 
         try:
+            from device_session import DeviceLease
+            self._lease = DeviceLease("camera").acquire()
 
             # =================================================================
             # 2. FIND CONNECTED CAMERAS
@@ -130,6 +133,18 @@ class IDS_Camera:
             self.remote_nodemap = (
                 self.device.RemoteDevice().NodeMaps()[0]
             )
+
+            # Native UNPACKED formats only. Select before allocating payload buffers.
+            if pixel_format is not None:
+                supported = {"Mono8", "Mono10", "Mono12", "Mono16", "BayerRG8", "BayerRG10", "BayerRG12"}
+                if pixel_format not in supported:
+                    raise ValueError("IDS raw capture requires a supported unpacked Mono/BayerRG format")
+                self.remote_nodemap.FindNode("PixelFormat").SetCurrentEntry(pixel_format)
+                for name in ("ExposureAuto", "GainAuto"):
+                    try:
+                        self.remote_nodemap.FindNode(name).SetCurrentEntry("Off")
+                    except Exception:
+                        pass  # Capture readback is checked; physical processing verification is still required.
 
 
             # =================================================================
@@ -451,6 +466,45 @@ class IDS_Camera:
         # Set the requested gain.
         gain_node.SetValue(gain)
 
+    def capture_info(self, pixel_format=None):
+        from focusfield.acquisition import capture_metadata
+        native = self.remote_nodemap.FindNode("PixelFormat").CurrentEntry().SymbolicValue()
+        return capture_metadata(pixel_format or native,
+            self.remote_nodemap.FindNode("DeviceSerialNumber").Value(),
+            self.remote_nodemap.FindNode("ExposureTime").Value(),
+            self.remote_nodemap.FindNode("Gain").Value(), native_pixel_format=native, backend="ids_peak")
+
+    def capture_raw(self):
+        from focusfield.acquisition import Capture
+        if self._closed:
+            raise RuntimeError("Camera has been closed.")
+        info = self.capture_info()
+        if info["pixel_format"] not in {"Mono8", "Mono10", "Mono12", "Mono16", "BayerRG8", "BayerRG10", "BayerRG12"}:
+            raise RuntimeError("Raw format is packed or unsupported; reopen with an unpacked pixel_format")
+        buffer = self.data_stream.WaitForFinishedBuffer(5000)
+        try:
+            if buffer.IsIncomplete():
+                raise RuntimeError("Incomplete IDS frame")
+            native = ids_peak_ipl_extension.BufferToImage(buffer)
+            pixels = np.array(native.get_numpy_2D(), copy=True)
+            info = self.capture_info()
+            info["device_frame_id"] = int(buffer.FrameID())
+            return Capture(pixels, info)
+        finally:
+            self.data_stream.QueueBuffer(buffer)
+
+    def restart_acquisition(self):
+        """Discard queued/in-flight pre-motion exposures, without changing pixel format."""
+        if self._closed:
+            raise RuntimeError("Camera has been closed.")
+        self.remote_nodemap.FindNode("AcquisitionStop").Execute()
+        self.data_stream.StopAcquisition(peak.AcquisitionStopMode_Default)
+        self.data_stream.Flush(peak.DataStreamFlushMode_DiscardAll)
+        for buffer in self.data_stream.AnnouncedBuffers():
+            self.data_stream.QueueBuffer(buffer)
+        self.data_stream.StartAcquisition()
+        self.remote_nodemap.FindNode("AcquisitionStart").Execute()
+
 
     # =========================================================================
     # CLOSE
@@ -555,6 +609,10 @@ class IDS_Camera:
             # Mark the camera as closed so that snap() cannot be called
             # accidentally afterwards.
             self._closed = True
+
+            if self._lease is not None:
+                self._lease.release()
+                self._lease = None
 
             # Finally shut down the IDS peak library.
             peak.Library.Close()

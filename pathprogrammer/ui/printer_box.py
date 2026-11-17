@@ -112,6 +112,7 @@ class PrinterBox(QGroupBox):
         self.plate_source = plate_source
         self.status = None
         self._polling = self._busy = self._finished_note = False
+        self.hardware_busy = False
 
         self.settings_btn = QPushButton("Printer settings...")
         self.print_btn = QPushButton("Print this plate")
@@ -169,7 +170,7 @@ class PrinterBox(QGroupBox):
 
     def refresh(self):
         """Enable the buttons that make sense now."""
-        st, busy = self.status, self._busy
+        st, busy = self.status, self._busy or self.hardware_busy
         gcode, _ = self.plate_source()
         self.print_btn.setEnabled(bool(gcode) and st is not None and st.can_start and not busy)
         self.print_btn.setToolTip("" if gcode else "Select a sliced plate in the Print plates box")
@@ -248,6 +249,9 @@ class PrinterBox(QGroupBox):
 
     # ---------------- actions ----------------
     def _action(self, work, busy_text):
+        if self.hardware_busy:
+            QMessageBox.warning(self, "Printer in use", "An optical scan owns the printer.")
+            return
         try:
             link = link_from_settings(self.settings)
         except PrusaLinkError as e:
@@ -256,7 +260,11 @@ class PrinterBox(QGroupBox):
         self._busy = True
         self.state_label.setText(busy_text)
         self.refresh()
-        self._run(lambda: work(link), self.actionDone, self.actionFailed)
+        def exclusive_action():
+            from device_session import DeviceLease
+            with DeviceLease("printer"):
+                return work(link)
+        self._run(exclusive_action, self.actionDone, self.actionFailed)
 
     def print_plate(self):
         gcode, label = self.plate_source()

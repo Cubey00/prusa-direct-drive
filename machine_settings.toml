@@ -111,3 +111,21 @@ residual_tol = 0.5                 # mm: warn if a point is further than this of
 cone_F1 = []
 cone_F2 = []
 cone_F3 = []
+
+[focusfield]
+# Deliberately disabled. Measure the optical fixture independently before enabling.
+# These values do NOT inherit the tactile camera scale or sensor calibration.
+enabled = false
+measured = false
+fixture_id = "unconfigured"
+calibration_id = "unconfigured"
+camera_serial = ""
+firmware_id = ""
+safe_z_min_mm = 0.0
+safe_z_max_mm = 0.0
+reference_z_mm = 0.0
+reference_wd_mm = 20.0
+minimum_wd_mm = 5.0
+wd_uncertainty_mm = 0.0
+position_tolerance_mm = 0.02
+z_speed_mm_s = 1.0

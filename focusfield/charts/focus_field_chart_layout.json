@@ -1,0 +1,392 @@
+{
+  "description": "Focus-field test chart physical design (not an MTF measurement).",
+  "units": "mm",
+  "page_width": 100.0,
+  "page_height": 80.0,
+  "visible_field": {
+    "left": 20.0,
+    "top": 17.5,
+    "width": 60.0,
+    "height": 45.0
+  },
+  "aruco_dictionary": "DICT_4X4_50",
+  "aruco_ids": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "quiet_zone_mm": 1.25,
+  "fiducials": [
+    {
+      "id": 0,
+      "top_left_mm": [
+        21.5,
+        19.0
+      ],
+      "size_mm": 5.0,
+      "center_mm": [
+        24.0,
+        21.5
+      ],
+      "position": "top_left"
+    },
+    {
+      "id": 1,
+      "top_left_mm": [
+        73.5,
+        19.0
+      ],
+      "size_mm": 5.0,
+      "center_mm": [
+        76.0,
+        21.5
+      ],
+      "position": "top_right"
+    },
+    {
+      "id": 2,
+      "top_left_mm": [
+        73.5,
+        56.0
+      ],
+      "size_mm": 5.0,
+      "center_mm": [
+        76.0,
+        58.5
+      ],
+      "position": "bottom_right"
+    },
+    {
+      "id": 3,
+      "top_left_mm": [
+        21.5,
+        56.0
+      ],
+      "size_mm": 5.0,
+      "center_mm": [
+        24.0,
+        58.5
+      ],
+      "position": "bottom_left"
+    }
+  ],
+  "slanted_squares": [
+    {
+      "row": 0,
+      "col": 1,
+      "center_mm": [
+        35.0,
+        25.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 0,
+      "col": 2,
+      "center_mm": [
+        42.5,
+        25.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 0,
+      "col": 3,
+      "center_mm": [
+        50.0,
+        25.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 0,
+      "col": 4,
+      "center_mm": [
+        57.5,
+        25.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 0,
+      "col": 5,
+      "center_mm": [
+        65.0,
+        25.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 1,
+      "col": 0,
+      "center_mm": [
+        27.5,
+        32.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 1,
+      "col": 1,
+      "center_mm": [
+        35.0,
+        32.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 1,
+      "col": 2,
+      "center_mm": [
+        42.5,
+        32.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 1,
+      "col": 3,
+      "center_mm": [
+        50.0,
+        32.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 1,
+      "col": 4,
+      "center_mm": [
+        57.5,
+        32.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 1,
+      "col": 5,
+      "center_mm": [
+        65.0,
+        32.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 1,
+      "col": 6,
+      "center_mm": [
+        72.5,
+        32.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 2,
+      "col": 0,
+      "center_mm": [
+        27.5,
+        40.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 2,
+      "col": 1,
+      "center_mm": [
+        35.0,
+        40.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 2,
+      "col": 2,
+      "center_mm": [
+        42.5,
+        40.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 2,
+      "col": 3,
+      "center_mm": [
+        50.0,
+        40.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 2,
+      "col": 4,
+      "center_mm": [
+        57.5,
+        40.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 2,
+      "col": 5,
+      "center_mm": [
+        65.0,
+        40.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 2,
+      "col": 6,
+      "center_mm": [
+        72.5,
+        40.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 3,
+      "col": 0,
+      "center_mm": [
+        27.5,
+        47.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 3,
+      "col": 1,
+      "center_mm": [
+        35.0,
+        47.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 3,
+      "col": 2,
+      "center_mm": [
+        42.5,
+        47.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 3,
+      "col": 3,
+      "center_mm": [
+        50.0,
+        47.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 3,
+      "col": 4,
+      "center_mm": [
+        57.5,
+        47.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 3,
+      "col": 5,
+      "center_mm": [
+        65.0,
+        47.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 3,
+      "col": 6,
+      "center_mm": [
+        72.5,
+        47.5
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 4,
+      "col": 1,
+      "center_mm": [
+        35.0,
+        55.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 4,
+      "col": 2,
+      "center_mm": [
+        42.5,
+        55.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 4,
+      "col": 3,
+      "center_mm": [
+        50.0,
+        55.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 4,
+      "col": 4,
+      "center_mm": [
+        57.5,
+        55.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    },
+    {
+      "row": 4,
+      "col": 5,
+      "center_mm": [
+        65.0,
+        55.0
+      ],
+      "side_mm": 3.6,
+      "rotation_deg": 5.0
+    }
+  ],
+  "notes": [
+    "Each square is rotated inside the flat target plane; do not tilt the whole plate.",
+    "Printer/laser edge quality may limit measured system MTF.",
+    "The fiducials locate chart geometry; they are not the slanted edges used for MTF.",
+    "Chart physical dimensions must be verified after printing."
+  ]
+}

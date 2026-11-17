@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (QFileDialog, QGridLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
-                               QScrollArea, QSplitter, QVBoxLayout, QWidget)
+                               QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget)
 
 from .. import calibration, config, program as prog_mod
 from ..executor import ExecutorWorker
@@ -22,6 +22,7 @@ from .point_table import PointTable
 from .force_graph import ForceGraph
 from .run_controls import RunControls
 from .run_settings import RunSettingsBox
+from .focusfield_panel import FocusFieldPanel
 
 
 class MainWindow(QMainWindow):
@@ -99,7 +100,12 @@ class MainWindow(QMainWindow):
         for w in (left_scroll, centre, right):
             split.addWidget(w)
         split.setSizes([470, 700, 470])
-        self.setCentralWidget(split)
+        self.focusfield = FocusFieldPanel(self)
+        self.focusfield.hardwareActivityChanged.connect(self._optical_activity)
+        tabs = QTabWidget()
+        tabs.addTab(split, "Print, calibration & touch")
+        tabs.addTab(self.focusfield, "Focus-Field MTF")
+        self.setCentralWidget(tabs)
 
         # wiring
         self.left.open_btn.clicked.connect(self.open_model_dialog)
@@ -248,6 +254,9 @@ class MainWindow(QMainWindow):
 
     def start_calibration(self):
         """'Start kalibratie': the step-by-step window; it starts the calibrator when needed."""
+        if self.focusfield.hardware_active:
+            QMessageBox.warning(self, "Printer in use", "An optical scan owns the printer and camera.")
+            return
         if self.wizard is None:
             self.wizard = CalibrationWizard(self)
             self.wizard.restart()             # a new calibration: old machine points no longer count
@@ -261,6 +270,9 @@ class MainWindow(QMainWindow):
             self.open_calibrator()
 
     def open_calibrator(self):
+        if self.focusfield.hardware_active:
+            QMessageBox.warning(self, "Printer in use", "An optical scan owns the printer and camera.")
+            return
         if self.server.is_running():
             QMessageBox.information(self, "Calibrator", "The visual calibrator is already open.")
             return
@@ -373,6 +385,9 @@ class MainWindow(QMainWindow):
         return prog, errors
 
     def execute(self):
+        if self.focusfield.hardware_active:
+            QMessageBox.warning(self, "Printer in use", "An optical scan owns the printer and camera.")
+            return
         if self.thread is not None:
             return
         prog, errors = self.preflight()
@@ -449,7 +464,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Run ended", f"{summary.outcome}: {summary.message}")
 
     def stop(self):
-        if self.worker is not None:
+        if self.focusfield.hardware_active:
+            self.focusfield.stop()
+        elif self.worker is not None:
             self.worker.abort()
             self.run.status.setText("STOP requested")
         elif not self.run.simulate.isChecked() and not self.server.is_running():
@@ -464,7 +481,16 @@ class MainWindow(QMainWindow):
         for b in self.rot_btns.values():
             b.setEnabled(not on)
 
+    def _optical_activity(self, active):
+        self.set_running(active)
+        self.printer.hardware_busy = active
+        self.printer.refresh()
+
     def closeEvent(self, e):
+        if not self.focusfield.shutdown():
+            self.focusfield.status.append("Stopping before closing; close again once the run has ended.")
+            e.ignore()
+            return
         if self.worker is not None:
             if QMessageBox.question(self, "Quit", "A program is running. Stop it and quit?") != QMessageBox.Yes:
                 e.ignore()

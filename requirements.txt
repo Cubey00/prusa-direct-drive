@@ -10,3 +10,5 @@ matplotlib
 pytest
 pytest-qt
 requests
+opencv-contrib-python>=4.8,<5
+tifffile

@@ -10,10 +10,11 @@ import numpy as np
 
 
 class IDS_Camera:
-    def __init__(self, camera_index=0, *, camera_id=None, backend=None):
+    def __init__(self, camera_index=0, *, camera_id=None, backend=None, pixel_format=None):
         self._lock = threading.RLock()
         self._camera = self._stream = None
         self._closed = False
+        self._lease = None
         try:
             from scientific_camera import CameraManager, CameraConfiguration
             from scientific_camera.pixels.registry import lookup
@@ -43,7 +44,18 @@ class IDS_Camera:
                 raise RuntimeError(f"Camera {camera_index} does not exist. Found {len(devices)} camera(s).")
             camera_id = devices[camera_index].id
         try:
+            from device_session import DeviceBusy, DeviceLease
+            try:
+                self._lease = DeviceLease("camera").acquire()
+            except DeviceBusy as exc:
+                raise RuntimeError(f"Camera {camera_id} is busy: {exc}") from exc
             self._camera = manager.open(camera_id)
+            if pixel_format is not None:
+                if pixel_format not in {"Mono8", "Mono16", "BayerRG8", "BayerRG10p", "BayerRG12p"}:
+                    raise ValueError("macOS raw capture requires a verified SCC standard format (vendor packing unsupported)")
+                if pixel_format not in self._camera.capabilities().pixel_formats:
+                    raise RuntimeError(f"Camera does not offer {pixel_format}")
+                self._camera.configure(CameraConfiguration(pixel_format=pixel_format))
             # The legacy snap contract is RGB8. Never guess vendor-specific packing.
             pixel_format = self._camera.configuration.pixel_format
             if not lookup(pixel_format).decodable:
@@ -102,6 +114,36 @@ class IDS_Camera:
     def set_gain(self, gain):
         self._configure(gain=gain)
 
+    def capture_info(self, pixel_format=None):
+        from focusfield.acquisition import capture_metadata
+        config = self._camera.configuration
+        return capture_metadata(pixel_format or config.pixel_format, self._camera.info.serial or self._camera.info.id,
+                                config.exposure_us, config.gain, native_pixel_format=config.pixel_format,
+                                backend=f"scc_{self._camera.info.backend}",
+                                simulated=self._camera.info.backend == "simulated")
+
+    def capture_raw(self):
+        from scientific_camera.pixels.standard import decode
+        from focusfield.acquisition import Capture
+        with self._lock:
+            self._ensure_open()
+            frame = self._stream.next_frame(timeout=5)
+            if frame.metadata.status != "complete":
+                raise RuntimeError("Incomplete SCC frame")
+            if frame.metadata.pixel_format not in {"Mono8", "Mono16", "BayerRG8", "BayerRG10p", "BayerRG12p"}:
+                raise RuntimeError("Unsupported SCC raw pixel format")
+            samples = np.array(decode(frame), copy=True, order="C")
+            info = self.capture_info(frame.metadata.pixel_format)
+            info.update(device_frame_id=frame.metadata.device_frame_id,
+                        scc_host_received_monotonic_ns=frame.metadata.host_received_monotonic_ns)
+            return Capture(samples, info)
+
+    def restart_acquisition(self):
+        with self._lock:
+            self._ensure_open()
+            self._stream.stop()
+            self._stream = self._camera.start_stream()
+
     def close(self):
         with self._lock:
             if self._closed:
@@ -111,6 +153,9 @@ class IDS_Camera:
                     self._camera.close()
             finally:
                 self._closed = True
+                if self._lease is not None:
+                    self._lease.release()
+                    self._lease = None
 
     def __del__(self):
         try:

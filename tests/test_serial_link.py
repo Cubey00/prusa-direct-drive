@@ -111,3 +111,22 @@ def test_home_xy_homes_only_x_and_y_and_keeps_them_powered(fake_port):
     assert sent.index("G28 X Y") > next(i for i, c in enumerate(sent) if c.startswith("G1 Z"))
     assert sent[-1] == f"M84 S{gc.XY_HOLD_S}"
     gc.disconnect(wait=0.5)
+
+
+def test_cancel_between_absolute_mode_and_z_dispatch_sends_no_motion(fake_port):
+    port = FakeSerial()
+    fake_port.append(port)
+    gc.connect()
+    cancel = threading.Event()
+    original = port.write
+    def write(data):
+        original(data)
+        if data == b"G90\n":
+            cancel.set()
+    port.write = write
+    try:
+        with pytest.raises(InterruptedError, match="cancelled"):
+            gc.move_absolute(z=100, cancel=cancel)
+        assert port.written == ["G90"]
+    finally:
+        gc.disconnect()
