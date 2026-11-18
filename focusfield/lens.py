@@ -93,6 +93,7 @@ def calibrate_lens(images, validation_images, *, board_size, square_mm, camera_s
     object_points[:, :2] = np.mgrid[:cols, :rows].T.reshape(-1, 2) * square_mm
     size = None
     image_points = []
+    corner_criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
     for path in all_images:
         image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
         if image is None or image.dtype not in (np.uint8, np.uint16) or image.ndim not in (2, 3):
@@ -105,9 +106,10 @@ def calibrate_lens(images, validation_images, *, board_size, square_mm, camera_s
             raise ValueError(f"Calibration frame {path.name} has size {frame_size}, expected {size}")
         if plane.dtype != np.uint8:
             plane = cv2.normalize(plane, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-        found, corners = cv2.findChessboardCornersSB(plane, board_size)
+        found, corners = cv2.findChessboardCorners(plane, board_size)
         if not found:
             raise ValueError(f"Checkerboard not detected in {path.name}")
+        cv2.cornerSubPix(plane, corners, (5, 5), (-1, -1), corner_criteria)
         image_points.append(corners)
     rms, matrix, coeffs, _, _ = cv2.calibrateCamera([object_points] * len(images),
                                                    image_points[:len(images)], size, None, None)

@@ -1,13 +1,14 @@
 from dataclasses import replace
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import cv2
 import numpy as np
 import pytest
 import tifffile
 
-from focusfield.__main__ import main
 from focusfield.acquisition import Capture, capture_metadata
 from focusfield.chart import edge_rois, load_chart, register_capture
 from focusfield.config import Recipe, load_recipe, simulation_fixture
@@ -148,8 +149,14 @@ def test_calibration_command_fits_and_validates_separate_checkerboard_images(tmp
         assert cv2.imwrite(str(path), img)
         images.append(str(path))
     output = tmp_path / "profile.json"
-    assert main(["calibrate-lens", "--camera-serial", "TEST", "--corners", "7", "5", "--square-mm", "20",
-                 "--output", str(output), "--images", *images[:8], "--validation", *images[8:]]) == 0
+    # Run the command through its normal entry point, separately from the Qt test process.
+    completed = subprocess.run(
+        [sys.executable, "-m", "focusfield", "calibrate-lens", "--camera-serial", "TEST",
+         "--corners", "7", "5", "--square-mm", "20", "--output", str(output),
+         "--images", *images[:8], "--validation", *images[8:]],
+        capture_output=True, text=True, timeout=90,
+    )
+    assert completed.returncode == 0, completed.stderr
     result = LensCalibration.load(output)
     assert result.camera_serial == "TEST" and result.image_size_px == (width, height)
     assert result.calibration_rms_px < 1 and max(result.validation_rms_px) < 1
