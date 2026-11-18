@@ -1,0 +1,16 @@
+schema_version = 1
+wd_start_mm = 19.50
+wd_end_mm = 20.50
+step_mm = 0.05
+nominal_wd_mm = 20.00
+frames_per_position = 3
+repetitions = 2
+reverse_alternate = false
+settle_s = 0.3
+discard_frames = 2
+exposure_us = 10000.0
+gain = 1.0
+fixed_frequency_cpp = 0.1
+# RGB8 is a provisional control prototype. Raw capture requires a verified format.
+pixel_format = "RGB8"
+chart_path = "../focusfield/charts/focus_field_chart_layout.json"

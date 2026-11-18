@@ -113,6 +113,66 @@ def test_home_xy_homes_only_x_and_y_and_keeps_them_powered(fake_port):
     gc.disconnect(wait=0.5)
 
 
+def test_cancel_between_absolute_mode_and_z_dispatch_sends_no_motion(fake_port):
+    port = FakeSerial()
+    fake_port.append(port)
+    gc.connect()
+    cancel = threading.Event()
+    original = port.write
+    def write(data):
+        original(data)
+        if data == b"G90\n":
+            cancel.set()
+    port.write = write
+    try:
+        with pytest.raises(InterruptedError, match="cancelled"):
+            gc.move_absolute(z=100, cancel=cancel)
+        assert port.written == ["G90"]
+    finally:
+        gc.disconnect()
+
+
+@pytest.mark.parametrize('operation', ['move', 'readback'])
+def test_optical_cancel_breaks_forever_busy_acknowledgement_and_allows_stop(fake_port, monkeypatch, operation):
+    port = FakeSerial()
+    fake_port.append(port)
+    gc.connect()
+    cancel, dispatched = threading.Event(), threading.Event()
+    original_write = port.write
+    def write(data):
+        if data.startswith(b'G1 ') or data == b'M114\n':
+            port.busy = True
+            dispatched.set()
+        original_write(data)
+    port.write = write
+    errors = []
+    def run():
+        try:
+            if operation == 'move':
+                gc.move_absolute(z=100, cancel=cancel)
+            else:
+                gc.read_position(cancel=cancel)
+        except Exception as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    assert dispatched.wait(2)
+    cancel.set()
+    original_resync = gc._resync_serial
+    monkeypatch.setattr(gc, '_resync_serial', lambda: original_resync(timeout=0.1))
+    try:
+        with pytest.raises(gc.PrinterError, match='resync'):
+            gc.motionstop()
+        worker.join(timeout=2)
+        assert not worker.is_alive() and isinstance(errors[0], InterruptedError)
+        assert 'M410' in port.written
+        assert 'M400' not in port.written
+        with pytest.raises(InterruptedError):
+            gc.move_absolute(z=100.1, cancel=cancel)
+    finally:
+        gc.disconnect()
+
+
 @pytest.mark.parametrize("dz, force, refused", [
     (-1.0, 60.0, False),     # bed up, below the limit (drift, light contact)
     (-1.0, 120.0, True),     # bed up while the sensor already presses

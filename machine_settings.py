@@ -9,6 +9,7 @@ PRINTERPROJECT_SETTINGS=<path> loads another file (e.g. for a second printer or 
 Stdlib only, no Qt.
 """
 import os
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -132,6 +133,47 @@ class Calibration:
 
 
 @dataclass(frozen=True)
+class FocusFixture:
+    enabled: bool = False
+    measured: bool = False
+    fixture_id: str = "unconfigured"
+    calibration_id: str = "unconfigured"
+    camera_serial: str = ""
+    firmware_id: str = ""
+    safe_z_min_mm: float = 0.0
+    safe_z_max_mm: float = 0.0
+    reference_z_mm: float = 0.0
+    reference_wd_mm: float = 20.0
+    minimum_wd_mm: float = 5.0
+    wd_uncertainty_mm: float = 0.0
+    position_tolerance_mm: float = 0.02
+    z_speed_mm_s: float = 1.0
+    motion_safety_verified: bool = False
+    camera_pipeline_verified: bool = False
+    frame_timing_verified: bool = False
+    wd_reference_record: str = ""
+    sfr_reference_verified: bool = False
+    sfr_validation_id: str = ""
+
+    def validate_motion_safety(self):
+        if not (self.enabled and self.measured and self.motion_safety_verified):
+            raise ValueError("Physical motion requires an enabled, measured fixture and verified mechanical clearance")
+        from focusfield.calibration import validate_reference
+        validate_reference(self)
+
+    def validate_physical(self):
+        self.validate_motion_safety()
+        if not (self.camera_pipeline_verified and self.frame_timing_verified):
+            raise ValueError("Physical image acquisition requires camera pipeline and frame timing verification")
+
+    def z_for_wd(self, wd):
+        return self.reference_z_mm + wd - self.reference_wd_mm
+
+    def wd_for_z(self, z):
+        return self.reference_wd_mm + z - self.reference_z_mm
+
+
+@dataclass(frozen=True)
 class Settings:
     path: Path
     printer: Printer
@@ -144,6 +186,7 @@ class Settings:
     camera: Camera
     forces: Forces
     calibration: Calibration
+    focusfield: FocusFixture = FocusFixture()
 
     def unmeasured(self):
         """Sections whose values are still first guesses (measured = false)."""
@@ -253,6 +296,22 @@ def _check(s, where):
         fail("[camera] mm_per_px cannot be negative")
     if s.camera.measured and s.camera.mm_per_px == 0:
         fail("[camera] measured = true needs mm_per_px")
+    op = s.focusfield
+    numeric = (op.safe_z_min_mm, op.safe_z_max_mm, op.reference_z_mm, op.reference_wd_mm,
+               op.minimum_wd_mm, op.wd_uncertainty_mm, op.position_tolerance_mm, op.z_speed_mm_s)
+    if not all(math.isfinite(x) for x in numeric):
+        fail("[focusfield] all distances and speeds must be finite")
+    if not 0 <= op.safe_z_min_mm <= op.reference_z_mm <= op.safe_z_max_mm <= s.printer.z_max:
+        fail("[focusfield] safe Z bounds and reference must lie inside 0..printer.z_max")
+    if not (0 < op.minimum_wd_mm <= op.wd_for_z(op.safe_z_min_mm)
+            and op.wd_uncertainty_mm >= 0 and 0 < op.position_tolerance_mm <= 0.1
+            and 0 < op.z_speed_mm_s <= 10):
+        fail("[focusfield] invalid clearance, uncertainty, tolerance or speed")
+    if op.enabled and (not op.measured or op.safe_z_min_mm == op.safe_z_max_mm
+                       or not op.camera_serial.strip() or not op.firmware_id.strip()
+                       or op.fixture_id == "unconfigured" or op.calibration_id == "unconfigured"
+                       or op.wd_uncertainty_mm <= 0):
+        fail("[focusfield] enabling requires a measured fixture, camera, firmware and WD calibration")
 
 
 def parse(data, where="settings"):
@@ -278,6 +337,9 @@ def parse(data, where="settings"):
         calibration=_build(Calibration, data, "calibration", where, min_distance=float, scale_tol=float,
                            residual_tol=float, cone_F1="xyz_or_empty", cone_F2="xyz_or_empty",
                            cone_F3="xyz_or_empty"),
+        focusfield=(_build(FocusFixture, data, "focusfield", where,
+                          **{k: type(v) for k, v in vars(FocusFixture()).items() if k in data["focusfield"]})
+                    if "focusfield" in data else FocusFixture()),
     )
     _check(s, where)
     return s
@@ -302,7 +364,8 @@ def save_values(section, values, path=None):
             if isinstance(value, bool):
                 text = "true" if value else "false"
             elif isinstance(value, str):
-                text = f'"{value}"'
+                import json
+                text = json.dumps(value, ensure_ascii=False)
             elif isinstance(value, (list, tuple)):
                 text = "[" + ", ".join(f"{float(v):.3f}" for v in value) + "]"
             else:

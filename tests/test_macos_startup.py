@@ -65,7 +65,7 @@ def test_existing_path_programmer_window(tmp_path):
             window.load_program('program.json', ask=False)
             assert window.points.rowCount() == 1
             summary = run_program(program, window.transform, SimHardware(time_scale=0),
-                                  log_dir=Path('logs'))
+                                  run_dir=Path('run'))
             assert summary.outcome == 'completed' and summary.done == 1
             assert window.close()
             connect.assert_not_called()
@@ -82,7 +82,16 @@ def test_existing_manual_window(tmp_path):
              patch.object(GUI.StrainGauge, 'start') as gauge_start:
             root = tk.Tk()
             window = GUI.App(root)
-            root.update()
+            # Force-stream startup is asynchronous. Tk callbacks posted by that
+            # worker need a real main loop, not a single root.update() iteration.
+            def startup_finished():
+                if gauge_start.called:
+                    root.quit()
+                else:
+                    root.after(10, startup_finished)
+            root.after(0, startup_finished)
+            root.after(5000, root.quit)
+            root.mainloop()
             assert root.winfo_exists()
             metrics.assert_called_once_with()
             gauge_start.assert_called_once_with()

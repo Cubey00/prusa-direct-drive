@@ -12,6 +12,7 @@ import serial
 from serial.tools import list_ports
 
 from machine_settings import SETTINGS
+from device_session import DeviceLease
 
 # ---------------- settings ----------------
 BAUD = 115200
@@ -27,7 +28,9 @@ DISCONNECT_WAIT = 2.0       # s disconnect() waits for a running command before 
 # ------------------------------------------
 
 _ser = None
+_device_lease = None
 _lock = threading.RLock()   # serial access must be one command at a time
+_write_lock = threading.Lock()  # serialize command dispatch with immediate STOP
 _stop = threading.Event()   # set while a stop is in progress; long-running moves check it
 _closing = threading.Event()  # set by disconnect(): a command still waiting for its 'ok' gives up
 _sync_count = 0
@@ -84,22 +87,31 @@ def get_local_ip():
 
 
 def connect():
-    global _ser
+    global _ser, _device_lease
     with _lock:
         if _ser is not None and _ser.is_open:
             return
         port = find_port()
-        _closing.clear()
-        _ser = serial.Serial(port, BAUD, timeout=1)
-        time.sleep(CONNECT_SETTLE)    # let the printer finish its serial handshake
-        _ser.reset_input_buffer()     # discard boot chatter
+        lease = DeviceLease("printer").acquire()
+        try:
+            _closing.clear()
+            _ser = serial.Serial(port, BAUD, timeout=1)
+            time.sleep(CONNECT_SETTLE)    # let the printer finish its serial handshake
+            _ser.reset_input_buffer()     # discard boot chatter
+            _device_lease = lease
+        except Exception:
+            if _ser is not None:
+                _ser.close()
+                _ser = None
+            lease.release()
+            raise
 
 
 def disconnect(wait=None):
     """Close the serial link without hanging. A command still waiting for its 'ok' holds the lock,
     and the printer's 'busy' lines keep that wait alive forever (e.g. while a question waits on
     its screen), so after `wait` seconds the port is closed anyway; that command then fails."""
-    global _ser
+    global _ser, _device_lease
     _closing.set()
     got = _lock.acquire(timeout=DISCONNECT_WAIT if wait is None else wait)
     try:
@@ -110,6 +122,9 @@ def disconnect(wait=None):
             except (serial.SerialException, OSError):
                 pass
     finally:
+        if _device_lease is not None:
+            _device_lease.release()
+            _device_lease = None
         if got:
             _lock.release()
 
@@ -133,7 +148,14 @@ def _readline(ser):
 
 # ---------------- G-code ----------------
 
-def _send(cmd, timeout=30):
+def _write_line(ser, data, cancel=None):
+    with _write_lock:
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("Motion cancelled before command dispatch")
+        ser.write(data)
+
+
+def _send(cmd, timeout=30, *, cancel=None):
     """Send one line and block until 'ok'. Caller must hold _lock.
     `timeout` is the max silence (seconds) before giving up; busy/status
     lines from the printer reset it, so long moves and homing are fine.
@@ -141,11 +163,13 @@ def _send(cmd, timeout=30):
     once that 'ok' is read; otherwise the next command would take it as its own."""
     connect()
     ser = _ser
-    ser.write(f"{cmd}\n".encode())
+    _write_line(ser, f"{cmd}\n".encode(), cancel)
     response = []
     error = None
     last_activity = time.monotonic()
     while True:
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError("Motion cancelled while awaiting command acknowledgement")
         line = _readline(ser)
         if line:
             last_activity = time.monotonic()
@@ -167,13 +191,13 @@ def _send_nowait(cmd):
     pending 'ok' with _resync_serial() (halt_move does). The printer answers a G1 only once the
     move is done, so this is the only way to watch the load cell while a move runs."""
     connect()
-    _ser.write(f"{cmd}\n".encode())
+    _write_line(_ser, f"{cmd}\n".encode())
 
 
-def send_gcode(cmd, timeout=30):
+def send_gcode(cmd, timeout=30, *, cancel=None):
     """Thread-safe public version of _send."""
     with _lock:
-        return _send(cmd, timeout)
+        return _send(cmd, timeout, cancel=cancel)
 
 
 def _resync_serial(timeout=15):
@@ -184,7 +208,7 @@ def _resync_serial(timeout=15):
     _sync_count += 1
     marker = f"resync{_sync_count}"
     ser = _ser
-    ser.write(f"M118 {marker}\n".encode())
+    _write_line(ser, f"M118 {marker}\n".encode())
     deadline = time.monotonic() + timeout
     got_marker = False
     while time.monotonic() < deadline:
@@ -206,7 +230,7 @@ def _quickstop():
     if ser is None or not ser.is_open:
         return
     try:
-        ser.write(b"\nM410\n")
+        _write_line(ser, b"\nM410\n")
     except (serial.SerialException, OSError):
         pass
 
@@ -245,8 +269,8 @@ def bed_up_refusal(dz, force_g, limit_g):
     return None
 
 
-def read_position():
-    m = _POS_RE.search(send_gcode("M114"))
+def read_position(*, cancel=None):
+    m = _POS_RE.search(send_gcode("M114", cancel=cancel))
     if not m:
         raise PrinterError("Could not parse M114 response")
     return float(m.group(1)), float(m.group(2)), float(m.group(3))
@@ -298,18 +322,18 @@ def move_relative(dx=0.0, dy=0.0, dz=0.0, XYfeed=XYFEEDRATE, Zfeed=ZFEEDRATE):
             _send("G90")                       # ALWAYS return to absolute
 
 
-def move_absolute(x=None, y=None, z=None, XYfeed=XYFEEDRATE, Zfeed=ZFEEDRATE):
+def move_absolute(x=None, y=None, z=None, XYfeed=XYFEEDRATE, Zfeed=ZFEEDRATE, *, cancel=None):
     """Absolute move and wait for it; None keeps that axis where it is."""
     with _lock:
         if _stop.is_set():
             raise PrinterError("Motion stopped")
-        _send("G90")
+        _send("G90", cancel=cancel)
         xy = " ".join(f"{a}{v:.3f}" for a, v in (("X", x), ("Y", y)) if v is not None)
         if xy:
-            _send(f"G1 {xy} F{XYfeed}")
+            _send(f"G1 {xy} F{XYfeed}", cancel=cancel)
         if z is not None:
-            _send(f"G1 Z{z:.3f} F{Zfeed}")
-        _send("M400", timeout=120)
+            _send(f"G1 Z{z:.3f} F{Zfeed}", cancel=cancel)
+        _send("M400", timeout=120, cancel=cancel)
 
 
 def halt_move():
