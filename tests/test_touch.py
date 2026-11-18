@@ -207,3 +207,29 @@ def test_no_images_without_step(rig):
     calls = []
     res = run(gauge, "force", 20.0, expect_z=SURFACE, image_step=0.0, capture=lambda k, t: calls.append(k))
     assert res.status == "ok" and calls == [] and res.images == []
+
+
+def creep(gauge, **kw):
+    return touch_mod.creep_to_contact(gauge, **({"contact_g": 5.0, "on_status": lambda m: None} | kw))
+
+
+def test_creep_stops_on_first_contact_and_stays(rig):
+    axis, gauge = rig
+    res = creep(gauge, fast_mm=2.5, max_travel=10.0)      # 3.5 mm gap: 2.5 at 0.5 mm/s, the rest slowly
+    assert res.status == "ok", res.message
+    assert abs(res.contact_z - SURFACE) < 0.1
+    assert gauge.peak_true < 15 and 0 < abs(res.final_g) < 15          # just touching, not pressing
+    assert axis.z_at(axis.clock.monotonic()) == pytest.approx(res.end_z, abs=0.01)   # stays there (end_z = lagging metrics Z)
+
+
+def test_creep_without_object_gives_up(rig):
+    axis, gauge = rig
+    res = creep(gauge, max_travel=2.0)
+    assert res.status == "no_contact" and "2 mm" in res.message
+
+
+def test_creep_can_be_stopped(rig):
+    axis, gauge = rig
+    cancel = threading.Event()
+    cancel.set()
+    assert creep(gauge, cancel=cancel).status == "aborted"

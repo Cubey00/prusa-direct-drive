@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (QFileDialog, QGridLayout, QLabel, QMainWindow, QM
 
 from .collapsible import CollapsibleBox
 from .photo_panel import PhotoPanel
+from .measure_box import MeasureBox
+from .. import measure
 from .sensor_offset import SensorOffsetDialog, offset_text
 import machine_settings
 
@@ -60,6 +62,11 @@ class MainWindow(QMainWindow):
         self.run_settings = RunSettingsBox()
         self.graph = ForceGraph()
         self.photo = PhotoPanel(self.settings)
+        self.measure = MeasureBox()
+        self._pending_goto = None         # goto for Meten, sent once the calibrator says hello
+        self._measuring = None            # label of the Meten move under way
+        self._needs_home = True           # X/Y position unknown until the calibrator homed them
+        self._hovering = False            # the sensor hangs 1 cm above point 1 (nothing moved since)
         self._running_row = None
         self.view.set_selection_model(self.table.selection_model())
         self.run_settings.set_settings(self.program.settings)
@@ -112,6 +119,7 @@ class MainWindow(QMainWindow):
         self.points_box = CollapsibleBox("Points in ascending order", self.table, expanded=False,
                                          settings=self.settings, key="ui/points_open")
         rl.addWidget(self.points_box)
+        rl.addWidget(self.measure)
         rl.addWidget(self.graph, 1)
         run_box = QWidget()
         run_box.setObjectName("runBox")
@@ -144,6 +152,8 @@ class MainWindow(QMainWindow):
         self.left.runs_folder_btn.clicked.connect(self.choose_runs_folder)
         self.left.calib_btn.clicked.connect(self.start_calibration)
         self.left.offset_btn.clicked.connect(self.edit_sensor_offset)
+        self.measure.hover_btn.clicked.connect(self.hover_above_point)
+        self.measure.touch_btn.clicked.connect(self.creep_to_object)
         self.left.calibrationChanged.connect(self.refit)
         self.left.faceSizeChanged.connect(self.refit)
         self.view.faceClicked.connect(self.add_point_at)
@@ -349,12 +359,118 @@ class MainWindow(QMainWindow):
             return
         try:
             self.server.launch(config.GUI_SCRIPT)
+            self._needs_home = True           # a new calibrator: home X/Y before driving anywhere
         except Exception as e:
             QMessageBox.critical(self, "Calibrator", f"Could not start {config.GUI_SCRIPT.name}:\n{e}")
             return
         self.left.link_label.setText("Calibrator starting...")
 
+    # ---------------- Meten ----------------
+    MEASURE_LABEL = "punt 1"
+    MEASURE_ANSWER_MS = 120000            # homing X/Y + the move
+
+    def hover_above_point(self):
+        """'Ga 1 cm boven punt 1 hangen': sensor 1 cm above the first part of the opened plate."""
+        if self.thread is not None or self._measuring:
+            return
+        manifest = calibration.manifest_for(self.model_path) if self.model_path else None
+        try:
+            settings = machine_settings.load()
+            t = measure.hover_target(manifest, settings, self.left.cal_points())
+        except (measure.MeasureError, machine_settings.SettingsError) as e:
+            self.measure.set_status(str(e), "error")
+            return
+        self._hover_target = t
+        args = (t.x, t.y, t.travel_z, self.MEASURE_LABEL)
+        self._measuring = self.MEASURE_LABEL
+        self.measure.hover_btn.setEnabled(False)
+        self.measure.touch_btn.setEnabled(False)
+        self._hovering = False
+        QTimer.singleShot(self.MEASURE_ANSWER_MS, self, self._measure_timed_out)
+        where = f"punt 1 ({t.part_id}, bed X{t.bed_x:g} Y{t.bed_y:g})"
+        if self.server.is_running() and self._send_measure_goto(args):
+            self.measure.set_status(f"Onderweg naar {where}...", "busy")
+            return
+        self._pending_goto = args
+        if not self.server.is_running():
+            self.open_calibrator()
+        self.measure.set_status(f"De printerverbinding wordt gestart; daarna gaat de kop naar {where}.", "busy")
+
+    CREEP_MAX_MM = 15.0                   # never more than this far up (1 cm gap + 5 mm)
+    CREEP_FREE_MM = 8.0                   # of the 1 cm gap after "boven punt 1": known free, a bit faster
+    CREEP_ANSWER_MS = 240000
+
+    def creep_to_object(self):
+        """'Beweeg heel langzaam tot de sensor het object raakt': the calibrator creeps the bed up
+        and stops on the load cell's first contact."""
+        if self.thread is not None or self._measuring:
+            return
+        if not self.server.is_running():
+            self.measure.set_status("Ga eerst 1 cm boven punt 1 hangen: er is nog geen verbinding met de printer.",
+                                    "error")
+            return
+        fast = self.CREEP_FREE_MM if self._hovering else 0.0
+        if not self.server.creep(fast, self.CREEP_MAX_MM):
+            self.measure.set_status("De printerverbinding reageert niet; probeer het opnieuw.", "error")
+            return
+        self._measuring = "aanraken"
+        self.measure.hover_btn.setEnabled(False)
+        self.measure.touch_btn.setEnabled(False)
+        QTimer.singleShot(self.CREEP_ANSWER_MS, self, self._measure_timed_out)
+        self.measure.set_status("Het bed gaat heel langzaam omhoog tot de sensor iets voelt... (STOP stopt het)",
+                                "busy")
+
+    def _send_measure_goto(self, args):
+        x, y, z, label = args
+        return self.server.goto(x, y, z, label, home_xy=self._needs_home, z_final=self._hover_target.z)
+
+    def _measure_done(self, text, level):
+        self._measuring = None
+        self._pending_goto = None
+        self.measure.hover_btn.setEnabled(True)
+        self.measure.touch_btn.setEnabled(True)
+        self.measure.set_status(text, level)
+
+    def _measure_timed_out(self):
+        if self._measuring:
+            self._measure_done("Geen antwoord van de printer. Staat hij aan en zit de USB-kabel erin?", "error")
+
+    def _measure_message(self, msg):
+        kind = msg.get("type")
+        if kind == "hello" and self._pending_goto is not None:
+            args, self._pending_goto = self._pending_goto, None
+            if self._send_measure_goto(args):
+                self.measure.set_status("Onderweg naar punt 1...", "busy")
+            else:
+                self._measure_done("De printerverbinding reageert niet; probeer het opnieuw.", "error")
+        elif kind == "goto_done" and msg.get("label") == self._measuring:
+            if msg.get("ok"):
+                self._needs_home = False
+                self._hovering = True
+                t = self._hover_target
+                self._measure_done(f"De sensor hangt 1 cm boven punt 1 ({t.part_id}). Kop X{t.x:.2f} Y{t.y:.2f} "
+                                   f"Z{t.z:.2f} (uit de {t.source}).", "ok")
+            else:
+                self._measure_done(f"Niet gelukt: {msg.get('message', '')}", "error")
+        elif kind == "touch_done" and self._measuring == "aanraken":
+            self._hovering = False
+            if msg.get("ok"):
+                self._measure_done(f"{msg.get('message', '')} Kop Z{msg.get('z') or 0:.3f}, "
+                                   f"kracht {msg.get('force_g') or 0:.1f} g.", "ok")
+            else:
+                self._measure_done(msg.get("message", "") or "Niet gelukt.", "error")
+        elif kind == "status" and not msg.get("ok") and self._measuring:
+            self._measure_done(msg.get("message", ""), "error")
+        elif kind == "bye":
+            self._needs_home = True
+            if self._measuring:
+                self._measure_done("De printerverbinding is gesloten.", "error")
+
     def on_calibrator_message(self, msg):
+        self._measure_message(msg)
+        if (msg.get("type") == "goto_done" and msg.get("ok")
+                and msg.get("label") == calibration.POINTS[0]):
+            self._needs_home = False          # the wizard homed X/Y on its way to cone 1
         kind = msg.get("type")
         if kind == "hello":
             self.left.link_label.setText("Calibrator verbonden: volg de stappen in het kalibratievenster")
@@ -538,6 +654,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Run ended", f"{summary.outcome}: {summary.message}")
 
     def stop(self):
+        if self._measuring and self.server.is_running():
+            self.server.halt()                 # Meten: stop the creep or move now
+            self.measure.set_status("STOP gestuurd.", "error")
         if self.worker is not None:
             self.worker.abort()
             self.run.status.setText("STOP requested")
@@ -550,6 +669,7 @@ class MainWindow(QMainWindow):
         self.view.set_editable(not on)
         self.left.setEnabled(not on)
         self.left.cal_box.setEnabled(not on)
+        self.measure.setEnabled(not on)
         self.run_settings.setEnabled(not on)
         for b in self.rot_btns.values():
             b.setEnabled(not on)

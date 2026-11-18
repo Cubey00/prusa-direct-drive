@@ -257,6 +257,54 @@ def _press_images(gauge, res, mode, value, step, speed, limit_z, max_force_g, ca
     return z
 
 
+CREEP_SPEED = 0.1         # mm/s: "heel langzaam" towards the object (Meten)
+CREEP_FAST_SPEED = 0.5    # mm/s for the part that is known to be free (above the expected contact)
+
+
+def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, fast_mm=0.0,
+                     speed=CREEP_SPEED, fast_speed=CREEP_FAST_SPEED, cancel=None, on_status=print):
+    """Bed up very slowly until the load cell feels contact_g, then stop (M410) and STAY there:
+    the sensor just touches the object. fast_mm: the first part of the way that is known to be
+    free (e.g. 8 of the 10 mm hover gap) goes at fast_speed. Tares right before moving, so drift
+    does not count. Returns a TouchResult (status ok / no_contact / overload / aborted / error;
+    contact_z = end_z = where it stopped, final_g the force there)."""
+    res = TouchResult()
+    trace = _Tracer(res, gauge)
+    with _lock:
+        try:
+            _wait_for_data(gauge)
+            _send("G90")
+            _send("M400", timeout=120)
+            res.start_z = _z()
+            time.sleep(SETTLE)
+            if not gauge.tare_fresh(TARE_SAMPLES):
+                raise PrinterError("No fresh load cell data for the tare")
+            limit_z = res.start_z - max_travel
+            contact = lambda f: f >= contact_g
+            z = res.start_z
+            fast_mm = max(0.0, min(fast_mm, max_travel))
+            segments = ([(res.start_z - fast_mm, fast_speed)] if fast_mm > 0 else []) + [(limit_z, speed)]
+            for to_z, v in segments:
+                on_status(f"Omhoog met {v:g} mm/s ...")
+                if _move_watch(gauge, res, z, to_z, v, contact, max_force_g, cancel, trace,
+                               "approach" if v > speed else "search") == "hit":
+                    break
+                z = to_z
+            else:
+                res.status, res.message = "no_contact", f"Geen contact binnen {max_travel:g} mm"
+                return res
+            res.contact_z = res.end_z = _stopped_z(gauge, trace)
+            res.final_g = _settled_force(gauge, res, max_force_g, cancel, trace)
+            res.status = "ok"
+            return res
+        except _Abort:
+            return res
+        except PrinterError as e:
+            res.status = "aborted" if _stop.is_set() else "error"
+            res.message = str(e)
+            return res
+
+
 def touch(gauge, mode, value, touch_speed, approach_speed=2.0, contact_g=5.0, max_force_g=450.0,
           max_travel=15.0, hold=0.1, expect_z=None, search_speed=SEARCH_SPEED, cancel=None,
           on_status=print, image_step=0.0, capture=None):

@@ -38,6 +38,7 @@ class App:
     def __init__(self, root, link=None, hidden=False):
         self.root = root
         self.link = link              # CalibratorClient when started by the path programmer
+        self._creep_cancel = threading.Event()   # stops a Meten creep (IPC "halt")
         self.hidden = hidden and link is not None   # no window: messages go to the wizard instead
         self.root.title("PRUSA Core One load cell and control tool")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -272,6 +273,14 @@ class App:
         if kind == "quit":
             self.on_close()
             return
+        if kind == "creep":
+            self.link_creep(msg)
+            return
+        if kind == "halt":
+            self._creep_cancel.set()
+            self.motion.halt()
+            quickstop()
+            return
         if kind == "jog":
             self.link_jog(msg)
             return
@@ -329,6 +338,35 @@ class App:
             self.link.send_goto_done(label, ok, text)
             self.root.after(0, lambda: (self.progress_label.config(text=text),
                                         self.update_position_labels()))
+        threading.Thread(target=work, daemon=True).start()
+
+    def link_creep(self, msg):
+        """Meten: bed up very slowly until the sensor just touches the object (load cell), then stay."""
+        from touch import creep_to_contact
+        try:
+            fast_mm = max(0.0, float(msg.get("fast_mm", 0.0)))
+            max_mm = float(msg.get("max_mm", 15.0))
+        except (TypeError, ValueError):
+            return
+        if not 0 < max_mm <= 30 or fast_mm >= max_mm:
+            self.link.send_touch_done(False, "error", "Aanraken geweigerd: max 30 mm en het snelle stuk korter dan het geheel")
+            return
+        if not self._tared:
+            self.link.send_touch_done(False, "error", "Nog geen krachtdata van de load cell; wacht even en probeer opnieuw.")
+            return
+        self.motion.halt()
+        self._creep_cancel.clear()
+
+        def work():
+            res = creep_to_contact(self.gauge, contact_g=SETTINGS.forces.contact_g,
+                                   max_force_g=SETTINGS.forces.max_force_g, max_travel=max_mm, fast_mm=fast_mm,
+                                   cancel=self._creep_cancel, on_status=lambda m: None)
+            self.motion.halt()                       # next jog starts from the real position
+            texts = {"ok": "De sensor raakt het object.", "no_contact": res.message,
+                     "overload": f"Te veel kracht ({res.peak_g:.0f} g): gestopt.", "aborted": "Gestopt."}
+            self.link.send_touch_done(res.status == "ok", res.status, texts.get(res.status, res.message),
+                                      res.end_z, res.final_g)
+            self.root.after(0, self.update_position_labels)
         threading.Thread(target=work, daemon=True).start()
 
     def link_jog(self, msg):
