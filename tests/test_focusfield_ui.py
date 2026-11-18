@@ -32,6 +32,28 @@ def test_simulated_preview_runs_in_worker_without_devices(window, qtbot):
     assert not p.hardware_active
 
 
+def test_loading_and_clearing_lens_profile_invalidates_preview(window, tmp_path, monkeypatch):
+    from dataclasses import asdict
+    import json
+    from PySide6.QtWidgets import QFileDialog
+    from focusfield.lens import LensCalibration
+
+    lens = LensCalibration("TEST", (160, 120), ((120, 0, 80), (0, 120, 60), (0, 0, 1)),
+                           (-0.2, 0.04, 0, 0))
+    path = tmp_path / "lens.json"
+    path.write_text(json.dumps(asdict(lens)))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (str(path), ""))
+    panel = window.focusfield
+    panel.last_preview = {"previous": True}
+    panel.load_lens_calibration()
+    assert panel.last_preview is None and "TEST" in panel.lens_label.text()
+    assert panel.current_recipe().lens_calibration is None
+    panel.simulate.setChecked(False)
+    assert panel.current_recipe().lens_calibration == lens
+    panel.clear_lens.click()
+    assert panel.current_recipe().lens_calibration is None
+
+
 def test_hardware_activity_blocks_touch_calibration_and_printer_actions(window, monkeypatch):
     warnings = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))

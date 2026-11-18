@@ -107,6 +107,8 @@ class ScanController:
             raise ValueError("Camera pixel format differs from recipe")
         if not self.simulated and str(m["camera_serial"]) != self.fixture.camera_serial:
             raise ValueError("Camera identity differs from measured fixture")
+        if self.recipe.lens_calibration is not None:
+            self.recipe.lens_calibration.validate_capture(capture)
         if abs(m["exposure_us"] - self.recipe.exposure_us) > max(1, self.recipe.exposure_us * 0.01):
             raise ValueError("Camera exposure differs from recipe")
         if abs(m["gain"] - self.recipe.gain) > 0.01:

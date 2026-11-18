@@ -6,6 +6,7 @@ from pathlib import Path
 import tomllib
 
 from machine_settings import FocusFixture
+from .lens import LensCalibration
 from .quality import QualityThresholds
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,12 +35,17 @@ class Recipe:
     expected_height_px: int = 3040
     quality: QualityThresholds = field(default_factory=QualityThresholds)
     separate_nominal_plane_required: bool = False
+    lens_calibration: LensCalibration | None = None
 
     def __post_init__(self):
         if isinstance(self.quality, dict):
             object.__setattr__(self, "quality", QualityThresholds(**self.quality))
         if not isinstance(self.quality, QualityThresholds):
             raise ValueError("quality must contain data-quality thresholds")
+        if isinstance(self.lens_calibration, dict):
+            object.__setattr__(self, "lens_calibration", LensCalibration(**self.lens_calibration))
+        if self.lens_calibration is not None and not isinstance(self.lens_calibration, LensCalibration):
+            raise ValueError("lens_calibration must contain a measured lens profile")
         for size in (self.expected_width_px, self.expected_height_px):
             if type(size) is not int or not 1 <= size <= 65536:
                 raise ValueError("Expected image dimensions must be integers in 1..65536")
@@ -115,6 +121,8 @@ def load_recipe(path=DEFAULT_RECIPE):
         data = tomllib.load(stream)
     if "chart_path" in data:
         data["chart_path"] = str((path.parent / data["chart_path"]).resolve())
+    if isinstance(data.get("lens_calibration"), str):
+        data["lens_calibration"] = LensCalibration.load(path.parent / data["lens_calibration"])
     return Recipe(**data)
 
 

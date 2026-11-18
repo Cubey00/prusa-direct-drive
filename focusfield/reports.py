@@ -9,8 +9,8 @@ import numpy as np
 import tifffile
 
 from . import __version__
-from .acquisition import Capture, FrameGuard, analysis_plane
-from .chart import edge_rois, load_chart, register_chart
+from .acquisition import Capture, FrameGuard
+from .chart import edge_rois, load_chart, register_capture
 from .config import Recipe
 from .data import atomic_json
 from .focus_fit import apparent_plane, fit_peak
@@ -100,31 +100,30 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
         if should_abort():
             raise InterruptedError("Analysis stopped")
         pixels = tifffile.imread(path / frame["image"])
-        Capture(pixels, frame).validate()
-        gray, pitch = analysis_plane(pixels, frame)
+        capture = Capture(pixels, frame).validate()
         base = dict(image_id=frame["image_id"], repetition=frame["repetition"],
                     wd_mm=frame["nominal_working_distance_mm"],
                     commanded_wd_mm=(manifest['wd_calibration']['reference_wd_mm']
                         + frame['printer_z_command_mm'] - manifest['wd_calibration']['reference_z_mm']))
         try:
-            registration = register_chart(gray, chart, sensor_pitch=pitch,
-                max_reprojection_rms_px=recipe.quality.max_marker_reprojection_px)
+            registration, gray, pitch = register_capture(capture, chart, recipe)
             h, error = registration['homography'], registration['reprojection_rms_px']
             detection.append(dict(**base, valid=True, reason="", marker_error_px=error))
         except ValueError as exc:
             detection.append(dict(**base, valid=False, reason=str(exc)))
             continue
+        offset_x = 1 if registration["lens_corrected"] and pitch == 2 else 0
         for square in chart["slanted_squares"]:
             region = f"r{square['row']}_c{square['col']}"
             info = dict(**base, region=region, x_mm=square["center_mm"][0], y_mm=square["center_mm"][1])
             try:
-                rois = edge_rois(gray, h, square)
+                rois = edge_rois(gray, h, square, project_chart=registration["project_chart"])
             except ValueError as exc:
                 for edge in ("top", "bottom", "left", "right"):
                     results.append(dict(**info, edge=edge, valid=False, reason=str(exc)))
                 continue
             for label, horizontal, roi, px, py in rois:
-                row = dict(**info, edge=label, x_px=px*pitch, y_px=py*pitch)
+                row = dict(**info, edge=label, x_px=px*pitch+offset_x, y_px=py*pitch)
                 try:
                     sfr = slanted_edge(roi, recipe.fixed_frequency_cpp, horizontal=horizontal, sensor_pitch=pitch,
                                        quality=recipe.quality)

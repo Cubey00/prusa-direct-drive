@@ -62,7 +62,36 @@ These are optical markers, separate from tactile plate cones F1–F3 and slicing
 Print at 100%, measure the 10 mm scale bar and target flatness, and measure field of view
 at the actual working distance. The provisional 60 × 45 mm field is not a camera
 calibration. Marker visibility, local edge size, printing quality and distortion must be
-checked across the complete scan. A plain homography does not correct wide-angle distortion.
+checked across the complete scan. For a distorted lens, use a measured lens profile.
+
+### Calibrate the lens from checkerboard images
+
+Use a flat, rigid checkerboard with known square spacing. Lock the lens and use the
+same focus, camera, resolution, crop, orientation and binning as the MTF capture.
+Save full-size RGB or monochrome images from that setup. For a 20 mm experiment, take
+the calibration views close to that working distance. Vary the board's tilt and position
+so the inner corners sample the center and all sides of the usable field. Keep the
+entire checkerboard visible in each shot. Collect at least eight fit images and two
+separate validation images, including views near the edge of the field.
+
+This example uses a board with seven by five **inner corners** and 5 mm squares.
+
+```sh
+python -m focusfield calibrate-lens --camera-serial CAMERA_SERIAL --corners 7 5 --square-mm 5 \
+  --images calibration/*.tif --validation validation/*.tif --output lens.json
+```
+
+The command reads saved images and reports the fit RMS and each validation view's
+RMS. It uses the standard OpenCV pinhole model with radial and tangential distortion.
+The command requires each validation view to fit within 3 native sensor pixels RMS.
+Use **Load lens calibration…** on the Focus-Field MTF tab, then run **Check preview &
+chart** on the flat MTF target. The app checks the camera serial and native image size.
+If using a recipe file, put `lens_calibration = "lens.json"` in its top-level settings,
+with the path relative to the recipe. The run snapshots the profile for offline analysis.
+
+An existing OpenCV pinhole calibration can be imported as JSON with `camera_serial`,
+`image_size_px` as `[width, height]`, a 3×3 `camera_matrix`, and a flat `dist_coeffs`
+array in OpenCV order `[k1, k2, p1, p2, k3]`. The last coefficient is optional.
 
 ## Configure a physical fixture
 
@@ -125,7 +154,7 @@ The record is copied into every physical scan/setup manifest for reproducibility
 
 ### Optional physical XY centering
 
-**Check preview & chart** reports the configured chart-field center (from its homography),
+**Check preview & chart** reports the projected chart-field center,
 the four marker corners/centers, reprojection RMS and center error in original sensor pixels.
 If marker detection fails, the preview lists decoded and missing IDs. Frame each complete
 black marker border with its light margin. If all four IDs decode but reprojection exceeds
@@ -142,12 +171,9 @@ Calibrate from supervised small known displacements; fit/validate the local mapp
 its residual/uncertainty over a limited image radius. A wide-angle/global image scale is
 insufficient. No mapping-calibration movement is performed by this software.
 
-There is currently **no in-app procedure to measure the XY Jacobian or lens distortion**.
-The JSON must come from an independently supervised calibration. For the actual wide-angle
-lens, validate intrinsics/distortion and the local chart-center mapping before relying on
-physical centering. A passing homography reprojection check alone does not establish that
-calibration. Distorted-image registration failures remain blocking; the threshold is not
-relaxed for centering or scouting. Actual SFR continues to use original sensor samples.
+Measure the XY Jacobian separately from the lens profile. Both measurements should use
+the actual lens and imaging configuration. The XY mapping still uses chart-center errors
+in native sensor coordinates.
 
 Example profile structure (illustrative numbers; **not a physical calibration**):
 
@@ -339,9 +365,11 @@ ROIs, low contrast, clipping, inappropriate slant, poor phase coverage and nonst
 edges produce explicit validity flags.
 
 The default marker reprojection limit is 3 **original sensor pixels**, independent of
-image size; the former 1%-of-frame tolerance admitted visibly distorted geometry.
-Local searches do not compensate wide-angle distortion. Use calibrated local mapping
-for centering, and independently evaluate distortion effects on raw edge ROIs.
+image size. With a lens profile, registration fits the chart in corrected coordinates
+and projects the errors and square search positions back into the original frame. If
+the first marker detection fails, only the marker detector retries on a rectified image.
+The chart must still pass marker and geometry checks. The SFR analysis reads the
+original samples and its local straight-edge and slant checks still apply.
 
 ### Separate completion and measurement validity
 

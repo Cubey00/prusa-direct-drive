@@ -18,6 +18,7 @@ from focusfield.acquisition import CameraAdapter, check_cancel
 from focusfield.chart import load_chart
 from focusfield.config import DEFAULT_RECIPE, load_recipe, simulation_fixture
 from focusfield.calibration import XYCalibration, save_reference
+from focusfield.lens import LensCalibration
 from focusfield.controller import OperatorChecks, RunResult, ScanController
 from focusfield.hardware import SimCamera, SimStage, ZStage
 from focusfield.reports import analyze_run
@@ -105,6 +106,17 @@ class FocusFieldPanel(QWidget):
         self.format.addItems((["RGB8", "Mono8", "Mono16", "BayerRG8", "BayerRG10p", "BayerRG12p"] if sys.platform == 'darwin'
                               else ["RGB8", "Mono8", "Mono10", "Mono12", "Mono16", "BayerRG8", "BayerRG10", "BayerRG12"]))
         form.addRow("Capture pixel format", self.format)
+        lens_buttons = QHBoxLayout()
+        load_lens = QPushButton("Load lens calibration…")
+        load_lens.clicked.connect(self.load_lens_calibration)
+        self.clear_lens = QPushButton("Clear lens calibration")
+        self.clear_lens.clicked.connect(lambda: self.set_lens_calibration(None))
+        lens_buttons.addWidget(load_lens)
+        lens_buttons.addWidget(self.clear_lens)
+        form.addRow(lens_buttons)
+        self.lens_label = QLabel()
+        self.lens_label.setWordWrap(True)
+        form.addRow(self.lens_label)
         self.simulate = QCheckBox("Simulate stage and camera")
         self.simulate.setChecked(True)
         self.dry_run = QCheckBox("Motion only (collision-free dry run; no images)")
@@ -187,6 +199,7 @@ class FocusFieldPanel(QWidget):
         split.addWidget(right)
         outer.addWidget(split, 1)
         self.setup = setup
+        self.update_lens_label()
         self.simulate.toggled.connect(self.invalidate_preview)
         self.chart.textChanged.connect(self.invalidate_preview)
         self.format.currentTextChanged.connect(self.invalidate_preview)
@@ -218,8 +231,31 @@ class FocusFieldPanel(QWidget):
         values = {key: w.value() for key, w in self.fields.items()}
         return replace(self.recipe, **values,
                        chart_path=self.chart.text(), pixel_format=self.format.currentText(),
+                       lens_calibration=None if self.simulate.isChecked() else self.recipe.lens_calibration,
                        separate_nominal_plane_required=not values['wd_start_mm'] <= values['nominal_wd_mm'] <= values['wd_end_mm'],
                        reverse_alternate=self.reverse.isChecked())
+
+    def update_lens_label(self):
+        lens = self.recipe.lens_calibration
+        self.clear_lens.setEnabled(lens is not None)
+        if lens is None:
+            self.lens_label.setText("No lens correction")
+        else:
+            width, height = lens.image_size_px
+            self.lens_label.setText(f"Lens calibration for {lens.camera_serial} · {width} × {height} px")
+
+    def set_lens_calibration(self, lens):
+        self.recipe = replace(self.recipe, lens_calibration=lens)
+        self.update_lens_label()
+        self.invalidate_preview()
+
+    def load_lens_calibration(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Measured lens calibration", "", "Calibration (*.json)")
+        if path:
+            try:
+                self.set_lens_calibration(LensCalibration.load(path))
+            except (OSError, TypeError, ValueError) as exc:
+                QMessageBox.warning(self, "Lens calibration", str(exc))
 
     def devices(self, recipe, fixture, *, xy=None, motion_only=False):
         if self.simulate.isChecked():
@@ -341,6 +377,8 @@ class FocusFieldPanel(QWidget):
                 if recipe.pixel_format not in [self.format.itemText(i) for i in range(self.format.count())]:
                     raise ValueError("Recipe pixel format is not supported by this camera backend; choose an explicitly supported native format")
                 self.recipe = recipe
+                self.update_lens_label()
+                self.invalidate_preview()
                 for key, widget in self.fields.items():
                     widget.setValue(getattr(recipe, key))
                 self.reverse.setChecked(recipe.reverse_alternate)
@@ -415,6 +453,7 @@ class FocusFieldPanel(QWidget):
             return
         try:
             recipe = replace(self.recipe, chart_path=self.chart.text(), pixel_format=self.format.currentText(),
+                             lens_calibration=None if simulated else self.recipe.lens_calibration,
                              exposure_us=self.fields["exposure_us"].value(), gain=self.fields["gain"].value())
             chart = load_chart(recipe.chart_path)
             if simulated:
@@ -426,30 +465,34 @@ class FocusFieldPanel(QWidget):
                 camera.cancel = cancel
             calibrated_center = self.xy_calibration.optical_center_px if self.xy_calibration and not simulated else None
             def preview():
-                from focusfield.acquisition import analysis_plane
-                from focusfield.chart import register_chart, edge_rois
+                from focusfield.chart import register_capture, edge_rois
                 try:
                     check_cancel(cancel)
                     camera.open()
                     check_cancel(cancel)
                     camera.fresh()
                     check_cancel(cancel)
-                    capture = camera.capture()
+                    capture = camera.capture().validate()
                     check_cancel(cancel)
                     self.worker.event.emit("frame", (capture.metadata, capture.pixels))
-                    gray, pitch = analysis_plane(capture.pixels, capture.metadata)
-                    registration = register_chart(gray, chart, optical_center_px=calibrated_center, sensor_pitch=pitch,
-                        max_reprojection_rms_px=recipe.quality.max_marker_reprojection_px)
+                    try:
+                        registration, gray, _ = register_capture(capture, chart, recipe, optical_center_px=calibrated_center)
+                    except ValueError as exc:
+                        height, width = capture.pixels.shape[:2]
+                        serial = capture.metadata["camera_serial"]
+                        raise ValueError(f"Camera {serial} · {width} × {height} px. {exc}") from exc
                     h, error = registration.pop('homography'), registration['reprojection_rms_px']
+                    project_chart = registration.pop("project_chart")
                     local_count = 0
                     for square in chart["slanted_squares"]:
                         check_cancel(cancel)
                         try:
-                            local_count += len(edge_rois(gray, h, square))
+                            local_count += len(edge_rois(gray, h, square, project_chart=project_chart))
                         except ValueError:
                             pass
                     message = (f"All four chart markers detected; {local_count} local edges. "
                                f"Marker reprojection RMS {error:.2f} sensor pixels. "
+                               f"Lens correction {'on' if registration['lens_corrected'] else 'off'}. "
                                f"Camera {capture.metadata['camera_serial']}; {capture.metadata['pixel_format']}. "
                                f"Chart-center error {registration['center_error_px']} sensor pixels "
                                f"relative to {'calibrated optical center' if calibrated_center else 'image midpoint (diagnostic only)'}. "
@@ -549,7 +592,11 @@ class FocusFieldPanel(QWidget):
                         "Load the proposed recipe into the editor? Start scan requires a separate action and approval.",
                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
                     from focusfield.config import Recipe
+                    profile = self.recipe.lens_calibration
                     self.recipe = Recipe(**details['suggested_recipe'])
+                    if self.simulate.isChecked():
+                        self.recipe = replace(self.recipe, lens_calibration=profile)
+                    self.update_lens_label()
                     for key, widget in self.fields.items():
                         widget.setValue(getattr(self.recipe, key))
                     self.scout_proposal = dict(path=result.path, **details)
