@@ -58,6 +58,9 @@ def win(qtbot, tmp_path, monkeypatch):
     settings_file = tmp_path / "machine_settings.toml"
     settings_file.write_text(machine_settings.DEFAULT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.setenv(machine_settings.ENV_VAR, str(settings_file))     # saving must not touch the repo
+    # start from the shipped guesses, not from this laptop's last calibration
+    machine_settings.save_values("sensor", {"offset_x": 0.0, "offset_y": -40.0, "offset_z": -80.0, "measured": False})
+    machine_settings.save_values("calibration", {"cone_F1": [], "cone_F2": [], "cone_F3": []})
     w = MainWindow(QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat))
     qtbot.addWidget(w)
     w.server.close()

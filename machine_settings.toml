@@ -79,7 +79,7 @@ height = 5.0                       # tip height above the bed
 mount = "zijkant mount"            # which bracket is fitted (zijkant mount / fan mount V2)
 offset_x = 0.0
 offset_y = -40.0
-offset_z = -80.0
+offset_z = -58.5
 measured = false
 hover_clearance = 10.0             # mm the sensor stays above the plate (cones, parts) when it travels
 # Size of the sensor housing, for clearance checks between neighbouring parts. TODO measure.
@@ -117,7 +117,7 @@ residual_tol = 0.5                 # mm: warn if a point is further than this of
 # it from the offset. [] = not known yet. They hold as long as the cones stay where they are
 # ([work_area], [fiducials]); clear them after changing those.
 cone_F1 = []
-cone_F2 = []
+cone_F2 = [175.985, 104.975, 63.500]
 cone_F3 = []
 
 [focusfield]

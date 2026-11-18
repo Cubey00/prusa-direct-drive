@@ -141,3 +141,23 @@ def test_errors_are_explained():
     assert "SDK" in camera_feed.explain(Exception("GENICAM_GENTL64_PATH environment variable not found!"))
     assert "pip install" in camera_feed.explain(ModuleNotFoundError("No module named 'ids_peak'"))
     assert camera_feed.explain(RuntimeError("No camera found.")) == "geen camera aangesloten"
+
+
+def test_measuring_photo_gets_object_depth_and_force(qtbot, tmp_path):
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat)
+    settings.setValue("photo_folder", str(tmp_path / "fotos"))
+    panel = PhotoPanel(settings, open_camera=FakeCamera)
+    qtbot.addWidget(panel)
+    panel.tag_provider = lambda: {"object": "mini square", "depth_mm": 0.2, "force_g": 123.45}
+    try:
+        qtbot.waitUntil(panel.photo_btn.isEnabled, timeout=5000)
+        panel.photo_btn.click()
+        qtbot.waitUntil(lambda: panel.count == 1, timeout=5000)
+    finally:
+        panel.shutdown()
+    files = list((tmp_path / "fotos").glob("foto_mini-square_d0.200mm_F123.5g_*.tif"))
+    assert len(files) == 1
+    rows = (tmp_path / "fotos" / photo_panel.LOG_NAME).read_text(encoding="utf-8").splitlines()
+    assert rows[0] == "bestand;tijd;object;indrukking_mm;kracht_g"
+    assert rows[1].startswith(files[0].name) and rows[1].endswith(";mini square;0.200;123.5")
+    assert "indrukking 0.200 mm" in panel.saved_label.text()

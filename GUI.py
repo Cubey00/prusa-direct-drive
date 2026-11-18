@@ -276,6 +276,9 @@ class App:
         if kind == "creep":
             self.link_creep(msg)
             return
+        if kind == "step":
+            self.link_step(msg)
+            return
         if kind == "halt":
             self._creep_cancel.set()
             self.motion.halt()
@@ -366,6 +369,33 @@ class App:
             self.motion.halt()                       # next jog starts from the real position
             texts = {"ok": "De sensor raakt het object.", "no_contact": res.message,
                      "overload": f"Te veel kracht ({res.peak_g:.0f} g): gestopt.", "aborted": "Gestopt."}
+            self.link.send_touch_done(res.status == "ok", res.status, texts.get(res.status, res.message),
+                                      res.end_z, res.final_g)
+            self.root.after(0, self.update_position_labels)
+        threading.Thread(target=work, daemon=True).start()
+
+    def link_step(self, msg):
+        """Meten: press `mm` deeper (bed up), stop at stop_g grams."""
+        from touch import press_step
+        try:
+            mm, stop_g = float(msg.get("mm", 0.1)), float(msg.get("stop_g", 300.0))
+        except (TypeError, ValueError):
+            return
+        fo = SETTINGS.forces
+        if not 0 < mm <= 1.0 or not 0 < stop_g < fo.max_force_g:
+            self.link.send_touch_done(False, "error", f"Stap geweigerd: max 1 mm en de grens onder {fo.max_force_g:g} g")
+            return
+        if not self._tared:
+            self.link.send_touch_done(False, "error", "Nog geen krachtdata van de load cell; wacht even en probeer opnieuw.")
+            return
+        self.motion.halt()
+        self._creep_cancel.clear()
+
+        def work():
+            res = press_step(self.gauge, step_mm=mm, stop_g=stop_g, max_force_g=fo.max_force_g,
+                             cancel=self._creep_cancel)
+            self.motion.halt()
+            texts = {"overload": f"Te veel kracht ({res.peak_g:.0f} g): gestopt.", "aborted": "Gestopt."}
             self.link.send_touch_done(res.status == "ok", res.status, texts.get(res.status, res.message),
                                       res.end_z, res.final_g)
             self.root.after(0, self.update_position_labels)

@@ -270,3 +270,23 @@ def test_rise_finds_the_real_contact_despite_drift(rig):
     assert res.status == "ok", res.message
     assert abs(res.contact_z - SURFACE) < 0.2
     assert gauge.peak_true < 30                            # touching, not pressing hard
+
+
+def test_press_step_goes_0_1_mm_deeper(rig):
+    axis, gauge = rig
+    axis.move(SURFACE, 1.0)                               # sensor just on the object
+    axis.clock.sleep(10)
+    res = touch_mod.press_step(gauge, step_mm=0.1, stop_g=300.0)
+    assert res.status == "ok", res.message
+    assert res.start_z - res.end_z == pytest.approx(0.1, abs=0.01)
+    assert res.final_g == pytest.approx(10.0, abs=1.5)     # 100 g/mm x 0.1 mm
+
+
+def test_press_step_stops_at_the_force_limit(rig):
+    axis, gauge = rig
+    axis.move(SURFACE - 0.25, 1.0)                        # already pressing 25 g
+    axis.clock.sleep(10)
+    res = touch_mod.press_step(gauge, step_mm=0.1, stop_g=30.0)
+    assert res.status == "limit" and gauge.peak_true < 40
+    res = touch_mod.press_step(gauge, step_mm=0.1, stop_g=20.0)       # already above: no move
+    assert res.status == "limit" and res.end_z == res.start_z

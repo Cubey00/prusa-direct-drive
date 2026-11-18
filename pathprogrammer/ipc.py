@@ -26,6 +26,9 @@ Message contract (dicts, all with "v": 1):
     {"v": 1, "type": "creep", "fast_mm": float, "max_mm": float}
         bed up very slowly until the load cell feels contact, then stay (touch.creep_to_contact);
         the first fast_mm (known free) a bit faster. Answered with "touch_done".
+    {"v": 1, "type": "step", "mm": float, "stop_g": float}
+        bed mm further up (press deeper), M410 at stop_g (touch.press_step). Answered with
+        "touch_done" (status ok / limit / overload / aborted / error).
     {"v": 1, "type": "halt"}                                    stop a creep / move now (M410)
         answer with a "position" message for that point (the head's current position)
 Unknown types are ignored by the receiver, so either side can add messages.
@@ -62,6 +65,10 @@ def request_position_msg(point):
 
 def creep_msg(fast_mm, max_mm):
     return {"v": VERSION, "type": "creep", "fast_mm": float(fast_mm), "max_mm": float(max_mm)}
+
+
+def step_msg(mm, stop_g):
+    return {"v": VERSION, "type": "step", "mm": float(mm), "stop_g": float(stop_g)}
 
 
 def halt_msg():
@@ -146,6 +153,9 @@ class CalibratorServer:
 
     def creep(self, fast_mm, max_mm):
         return self.send(creep_msg(fast_mm, max_mm))
+
+    def step(self, mm, stop_g):
+        return self.send(step_msg(mm, stop_g))
 
     def halt(self):
         return self.send(halt_msg())

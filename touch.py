@@ -338,6 +338,43 @@ def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, f
             return res
 
 
+def press_step(gauge, step_mm=0.1, stop_g=300.0, max_force_g=450.0, speed=CREEP_SPEED, cancel=None):
+    """Meten: bed `step_mm` further up (the sensor presses deeper), M410 as soon as |force|
+    reaches stop_g. Refused when the force is already at stop_g. The bed stays where it ends.
+    Returns a TouchResult: status ok (whole step) / limit (stopped at stop_g) / overload /
+    aborted / error; start_z, end_z and final_g (settled |force|) filled in."""
+    res = TouchResult()
+    trace = _Tracer(res, gauge)
+    with _lock:
+        try:
+            _wait_for_data(gauge)
+            _send("G90")
+            _send("M400", timeout=60)
+            res.start_z = _z()
+            f0 = abs(_force(gauge))
+            if f0 >= stop_g:
+                res.status, res.end_z, res.final_g = "limit", res.start_z, f0
+                res.message = f"De kracht is al {f0:.0f} g (grens {stop_g:g} g): niet verder."
+                return res
+            target = res.start_z - step_mm
+            if _move_watch(gauge, res, res.start_z, target, speed, lambda f: f >= stop_g, max_force_g,
+                           cancel, trace, "press") == "hit":
+                res.end_z = _stopped_z(gauge, trace)
+                res.status = "limit"
+                res.message = f"Gestopt: de kracht kwam boven {stop_g:g} g."
+            else:
+                res.end_z = _z()
+                res.status = "ok"
+            res.final_g = _settled_force(gauge, res, max_force_g, cancel, trace)
+            return res
+        except _Abort:
+            return res
+        except PrinterError as e:
+            res.status = "aborted" if _stop.is_set() else "error"
+            res.message = str(e)
+            return res
+
+
 def touch(gauge, mode, value, touch_speed, approach_speed=2.0, contact_g=5.0, max_force_g=450.0,
           max_travel=15.0, hold=0.1, expect_z=None, search_speed=SEARCH_SPEED, cancel=None,
           on_status=print, image_step=0.0, capture=None):
