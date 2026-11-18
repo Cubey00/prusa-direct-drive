@@ -132,6 +132,7 @@ position_tolerance_mm = 0.02
 z_speed_mm_s = 1.0
 motion_safety_verified = false
 camera_pipeline_verified = false
+verified_pixel_format = ""        # native format verified for this camera and pipeline, e.g. "Mono16"
 frame_timing_verified = false
 wd_reference_record = ""
 sfr_reference_verified = false

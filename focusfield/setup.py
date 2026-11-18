@@ -57,6 +57,8 @@ class ScoutRecipe:
             raise ValueError("Scout interval, steps and limits must fit the measured safe envelope")
         # Validate the worst case before opening devices, including optional widening.
         lo, hi = (fixture.safe_z_min_mm, fixture.safe_z_max_mm) if self.allow_widen else (self.z_start_mm, self.z_end_mm)
+        if fixture.wd_for_z(lo) - fixture.wd_uncertainty_mm < fixture.minimum_wd_mm - 1e-9:
+            raise ValueError("Scout working distance including uncertainty violates minimum clearance")
         if any(abs(v-round(v, 3)) > 1e-8 for v in (lo, hi, self.z_start_mm, self.z_end_mm, self.step_mm, self.fine_step_mm)):
             raise ValueError("Scout bounds and steps exceed the driver's 0.001 mm command precision")
         if len(set(self.positions(lo, hi)) | set(self.positions(self.z_start_mm, self.z_end_mm))) > self.max_positions:
@@ -68,6 +70,22 @@ class ScoutRecipe:
     def positions(self, lo, hi):
         count = int(math.floor((hi-lo)/self.step_mm + 1e-8))
         return sorted({round(lo+i*self.step_mm, 3) for i in range(count+1)} | {round(hi, 3)})
+
+
+def suggest_scout(fixture, nominal_wd_mm):
+    """Draft a short scout around the requested WD within the measured fixture limits."""
+    safe_lo = max(fixture.safe_z_min_mm,
+                  fixture.z_for_wd(fixture.minimum_wd_mm + fixture.wd_uncertainty_mm))
+    safe_hi = fixture.safe_z_max_mm
+    anchor = min(max(fixture.z_for_wd(nominal_wd_mm), safe_lo), safe_hi)
+    lo = math.ceil(max(safe_lo, anchor - 0.5) * 1000 - 1e-8) / 1000
+    hi = math.floor(min(safe_hi, anchor + 0.5) * 1000 + 1e-8) / 1000
+    step = min(0.1, math.floor((hi - lo) * 250 + 1e-8) / 1000)
+    if step < 0.01:
+        raise ValueError("The available scout interval is too short for five positions")
+    fine_step = min(0.025, math.floor(step * 500 + 1e-8) / 1000)
+    return ScoutRecipe(z_start_mm=lo, z_end_mm=hi, step_mm=step,
+                       fine_step_mm=fine_step, allow_widen=False).validate(fixture)
 
 
 def propose_fine_scan(samples, scout, fixture, recipe):

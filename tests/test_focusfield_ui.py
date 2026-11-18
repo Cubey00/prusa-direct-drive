@@ -94,7 +94,7 @@ def test_setup_requires_new_preview_and_never_moves_from_registration_alone(wind
     messages = []
     monkeypatch.setattr(QMessageBox, 'warning', lambda *args: messages.append(args[2]))
     window.focusfield.start_setup('center')
-    assert 'preview' in messages[0].lower()
+    assert 'check chart' in messages[0].lower()
     assert window.focusfield.thread is None
 
 
@@ -116,6 +116,7 @@ def test_loading_unsupported_backend_recipe_does_not_silently_select_rgb(window,
 
 def test_nominal_plane_warning_is_persistent_and_preserves_user_distance(window):
     p = window.focusfield
+    p.manual_bounds.setChecked(True)
     p.fields['wd_start_mm'].setValue(20.2)
     p.fields['wd_end_mm'].setValue(20.4)
     recipe = p.current_recipe()
@@ -125,6 +126,70 @@ def test_nominal_plane_warning_is_persistent_and_preserves_user_distance(window)
     p.fields['wd_end_mm'].setValue(20.1)
     assert not p.current_recipe().separate_nominal_plane_required
     assert 'on the sweep grid' in p.nominal_note.text()
+
+
+def test_quick_and_measurement_presets_derive_a_grid_and_count(window, monkeypatch):
+    from dataclasses import replace
+    from machine_settings import SETTINGS
+    from pathprogrammer.ui import focusfield_panel
+
+    panel = window.focusfield
+    assert "21 frames" in panel.plan_note.text()
+    assert panel.current_recipe().expected_width_px == 1600
+    panel.fields["nominal_wd_mm"].setValue(20.013)
+    panel.half_span.setValue(0.24)
+    recipe = panel.current_recipe()
+    assert recipe.distances() == [19.813, 19.863, 19.913, 19.963, 20.013, 20.063, 20.113, 20.163, 20.213]
+    panel.manual_bounds.setChecked(True)
+    panel.fields["wd_start_mm"].setValue(19.825)
+    panel.fields["wd_end_mm"].setValue(20.225)
+    assert panel.current_recipe().separate_nominal_plane_required
+    profile = replace(SETTINGS.focusfield, camera_pipeline_verified=True, verified_pixel_format="Mono16")
+    monkeypatch.setattr(focusfield_panel, "load_settings", lambda: replace(SETTINGS, focusfield=profile))
+    panel.simulate.setChecked(False)
+    assert panel.preset.currentText() == "Measurement"
+    assert panel.current_recipe().pixel_format == "Mono16" and not panel.format.isEnabled()
+    assert "54 frames" in panel.plan_note.text()
+    panel.fields["repetitions"].setValue(1)
+    assert panel.reverse.isHidden() and "27 frames" in panel.plan_note.text()
+    panel.dry_run.setChecked(True)
+    assert "0 frames" in panel.plan_note.text() and panel.start_btn.text().startswith("Run dry run")
+
+
+def test_preview_and_report_survive_unrelated_settings(window, qtbot, tmp_path):
+    from focusfield.controller import RunResult
+
+    panel = window.focusfield
+    report = tmp_path / "report.html"
+    report.write_text("<p>Earlier scan report</p>")
+    panel._start_task(lambda: RunResult("COMPLETED", str(tmp_path)))
+    panel.thread.start()
+    qtbot.waitUntil(lambda: panel.thread is None, timeout=10000)
+    panel.check_preview()
+    qtbot.waitUntil(lambda: panel.thread is None, timeout=10000)
+    assert panel.report_path == report and panel.report_btn.isEnabled()
+    previous = panel.last_preview
+    panel.fields["frames_per_position"].setValue(4)
+    assert panel.last_preview is previous
+    panel.dry_run.setChecked(True)
+    assert not panel.center_btn.isEnabled() and not panel.scout_btn.isEnabled()
+    assert panel.checks["lens_locked_and_chart_checked"].isHidden()
+    panel.dry_run.setChecked(False)
+    assert panel.center_btn.isEnabled() and panel.scout_btn.isEnabled()
+    panel.fields["exposure_us"].setValue(12000)
+    assert panel.last_preview is None
+
+
+def test_scout_draft_reuses_capture_settings_without_overwriting_manual_range(window):
+    panel = window.focusfield
+    original = panel.current_recipe()
+    panel.scout_proposal = {"suggested_recipe": dict(wd_start_mm=19.975, wd_end_mm=20.125, step_mm=0.025)}
+    panel.update_controls()
+    draft = panel.current_recipe(use_scout=True)
+    assert draft.distances() == [19.975, 20, 20.025, 20.05, 20.075, 20.1, 20.125]
+    assert draft.frames_per_position == original.frames_per_position and draft.nominal_wd_mm == original.nominal_wd_mm
+    assert panel.current_recipe() == original
+    assert "7 positions" in panel.scout_note.text()
 
 
 @pytest.mark.parametrize('approved', [False, True])

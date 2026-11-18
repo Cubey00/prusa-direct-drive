@@ -14,6 +14,22 @@ DEFAULT_CHART = ROOT / "focusfield/charts/focus_field_chart_layout.json"
 DEFAULT_RECIPE = ROOT / "experiments/focusfield_20mm.toml"
 
 
+def centered_scan_bounds(nominal, half_span, step):
+    """Fit whole steps on both sides of nominal without exceeding the requested span."""
+    nominal, half_span, step = map(lambda value: Decimal(str(value)), (nominal, half_span, step))
+    if step < Decimal("0.001"):
+        raise ValueError("Step must be at least 0.001 mm")
+    intervals = half_span // step
+    if intervals < 2:
+        raise ValueError("Half-span must cover at least two steps")
+    return float(nominal - intervals * step), float(nominal + intervals * step)
+
+
+def nominal_on_grid(start, end, step, nominal):
+    start, end, step, nominal = map(lambda value: Decimal(str(value)), (start, end, step, nominal))
+    return start <= nominal <= end and step > 0 and (nominal - start) % step == 0
+
+
 @dataclass(frozen=True)
 class Recipe:
     schema_version: int = 1
@@ -62,8 +78,9 @@ class Recipe:
         nominal_inside = self.wd_start_mm <= self.nominal_wd_mm <= self.wd_end_mm
         if not nominal_inside and not self.separate_nominal_plane_required:
             raise ValueError("Nominal WD must lie within scan")
-        if nominal_inside and self.separate_nominal_plane_required:
-            raise ValueError("Separate nominal-plane flag is only valid when the requested plane is outside the sweep")
+        if self.separate_nominal_plane_required and nominal_on_grid(
+                self.wd_start_mm, self.wd_end_mm, self.step_mm, self.nominal_wd_mm):
+            raise ValueError("Separate nominal-plane flag requires a nominal plane outside the sweep grid")
         for key in ("frames_per_position", "repetitions", "discard_frames"):
             v = getattr(self, key)
             if type(v) is not int or not 1 <= v <= 100:

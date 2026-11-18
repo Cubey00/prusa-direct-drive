@@ -139,11 +139,11 @@ class SimStage:
 class SimCamera:
     """Rendered chart with known radial best distance plus apparent tilt, seeded noise."""
     simulated = True
+    scale = 16
 
     def __init__(self, stage, recipe, chart):
         self.stage, self.recipe, self.chart = stage, recipe, chart
         self.frame_id = 0
-        self.scale = 16
         self.rng = np.random.default_rng(7)
         self.offset_px = np.zeros(2)
         self.xy_jacobian = np.array([[-16, 3], [2, 16]])
