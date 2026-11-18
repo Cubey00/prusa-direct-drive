@@ -48,9 +48,17 @@ def test_marker_identity_partial_coverage_and_local_edges():
     h, error = detect_chart(gray, chart)
     assert error < 1
     assert all(len(edge_rois(gray, h, square)) == 4 for square in chart["slanted_squares"])
+    h, error = detect_chart(np.rot90(gray, 2), chart)
+    assert error < 1
+    wrong_layout = load_chart(DEFAULT_CHART)
+    wrong_layout["fiducials"][0]["top_left_mm"][0] += 3
+    with pytest.raises(ValueError, match=r"All four ArUco markers decoded.*exceeds the 3 sensor-pixel limit"):
+        detect_chart(gray, wrong_layout)
     gray[:400, :480] = 0.8
-    with pytest.raises(ValueError, match="four unique"):
+    with pytest.raises(ValueError, match=r"Detected IDs \[1, 2, 3\], missing IDs \[0\]"):
         detect_chart(gray, chart)
+    with pytest.raises(ValueError, match=r"Detected IDs none, missing IDs \[0, 1, 2, 3\]"):
+        detect_chart(np.full_like(gray, 0.8), chart)
 
 
 @pytest.mark.parametrize("args", [["--rows", "2"], ["--angle", "0"], ["--field-width", "-5"],

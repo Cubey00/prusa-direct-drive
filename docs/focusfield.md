@@ -127,6 +127,10 @@ The record is copied into every physical scan/setup manifest for reproducibility
 
 **Check preview & chart** reports the configured chart-field center (from its homography),
 the four marker corners/centers, reprojection RMS and center error in original sensor pixels.
+If marker detection fails, the preview lists decoded and missing IDs. Frame each complete
+black marker border with its light margin. If all four IDs decode but reprojection exceeds
+the displayed limit, check that the printed chart matches the loaded layout and lies flat.
+Curved rows or columns on a flat chart indicate distortion that a homography cannot model.
 Without an optical XY profile, error is relative to the image midpoint and is diagnostic only.
 Neither preview nor **Start scan** invokes XY centering.
 

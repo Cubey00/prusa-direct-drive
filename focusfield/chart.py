@@ -35,9 +35,16 @@ def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0, max
     image = np.uint8(np.clip(gray, 0, 1) * 255)
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     corners, ids, _ = cv2.aruco.ArucoDetector(dictionary).detectMarkers(image)
-    if ids is None or sorted(ids.ravel().tolist()) != [0, 1, 2, 3]:
-        raise ValueError("All four unique ArUco markers 0,1,2,3 must be visible")
-    found = dict(zip(ids.ravel().tolist(), corners))
+    expected_ids = [0, 1, 2, 3]
+    detected_ids = ids.ravel().tolist() if ids is not None else []
+    if sorted(detected_ids) != expected_ids:
+        missing_ids = sorted(set(expected_ids).difference(detected_ids))
+        raise ValueError(
+            "All four unique ArUco markers 0,1,2,3 must be visible. "
+            f"Detected IDs {sorted(detected_ids) or 'none'}, missing IDs {missing_ids or 'none'}. "
+            "Check the printed chart and the light margin around each marker."
+        )
+    found = dict(zip(detected_ids, corners))
     source, target = [], []
     for f in chart["fiducials"]:
         x, y = f["top_left_mm"]
@@ -48,10 +55,14 @@ def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0, max
     if h is None:
         raise ValueError("Degenerate chart localization")
     mapped = project(h, source)
-    error = float(np.sqrt(np.mean(np.sum((mapped - target)**2, axis=1))))
+    error_px = float(np.sqrt(np.mean(np.sum((mapped - target)**2, axis=1)))) * sensor_pitch
     # Reject excessive distortion rather than asserting a homography corrects it.
-    if error*sensor_pitch > max_reprojection_rms_px:
-        raise ValueError("Marker reprojection error too large; calibrate lens distortion / field of view")
+    if error_px > max_reprojection_rms_px:
+        raise ValueError(
+            f"All four ArUco markers decoded. Marker reprojection RMS {error_px:.3f} sensor pixels "
+            f"exceeds the {max_reprojection_rms_px:g} sensor-pixel limit. "
+            "Check the printed layout and chart flatness. Lens distortion can also cause this."
+        )
     f = chart["visible_field"]
     field_points = [[f["left"], f["top"]], [f["left"]+f["width"], f["top"]],
                     [f["left"]+f["width"], f["top"]+f["height"]], [f["left"], f["top"]+f["height"]]]
@@ -62,7 +73,7 @@ def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0, max
     width, height = gray.shape[1]*sensor_pitch, gray.shape[0]*sensor_pitch
     inside = bool(np.all(field_corners >= 2*sensor_pitch) and
                   np.all(field_corners < [width-2*sensor_pitch, height-2*sensor_pitch]))
-    return dict(homography=h, reprojection_rms_px=error*sensor_pitch,
+    return dict(homography=h, reprojection_rms_px=error_px,
                 marker_corners_px={str(k): (v.reshape(4, 2)*sensor_pitch).tolist() for k, v in found.items()},
                 marker_centers_px={str(k): (v.reshape(4, 2).mean(axis=0)*sensor_pitch).tolist() for k, v in found.items()},
                 field_corners_px=field_corners.tolist(), chart_center_px=center.tolist(),
