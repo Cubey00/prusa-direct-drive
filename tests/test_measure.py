@@ -76,3 +76,12 @@ def test_touch_button_creeps_after_hovering_and_reports(win, plate):
     assert win.measure.touch_btn.isEnabled()
     win.measure.touch_btn.click()                                  # not hovering any more: all of it slowly
     assert win.server.creeps[-1] == (0.0, 15.0)
+
+
+def test_graph_shows_the_calibrators_force_stream(win):
+    assert win.graph.source() is None
+    for g in (0.5, 1.0, 12.0):
+        msg(win, "force", g=g)
+    assert win.graph.source() == [0.5, 1.0, 12.0]
+    msg(win, "bye")
+    assert win.graph.source() is None

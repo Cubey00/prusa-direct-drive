@@ -39,7 +39,14 @@ def test_drop_never_past_the_bottom(monkeypatch):
 
 def test_stuck_force_drops_only_once(monkeypatch):
     sent = fake_link(monkeypatch)
-    stop = gc.force_guard(StuckGauge(), trip_g=500, release_g=50, max_drop=30.0)
+    gauge = StuckGauge(z=100.0)
+
+    def move(cmd):                     # the bed really gets there: the drop ends, the guard loops on
+        sent.append(cmd)
+        gauge.pos["z"] += float(cmd.split()[1][1:])
+    monkeypatch.setattr(gc, "_send_nowait", move)
+    stop = gc.force_guard(gauge, trip_g=500, release_g=50, max_drop=30.0)
     time.sleep(0.5)
     stop.set()
-    assert sum(c.startswith("G1 Z") for c in sent) == 1
+    time.sleep(0.05)
+    assert sum(c.startswith("G1 Z") for c in sent) == 1 and gauge.pos["z"] == 130.0

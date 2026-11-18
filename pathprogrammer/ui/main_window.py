@@ -2,6 +2,7 @@
 (folded) | points (folded), force graph and run controls."""
 import re
 from datetime import datetime
+from collections import deque
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
@@ -62,6 +63,8 @@ class MainWindow(QMainWindow):
         self.run = RunControls()
         self.run_settings = RunSettingsBox()
         self.graph = ForceGraph()
+        self._live_force = deque(maxlen=300)   # calibrator's force stream: 30 s at 10/s
+        self.graph.set_source(self._live_source)
         self.photo = PhotoPanel(self.settings)
         self.measure = MeasureBox()
         self._pending_goto = None         # goto for Meten, sent once the calibrator says hello
@@ -484,6 +487,14 @@ class MainWindow(QMainWindow):
         if msg.get("type") == "goto_done" and msg.get("ok") and msg.get("label") == first:
             self._needs_home = False          # the wizard homed X/Y on its way to its first cone
         kind = msg.get("type")
+        if kind == "force":
+            try:
+                self._live_force.append(float(msg["g"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+            return
+        if kind == "bye":
+            self._live_force.clear()
         if kind == "hello":
             self.left.link_label.setText("Calibrator verbonden: volg de stappen in het kalibratievenster")
         elif kind == "bye":
@@ -631,6 +642,10 @@ class MainWindow(QMainWindow):
         self.graph.set_source(getattr(hw, "force_trace", None))
         self.thread.start()
 
+    def _live_source(self):
+        """The graph outside runs: the force the calibrator streams (None when it isn't running)."""
+        return list(self._live_force) or None
+
     def update_graph_lines(self, *_):
         """Solid line at the next point's max force (force points only), dotted at the contact threshold."""
         pts = self.points.points
@@ -662,7 +677,7 @@ class MainWindow(QMainWindow):
         self.thread.quit()
         self.thread.wait()
         self.thread = self.worker = None
-        self.graph.set_source(None)
+        self.graph.set_source(self._live_source)
         self.photo.resume()
         self._running_row = None
         self.update_graph_lines()

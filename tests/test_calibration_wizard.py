@@ -79,14 +79,14 @@ def visible(wiz):
             if w.isVisible()}
 
 
-def do_point(w, p, x, y):
+def do_point(w, p, x, y, z=85.2):
     """Ga naar kegel -> calibrator arrives -> insturen -> calibrator answers with the position."""
     wiz = w.wizard
     wiz.go_btn.click()
     msg(w, "goto_done", label=p, ok=True, message=f"At {p}")
     wiz.send_btn.click()
     assert w.server.requests[-1] == p
-    msg(w, "position", point=p, x=x, y=y, z=85.2)
+    msg(w, "position", point=p, x=x, y=y, z=z)
 
 
 def test_button_opens_the_wizard_and_asks_for_a_plate_first(win):
@@ -234,7 +234,7 @@ def test_only_cone_2_gives_a_shift_calibration(win, plate):
     assert win.transform is not None
     saved = machine_settings.load()
     assert saved.sensor.offset == pytest.approx((0.6, -39.2, fids["F2"]["z"] - 85.2))
-    assert saved.calibration.cone_position("F3")[2] == pytest.approx(85.2 + fids["F3"]["z"] - fids["F2"]["z"])
+    assert saved.calibration.cone_position("F1") is None and saved.calibration.cone_position("F3") is None
     # the choice is remembered for the next calibration
     win.wizard = None
     win.start_calibration()
@@ -254,3 +254,23 @@ def test_offset_outside_reach_still_saves_cones_and_height(win, plate):
     saved = machine_settings.load()
     assert saved.calibration.cone_position("F2") is not None
     assert saved.sensor.offset == pytest.approx((0.0, -40.0, fids["F2"]["z"] - 85.2))
+
+
+def test_cone_2_with_a_big_x_offset_saves_and_meten_works(win, plate):
+    """Real case: the sensor sits 13.6 mm right of the nozzle. F1/F3 calculated from F2 lie
+    outside the head's travel; only F2 is saved, the height too, and Meten can go."""
+    from pathprogrammer import measure
+    win.open_model(plate)
+    win.start_calibration()
+    wiz = win.wizard
+    wiz.mode_f2.setChecked(True)
+    fids = fiducials(plate)
+    do_point(win, "F2", fids["F2"]["x"] - 13.61, fids["F2"]["y"] + 37.89, z=64.5)
+    saved = machine_settings.load()
+    assert saved.calibration.cone_position("F2") == pytest.approx((fids["F2"]["x"] - 13.61, fids["F2"]["y"] + 37.89, 64.5))
+    assert saved.sensor.offset[2] == pytest.approx(fids["F2"]["z"] - 64.5)
+    manifest = json.loads(plate.with_suffix(".json").read_text())
+    t = measure.hover_target(manifest, saved)                     # no session: from the saved F2 alone
+    part = manifest["parts"][0]
+    assert t.source == "opgeslagen positie van kegel 2"
+    assert (t.x, t.y) == pytest.approx((part["x"] - 13.61, part["y"] + 37.89))

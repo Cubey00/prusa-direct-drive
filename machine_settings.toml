@@ -99,6 +99,12 @@ max_force_g = 450.0                # a touch is aborted above this
 guard_trip_g = 500.0               # force_guard: emergency drop above this
 guard_release_g = 50.0             # ...until the force is below this
 guard_drop_mm = 30.0               # ...but never more than this far (mm) per trip
+# Meten "Beweeg heel langzaam tot de sensor het object raakt": the load cell drifts, so contact is
+# a quick rise (a peak), not a level: the force must rise contact_rise_g above its average of
+# contact_rise_s..2*contact_rise_s seconds earlier. Slow drift never does that; a contact at
+# 0.1 mm/s (~100 g/mm: ~10 g/s) does within about a second. Above jog_stop_g it stops anyway.
+contact_rise_g = 10.0
+contact_rise_s = 1.0
 jog_stop_g = 100.0                 # calibrator: "Bed omhoog" refused above this (load cell drifts: well above contact_g)
 
 [calibration]

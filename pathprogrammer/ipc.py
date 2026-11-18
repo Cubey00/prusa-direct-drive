@@ -12,6 +12,7 @@ Message contract (dicts, all with "v": 1):
     {"v": 1, "type": "status", "ok": bool, "message": str}       e.g. why a position could not be sent
     {"v": 1, "type": "touch_done", "ok": bool, "status": str, "message": str,
      "z": float | None, "force_g": float | None}               end of a "creep"
+    {"v": 1, "type": "force", "g": float}                       tared load cell force, 10x/s (graph)
     {"v": 1, "type": "bye"}                                     calibrator closing
   path programmer -> calibrator
     {"v": 1, "type": "goto", "x": float, "y": float, "z": float, "label": str, "home_xy": bool,
@@ -235,6 +236,9 @@ class CalibratorClient:
         return self._send({"v": VERSION, "type": "touch_done", "ok": bool(ok), "status": str(status),
                            "message": str(message), "z": None if z is None else float(z),
                            "force_g": None if force_g is None else float(force_g)})
+
+    def send_force(self, g):
+        return self._send({"v": VERSION, "type": "force", "g": float(g)})
 
     def send_status(self, ok, message=""):
         return self._send({"v": VERSION, "type": "status", "ok": bool(ok), "message": str(message)})

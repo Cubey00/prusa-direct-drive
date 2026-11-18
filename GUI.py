@@ -358,9 +358,11 @@ class App:
         self._creep_cancel.clear()
 
         def work():
-            res = creep_to_contact(self.gauge, contact_g=SETTINGS.forces.contact_g,
-                                   max_force_g=SETTINGS.forces.max_force_g, max_travel=max_mm, fast_mm=fast_mm,
-                                   cancel=self._creep_cancel, on_status=lambda m: None)
+            fo = SETTINGS.forces
+            res = creep_to_contact(self.gauge, contact_g=fo.contact_g, max_force_g=fo.max_force_g,
+                                   max_travel=max_mm, fast_mm=fast_mm, cancel=self._creep_cancel,
+                                   on_status=lambda m: None, rise_g=fo.contact_rise_g,
+                                   rise_s=fo.contact_rise_s, abs_g=fo.jog_stop_g)
             self.motion.halt()                       # next jog starts from the real position
             texts = {"ok": "De sensor raakt het object.", "no_contact": res.message,
                      "overload": f"Te veel kracht ({res.peak_g:.0f} g): gestopt.", "aborted": "Gestopt."}
@@ -566,7 +568,22 @@ class App:
                 for i, v in enumerate(s):
                     pts += [i * step, to_y(v)]
                 c.create_line(*pts, fill="orange", width=1)
+        self._stream_force()
         self.root.after(30, self.poll_gauge)
+
+    FORCE_STREAM_S = 0.1        # the path programmer's graph gets the force 10x per second
+
+    def _stream_force(self):
+        """Send the tared force to the path programmer for its live graph (pressing = positive)."""
+        if self.link is None or not self._tared:
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_last_force_sent", 0.0) < self.FORCE_STREAM_S:
+            return
+        self._last_force_sent = now
+        g = self.gauge.force_g(GUARD_WINDOW)
+        if g is not None:
+            self.link.send_force(-g)
 
     # --- Load cell calibration ---
 

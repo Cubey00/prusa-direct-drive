@@ -425,9 +425,13 @@ class CalibrationWizard(QDialog):
             return ""
         off, off_z = self.measured_offset(), self.measured_offset_z()
         xy_refused = ""
+        # only cone 2 measured: save only that one. F1/F3 were calculated and may lie where the
+        # sensor can't reach (outside the head's travel); Meten calculates them again from F2.
+        measured = (SINGLE_POINT,) if self.mode == MODE_F2 else calibration.POINTS
+        cones = {f"cone_{p}": ([round(v, 3) for v in self.sent[p]] if p in measured else [])
+                 for p in calibration.POINTS}
         try:
-            self.settings = machine_settings.save_values(
-                "calibration", {f"cone_{p}": [round(v, 3) for v in self.sent[p]] for p in calibration.POINTS})
+            self.settings = machine_settings.save_values("calibration", cones)
             if off is not None and off_z is not None:
                 try:
                     self.settings = machine_settings.save_values(
@@ -441,8 +445,8 @@ class CalibrationWizard(QDialog):
                                   f"({e}); hoogte Z {off_z:+.2f} mm wel.")
         except machine_settings.SettingsError as e:
             return f"Niet opgeslagen: {e}"
-        text = ("Posities van de kegels opgeslagen in machine_settings.toml: de volgende kalibratie rijdt "
-                "er direct heen, 1 cm erboven.")
+        text = ("Positie van kegel 2 opgeslagen" if self.mode == MODE_F2 else "Posities van de kegels opgeslagen")
+        text += " in machine_settings.toml: de volgende kalibratie rijdt er direct heen, 1 cm erboven."
         if xy_refused:
             text += " " + xy_refused
         elif off is not None and off_z is not None:
