@@ -8,6 +8,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .lens import distort_points, rectification_maps
+
 
 def load_chart(path):
     chart = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -31,40 +33,96 @@ def load_chart(path):
     return chart
 
 
-def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0, max_reprojection_rms_px=3.0):
+def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0,
+                   max_reprojection_rms_px=3.0, lens_calibration=None, sensor_offset=(0, 0)):
     image = np.uint8(np.clip(gray, 0, 1) * 255)
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-    corners, ids, _ = cv2.aruco.ArucoDetector(dictionary).detectMarkers(image)
-    if ids is None or sorted(ids.ravel().tolist()) != [0, 1, 2, 3]:
-        raise ValueError("All four unique ArUco markers 0,1,2,3 must be visible")
-    found = dict(zip(ids.ravel().tolist(), corners))
-    source, target = [], []
+    detector = cv2.aruco.ArucoDetector(dictionary)
+    corners, ids, _ = detector.detectMarkers(image)
+    expected_ids = [0, 1, 2, 3]
+    detected_ids = ids.ravel().tolist() if ids is not None else []
+    rectified_matrix = None
+    clean_subset = len(set(detected_ids)) == len(detected_ids) and set(detected_ids).issubset(expected_ids)
+    if lens_calibration is not None and clean_subset and len(detected_ids) < len(expected_ids):
+        rectified_matrix, maps = rectification_maps(
+            lens_calibration, sensor_pitch, sensor_offset, (image.shape[1], image.shape[0]))
+        rectified = cv2.remap(image, *maps, cv2.INTER_LINEAR)
+        corners, ids, _ = detector.detectMarkers(rectified)
+        detected_ids = ids.ravel().tolist() if ids is not None else []
+    if sorted(detected_ids) != expected_ids:
+        missing_ids = sorted(set(expected_ids).difference(detected_ids))
+        raise ValueError(
+            "All four unique ArUco markers 0,1,2,3 must be visible. "
+            f"Detected IDs {sorted(detected_ids) or 'none'}, missing IDs {missing_ids or 'none'}. "
+            "Check the printed chart and the light margin around each marker."
+        )
+    found = dict(zip(detected_ids, corners))
+    source, observed = [], []
     for f in chart["fiducials"]:
         x, y = f["top_left_mm"]
         s = f["size_mm"]
         source.extend([[x, y], [x+s, y], [x+s, y+s], [x, y+s]])
-        target.extend(found[f["id"]].reshape(4, 2))
-    h, _ = cv2.findHomography(np.float32(source), np.float32(target), 0)
+        observed.extend(found[f["id"]].reshape(4, 2))
+    observed = np.asarray(observed, dtype=float)
+    ideal = observed
+    if lens_calibration is not None:
+        raw_matrix = lens_calibration.analysis_matrix(sensor_pitch, sensor_offset)
+        coeffs = np.asarray(lens_calibration.dist_coeffs)
+        ideal_matrix = raw_matrix if rectified_matrix is None else rectified_matrix
+        if rectified_matrix is None:
+            criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-8)
+            ideal = cv2.undistortPointsIter(observed.reshape(-1, 1, 2), raw_matrix, coeffs,
+                                           None, ideal_matrix, criteria).reshape(-1, 2)
+            round_trip = distort_points(ideal, ideal_matrix, raw_matrix, coeffs)
+            if not np.isfinite(round_trip).all() or np.max(np.linalg.norm(round_trip - observed, axis=1)) * sensor_pitch > 0.5:
+                raise ValueError("Lens calibration could not invert observed marker coordinates")
+        else:
+            observed = distort_points(ideal, ideal_matrix, raw_matrix, coeffs)
+    h, _ = cv2.findHomography(np.asarray(source, dtype=float), ideal, 0)
     if h is None:
         raise ValueError("Degenerate chart localization")
-    mapped = project(h, source)
-    error = float(np.sqrt(np.mean(np.sum((mapped - target)**2, axis=1))))
+
+    def project_chart(points):
+        mapped = project(h, points)
+        if lens_calibration is not None:
+            mapped = distort_points(mapped, ideal_matrix, raw_matrix, coeffs)
+        if not np.isfinite(mapped).all():
+            raise ValueError("Chart projection produced nonfinite coordinates")
+        return mapped
+
+    mapped = project_chart(source)
+    error_px = float(np.sqrt(np.mean(np.sum((mapped - observed)**2, axis=1)))) * sensor_pitch
     # Reject excessive distortion rather than asserting a homography corrects it.
-    if error*sensor_pitch > max_reprojection_rms_px:
-        raise ValueError("Marker reprojection error too large; calibrate lens distortion / field of view")
+    if error_px > max_reprojection_rms_px:
+        suggestion = ("Verify the lens profile matches this camera setup."
+                      if lens_calibration is not None else "For a distorted lens, load a measured lens calibration.")
+        raise ValueError(
+            f"All four ArUco markers decoded. Marker reprojection RMS {error_px:.3f} sensor pixels "
+            f"exceeds the {max_reprojection_rms_px:g} sensor-pixel limit. "
+            f"Check the printed layout and chart flatness. {suggestion}"
+        )
     f = chart["visible_field"]
     field_points = [[f["left"], f["top"]], [f["left"]+f["width"], f["top"]],
                     [f["left"]+f["width"], f["top"]+f["height"]], [f["left"], f["top"]+f["height"]]]
-    center = project(h, [[f["left"]+f["width"]/2, f["top"]+f["height"]/2]])[0] * sensor_pitch
+    center = project_chart([[f["left"]+f["width"]/2, f["top"]+f["height"]/2]])[0] * sensor_pitch + sensor_offset
+    width, height = (lens_calibration.image_size_px if lens_calibration is not None else
+                     (gray.shape[1]*sensor_pitch, gray.shape[0]*sensor_pitch))
     target = np.asarray(optical_center_px if optical_center_px is not None else
-                        [gray.shape[1]*sensor_pitch/2, gray.shape[0]*sensor_pitch/2], float)
-    field_corners = project(h, field_points) * sensor_pitch
-    width, height = gray.shape[1]*sensor_pitch, gray.shape[0]*sensor_pitch
-    inside = bool(np.all(field_corners >= 2*sensor_pitch) and
-                  np.all(field_corners < [width-2*sensor_pitch, height-2*sensor_pitch]))
-    return dict(homography=h, reprojection_rms_px=error*sensor_pitch,
-                marker_corners_px={str(k): (v.reshape(4, 2)*sensor_pitch).tolist() for k, v in found.items()},
-                marker_centers_px={str(k): (v.reshape(4, 2).mean(axis=0)*sensor_pitch).tolist() for k, v in found.items()},
+                        [width/2, height/2], float)
+    field_corners = project_chart(field_points) * sensor_pitch + sensor_offset
+    perimeter = field_corners
+    if lens_calibration is not None:
+        boundary = np.concatenate([np.linspace(a, b, 17) for a, b in
+                                   zip(field_points, field_points[1:] + field_points[:1])])
+        perimeter = project_chart(boundary) * sensor_pitch + sensor_offset
+    inside = bool(np.all(perimeter >= 2*sensor_pitch) and
+                  np.all(perimeter < [width-2*sensor_pitch, height-2*sensor_pitch]))
+    native_corners = observed.reshape(-1, 4, 2)*sensor_pitch + sensor_offset
+    marker_corners = {str(f["id"]): corners for f, corners in zip(chart["fiducials"], native_corners)}
+    return dict(homography=h, project_chart=project_chart, reprojection_rms_px=error_px,
+                lens_corrected=lens_calibration is not None, rectified_marker_detection=rectified_matrix is not None,
+                marker_corners_px={k: v.tolist() for k, v in marker_corners.items()},
+                marker_centers_px={k: v.mean(axis=0).tolist() for k, v in marker_corners.items()},
                 field_corners_px=field_corners.tolist(), chart_center_px=center.tolist(),
                 optical_center_px=target.tolist(), center_error_px=(center-target).tolist(),
                 optical_center_calibrated=optical_center_px is not None, full_field_visible=inside)
@@ -75,14 +133,27 @@ def detect_chart(gray, chart):
     return registration["homography"], registration["reprojection_rms_px"]
 
 
-def regional_metrics(capture, chart, recipe, *, optical_center_px=None, require_usable_edges=True):
+def register_capture(capture, chart, recipe, *, optical_center_px=None):
     from .acquisition import analysis_plane
+
+    gray, pitch = analysis_plane(capture.pixels, capture.metadata)
+    lens = recipe.lens_calibration
+    if lens is not None:
+        lens.validate_capture(capture)
+    # The native G1 lattice starts one column to the right of the image origin.
+    offset = (1, 0) if lens is not None and pitch == 2 else (0, 0)
+    registration = register_chart(gray, chart, optical_center_px=optical_center_px,
+                                  sensor_pitch=pitch, sensor_offset=offset, lens_calibration=lens,
+                                  max_reprojection_rms_px=recipe.quality.max_marker_reprojection_px)
+    return registration, gray, pitch
+
+
+def regional_metrics(capture, chart, recipe, *, optical_center_px=None, require_usable_edges=True):
     from .quality import required_regions, usable_edges
     from .sfr import slanted_edge
     capture.validate()
-    gray, pitch = analysis_plane(capture.pixels, capture.metadata)
-    registration = register_chart(gray, chart, optical_center_px=optical_center_px, sensor_pitch=pitch,
-                                  max_reprojection_rms_px=recipe.quality.max_marker_reprojection_px)
+    registration, gray, pitch = register_capture(capture, chart, recipe, optical_center_px=optical_center_px)
+    project_chart = registration.pop("project_chart")
     if not registration["full_field_visible"]:
         raise ValueError("Chart field is clipped; position manually before assisted motion")
     required = required_regions(chart)
@@ -93,7 +164,8 @@ def regional_metrics(capture, chart, recipe, *, optical_center_px=None, require_
             continue
         values, failures, labels = [], [], []
         try:
-            for label, horizontal, roi, _, _ in edge_rois(gray, registration["homography"], square):
+            for label, horizontal, roi, _, _ in edge_rois(gray, registration["homography"], square,
+                                                          project_chart=project_chart):
                 try:
                     values.append(slanted_edge(roi, recipe.fixed_frequency_cpp, horizontal=horizontal,
                                                sensor_pitch=pitch, quality=recipe.quality).fixed_mtf)
@@ -117,10 +189,11 @@ def project(h, points):
     return cv2.perspectiveTransform(np.float32(points).reshape(-1, 1, 2), h).reshape(-1, 2)
 
 
-def edge_rois(gray, h, square):
+def edge_rois(gray, h, square, *, project_chart=None):
     cx, cy = square["center_mm"]
     side = square["side_mm"]
-    predicted = project(h, [[cx, cy], [cx+side, cy], [cx, cy+side]])
+    points = [[cx, cy], [cx+side, cy], [cx, cy+side]]
+    predicted = project_chart(points) if project_chart is not None else project(h, points)
     scale = min(np.linalg.norm(predicted[1] - predicted[0]), np.linalg.norm(predicted[2] - predicted[0]))
     px, py = predicted[0]
     radius = int(scale * 0.95)

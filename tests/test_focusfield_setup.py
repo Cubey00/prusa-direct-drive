@@ -28,6 +28,18 @@ def setup_rig(tmp_path):
                            xy_calibration=simulation_xy_calibration(fixture))
 
 
+def test_scout_default_centers_on_nominal_wd_and_does_not_expand_wide_fixture():
+    from focusfield.setup import suggest_scout
+
+    fixture = replace(simulation_fixture(), reference_wd_mm=19.7, reference_z_mm=99.9,
+                      safe_z_min_mm=94.8, safe_z_max_mm=105.2)
+    scout = suggest_scout(fixture, 20.0)
+    assert (scout.z_start_mm, scout.z_end_mm) == (99.7, 100.7)
+    assert len(scout.positions(scout.z_start_mm, scout.z_end_mm)) == 11
+    assert not scout.allow_widen
+    scout.validate(fixture)
+
+
 def test_registration_center_uses_chart_geometry(setup_rig):
     frame = setup_rig.camera.capture()
     r = register_chart(frame.pixels/65535, load_chart(setup_rig.recipe.chart_path))

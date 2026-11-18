@@ -20,10 +20,17 @@ python -m pip install -r requirements.txt
 python -m pathprogrammer
 ```
 
-Select **Focus-Field MTF**. Simulation is checked by default. **Check preview & chart**
-renders a synthetic chart, checks all four markers, locates local edges and displays
-the captured image. **Start scan** saves the scan and generates the report in a worker
-thread. The remaining application stays responsive, including STOP.
+Select **Focus-Field MTF**. **Simulation** starts with the **Quick check** preset.
+**Check chart** renders a synthetic chart, checks all four markers and displays the image.
+**Run scan** captures the planned frames and generates a report under **Results**.
+**STOP** stays available while the worker is active.
+
+Start with a nominal working distance, a half-span and a step. The app fits whole
+steps on both sides of the nominal plane, within the requested span. To enter
+independent endpoints, choose **Use manual scan bounds** under **Advanced scan settings**.
+A manual grid that misses the requested plane displays a separate measurement warning.
+The scan summary shows the actual range, positions, frames and estimated free disk
+space needed. **Setup** holds the chart, calibration and recipe controls.
 
 The same analysis is available without Qt or a camera SDK:
 
@@ -62,7 +69,35 @@ These are optical markers, separate from tactile plate cones F1–F3 and slicing
 Print at 100%, measure the 10 mm scale bar and target flatness, and measure field of view
 at the actual working distance. The provisional 60 × 45 mm field is not a camera
 calibration. Marker visibility, local edge size, printing quality and distortion must be
-checked across the complete scan. A plain homography does not correct wide-angle distortion.
+checked across the complete scan. For a distorted lens, use a measured lens profile.
+
+### Calibrate the lens from checkerboard images
+
+Use a flat, rigid checkerboard with known square spacing. Lock the lens and use the
+same focus, camera, resolution, crop, orientation and binning as the MTF capture.
+Save full-size RGB or monochrome images from that setup. For a 20 mm experiment, take
+the calibration views close to that working distance. Vary the board's tilt and position
+so the inner corners sample the center and all sides of the usable field. Keep the
+entire checkerboard visible in each shot. Collect at least eight fit images and two
+separate validation images, including views near the edge of the field.
+
+This example uses a board with seven by five **inner corners** and 5 mm squares.
+
+```sh
+python -m focusfield calibrate-lens --camera-serial CAMERA_SERIAL --corners 7 5 --square-mm 5 \
+  --images calibration/*.tif --validation validation/*.tif --output lens.json
+```
+
+The command reads saved images and reports the fit RMS and each validation view's
+RMS. It uses the standard OpenCV pinhole model with radial and tangential distortion.
+The command requires each validation view to fit within 3 native sensor pixels RMS.
+Use **Load lens calibration…** under **Setup**, then run **Check chart** on the flat MTF target. The app checks the camera serial and native image size.
+If using a recipe file, put `lens_calibration = "lens.json"` in its top-level settings,
+with the path relative to the recipe. The run snapshots the profile for offline analysis.
+
+An existing OpenCV pinhole calibration can be imported as JSON with `camera_serial`,
+`image_size_px` as `[width, height]`, a 3×3 `camera_matrix`, and a flat `dist_coeffs`
+array in OpenCV order `[k1, k2, p1, p2, k3]`. The last coefficient is optional.
 
 ## Configure a physical fixture
 
@@ -85,6 +120,7 @@ real profile.
 | `z_speed_mm_s` | Bounded scan speed (default 1 mm/s) |
 | `motion_safety_verified` | Independently verified full fixture/housing/nozzle clearance and mechanical behavior |
 | `camera_pipeline_verified` | Actual camera format, dimensions, CFA, ROI/binning, linearity and processing verified |
+| `verified_pixel_format` | Optional verified native capture format used automatically by the physical Measurement preset |
 | `frame_timing_verified` | Supervised verification that restart/discard accepts only post-settle exposures |
 | `wd_reference_record` | Immutable JSON record of two independently measured WD/Z positions, with date, method, lens plane and operator |
 | `sfr_reference_verified`, `sfr_validation_id` | Separate investigator attestation of same-raw-image reference comparison; needed for measurement validity, not merely acquisition |
@@ -125,10 +161,14 @@ The record is copied into every physical scan/setup manifest for reproducibility
 
 ### Optional physical XY centering
 
-**Check preview & chart** reports the configured chart-field center (from its homography),
+**Check chart** reports the projected chart-field center,
 the four marker corners/centers, reprojection RMS and center error in original sensor pixels.
+If marker detection fails, the preview lists decoded and missing IDs. Frame each complete
+black marker border with its light margin. If all four IDs decode but reprojection exceeds
+the displayed limit, check that the printed chart matches the loaded layout and lies flat.
+Curved rows or columns on a flat chart indicate distortion that a homography cannot model.
 Without an optical XY profile, error is relative to the image midpoint and is diagnostic only.
-Neither preview nor **Start scan** invokes XY centering.
+Centering can be selected when the preview shows an alignment error and a valid XY mapping is loaded.
 
 An optical XY profile is a separate JSON measurement, loaded with **Load measured optical
 XY mapping…**. It must map small **printer XY changes to image-center changes**, including
@@ -138,12 +178,9 @@ Calibrate from supervised small known displacements; fit/validate the local mapp
 its residual/uncertainty over a limited image radius. A wide-angle/global image scale is
 insufficient. No mapping-calibration movement is performed by this software.
 
-There is currently **no in-app procedure to measure the XY Jacobian or lens distortion**.
-The JSON must come from an independently supervised calibration. For the actual wide-angle
-lens, validate intrinsics/distortion and the local chart-center mapping before relying on
-physical centering. A passing homography reprojection check alone does not establish that
-calibration. Distorted-image registration failures remain blocking; the threshold is not
-relaxed for centering or scouting. Actual SFR continues to use original sensor samples.
+Measure the XY Jacobian separately from the lens profile. Both measurements should use
+the actual lens and imaging configuration. The XY mapping still uses chart-center errors
+in native sensor coordinates.
 
 Example profile structure (illustrative numbers; **not a physical calibration**):
 
@@ -182,8 +219,11 @@ approval are saved in the setup manifest. Test the simulator and small supervise
 
 ### Optional bounded coarse scout
 
-**Scout focus interval…** is a separate operation after a successful preview. Its dialog
-specifies initial machine Z bounds, a coarse step and a fine step. The scout snapshots a
+**Scout focus interval…** is available after a successful chart check. Its dialog
+suggests a short Z interval around the nominal WD within the measured fixture limits.
+Review the position count and adjust the bounds, coarse step and fine step in the dialog.
+Widening to the full verified interval is optional and its maximum travel and position
+count are shown before approval. The scout snapshots a
 separate `ScoutRecipe`, not the final acquisition recipe. Default coarse step 0.1 mm,
 fine step 0.025 mm, one full-resolution frame/position, maximum 101 positions. The initial
 interval must contain at least five positions, and all commands have 0.001 mm precision.
@@ -223,15 +263,23 @@ If the focus interval excludes it, `separate_nominal_plane_required=true` is sav
 the proposal/recipe. The UI displays a persistent warning that a separate measurement
 at the requested distance is needed; no extra move outside the proposed bounds occurs.
 
-The operator may load the proposal into the editor; **Start scan** is a separate
-action requiring its own physical-motion approval. Setup result/history and the proposal
-are linked into the subsequent acquisition manifest. Setup logs are not full field reports.
+The scout range appears as a draft beside the current range. **Review scout range**
+reviews that draft with the current capture settings and requires a separate physical
+approval. The manual or centered range stays available. Setup history and the selected
+proposal are linked into the acquisition manifest.
 
 Before a physical scan, independently verify mechanical clearance, full travel, stage
 repeatability, firmware, STOP, fixed lens focus, chart scale and exposure. The UI requires
-explicit setup checks. First run **Motion only** under supervision, then confirm the
-completed collision-free dry run before acquiring images. The initial Z must already be
-inside the validated interval; the software will not move into it from an unknown position.
+explicit setup checks. Select **Motion-only dry run** and **Run dry run** under supervision,
+then confirm the completed collision-free dry run before acquiring images. The initial Z
+must already be inside the validated interval.
+
+Unchecking **Simulation** selects **Measurement**. Use a native format verified
+for the camera, either from `verified_pixel_format` or from the measurement recipe when
+the fixture does not specify one. **Quick check** uses RGB8, one frame per position
+and one sweep. Measurement retains the loaded recipe's capture counts and camera
+settings. Alternate sweep direction is available with two or more sweeps. The chart
+check and scan use the selected preset's format, exposure and gain.
 
 The adapter sends absolute Z only, waits for the driver's M400 and checks position before
 and after capture. It never homes (`G28`), probes, starts force metrics, or touches the chart.
@@ -335,9 +383,11 @@ ROIs, low contrast, clipping, inappropriate slant, poor phase coverage and nonst
 edges produce explicit validity flags.
 
 The default marker reprojection limit is 3 **original sensor pixels**, independent of
-image size; the former 1%-of-frame tolerance admitted visibly distorted geometry.
-Local searches do not compensate wide-angle distortion. Use calibrated local mapping
-for centering, and independently evaluate distortion effects on raw edge ROIs.
+image size. With a lens profile, registration fits the chart in corrected coordinates
+and projects the errors and square search positions back into the original frame. If
+the first marker detection fails, only the marker detector retries on a rectified image.
+The chart must still pass marker and geometry checks. The SFR analysis reads the
+original samples and its local straight-edge and slant checks still apply.
 
 ### Separate completion and measurement validity
 

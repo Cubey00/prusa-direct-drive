@@ -153,6 +153,7 @@ class FocusFixture:
     z_speed_mm_s: float = 1.0
     motion_safety_verified: bool = False
     camera_pipeline_verified: bool = False
+    verified_pixel_format: str = ""
     frame_timing_verified: bool = False
     wd_reference_record: str = ""
     sfr_reference_verified: bool = False

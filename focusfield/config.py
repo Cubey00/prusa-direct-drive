@@ -6,11 +6,28 @@ from pathlib import Path
 import tomllib
 
 from machine_settings import FocusFixture
+from .lens import LensCalibration
 from .quality import QualityThresholds
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHART = ROOT / "focusfield/charts/focus_field_chart_layout.json"
 DEFAULT_RECIPE = ROOT / "experiments/focusfield_20mm.toml"
+
+
+def centered_scan_bounds(nominal, half_span, step):
+    """Fit whole steps on both sides of nominal without exceeding the requested span."""
+    nominal, half_span, step = map(lambda value: Decimal(str(value)), (nominal, half_span, step))
+    if step < Decimal("0.001"):
+        raise ValueError("Step must be at least 0.001 mm")
+    intervals = half_span // step
+    if intervals < 2:
+        raise ValueError("Half-span must cover at least two steps")
+    return float(nominal - intervals * step), float(nominal + intervals * step)
+
+
+def nominal_on_grid(start, end, step, nominal):
+    start, end, step, nominal = map(lambda value: Decimal(str(value)), (start, end, step, nominal))
+    return start <= nominal <= end and step > 0 and (nominal - start) % step == 0
 
 
 @dataclass(frozen=True)
@@ -34,12 +51,17 @@ class Recipe:
     expected_height_px: int = 3040
     quality: QualityThresholds = field(default_factory=QualityThresholds)
     separate_nominal_plane_required: bool = False
+    lens_calibration: LensCalibration | None = None
 
     def __post_init__(self):
         if isinstance(self.quality, dict):
             object.__setattr__(self, "quality", QualityThresholds(**self.quality))
         if not isinstance(self.quality, QualityThresholds):
             raise ValueError("quality must contain data-quality thresholds")
+        if isinstance(self.lens_calibration, dict):
+            object.__setattr__(self, "lens_calibration", LensCalibration(**self.lens_calibration))
+        if self.lens_calibration is not None and not isinstance(self.lens_calibration, LensCalibration):
+            raise ValueError("lens_calibration must contain a measured lens profile")
         for size in (self.expected_width_px, self.expected_height_px):
             if type(size) is not int or not 1 <= size <= 65536:
                 raise ValueError("Expected image dimensions must be integers in 1..65536")
@@ -56,8 +78,9 @@ class Recipe:
         nominal_inside = self.wd_start_mm <= self.nominal_wd_mm <= self.wd_end_mm
         if not nominal_inside and not self.separate_nominal_plane_required:
             raise ValueError("Nominal WD must lie within scan")
-        if nominal_inside and self.separate_nominal_plane_required:
-            raise ValueError("Separate nominal-plane flag is only valid when the requested plane is outside the sweep")
+        if self.separate_nominal_plane_required and nominal_on_grid(
+                self.wd_start_mm, self.wd_end_mm, self.step_mm, self.nominal_wd_mm):
+            raise ValueError("Separate nominal-plane flag requires a nominal plane outside the sweep grid")
         for key in ("frames_per_position", "repetitions", "discard_frames"):
             v = getattr(self, key)
             if type(v) is not int or not 1 <= v <= 100:
@@ -115,6 +138,8 @@ def load_recipe(path=DEFAULT_RECIPE):
         data = tomllib.load(stream)
     if "chart_path" in data:
         data["chart_path"] = str((path.parent / data["chart_path"]).resolve())
+    if isinstance(data.get("lens_calibration"), str):
+        data["lens_calibration"] = LensCalibration.load(path.parent / data["lens_calibration"])
     return Recipe(**data)
 
 

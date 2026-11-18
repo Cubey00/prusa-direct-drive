@@ -1,9 +1,9 @@
 """Operator-entered optical setup records; these dialogs never access hardware."""
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
                                QLabel, QLineEdit, QMessageBox)
 
 from focusfield.calibration import WDReference
-from focusfield.setup import ScoutRecipe
+from focusfield.setup import ScoutRecipe, suggest_scout
 
 
 def measured_wd_dialog(parent, fixture):
@@ -47,17 +47,17 @@ def measured_wd_dialog(parent, fixture):
     return result[0] if result else None
 
 
-def scout_recipe_dialog(parent, fixture):
+def scout_recipe_dialog(parent, fixture, nominal_wd_mm, *, physical):
+    suggested = suggest_scout(fixture, nominal_wd_mm)
     dialog = QDialog(parent)
-    dialog.setWindowTitle("Bounded focus scout — propose a fine scan")
+    dialog.setWindowTitle("Review focus scout")
     form = QFormLayout(dialog)
-    notice = QLabel("Bounds come from measured mechanical clearance, never image scale. "
-                    "The scout may widen once to the full verified Z envelope; a proposed fine scan never starts automatically.")
+    notice = QLabel(f"Requested working distance {nominal_wd_mm:g} mm. "
+                    "The scout proposes a fine scan for separate review.")
     notice.setWordWrap(True)
     form.addRow(notice)
-    defaults = dict(z_start_mm=max(fixture.safe_z_min_mm, fixture.reference_z_mm-0.5),
-                    z_end_mm=min(fixture.safe_z_max_mm, fixture.reference_z_mm+0.5),
-                    step_mm=0.1, fine_step_mm=0.025)
+    defaults = dict(z_start_mm=suggested.z_start_mm, z_end_mm=suggested.z_end_mm,
+                    step_mm=suggested.step_mm, fine_step_mm=suggested.fine_step_mm)
     fields = {}
     for key, value in defaults.items():
         widget = QDoubleSpinBox()
@@ -66,17 +66,48 @@ def scout_recipe_dialog(parent, fixture):
         widget.setValue(value)
         fields[key] = widget
         form.addRow(key.replace("_", " ").capitalize(), widget)
+    widen = QCheckBox("Allow one extension to the full verified interval")
+    form.addRow(widen)
+    motion = QLabel()
+    motion.setWordWrap(True)
+    form.addRow(motion)
     buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    approve = buttons.button(QDialogButtonBox.Ok)
+    approve.setText("Approve supervised scout" if physical else "Run simulated scout")
+    approve.setAutoDefault(False)
+    buttons.button(QDialogButtonBox.Cancel).setDefault(True)
     form.addRow(buttons)
     result = []
+
+    def scout_plan():
+        return ScoutRecipe(**{k: w.value() for k, w in fields.items()},
+                           allow_widen=widen.isChecked()).validate(fixture)
+
+    def update_motion(*_):
+        try:
+            recipe = scout_plan()
+            initial = recipe.positions(recipe.z_start_mm, recipe.z_end_mm)
+            text = f"Z {initial[0]:g}–{initial[-1]:g} mm · {len(initial)} positions"
+            if recipe.allow_widen:
+                extra = recipe.positions(fixture.safe_z_min_mm, fixture.safe_z_max_mm)
+                text += f" · Up to {len(set(initial + extra))} positions over Z {extra[0]:g}–{extra[-1]:g} mm"
+            motion.setText(text)
+            approve.setEnabled(True)
+        except ValueError as exc:
+            motion.setText(str(exc))
+            approve.setEnabled(False)
+
     def accept():
         try:
-            recipe = ScoutRecipe(**{k: w.value() for k, w in fields.items()}).validate(fixture)
-            result.append(recipe)
+            result.append(scout_plan())
             dialog.accept()
         except ValueError as exc:
             QMessageBox.warning(dialog, "Scout limits", str(exc))
     buttons.accepted.connect(accept)
     buttons.rejected.connect(dialog.reject)
+    widen.toggled.connect(update_motion)
+    for widget in fields.values():
+        widget.valueChanged.connect(update_motion)
+    update_motion()
     dialog.exec()
     return result[0] if result else None

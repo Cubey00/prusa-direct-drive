@@ -1,6 +1,6 @@
 """python -m focusfield simulate|analyze|chart. Hardware movement is only exposed in the app."""
 import argparse
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from machine_settings import SETTINGS
@@ -31,6 +31,13 @@ def main(argv=None):
     compare.add_argument('--output', type=Path, required=True)
     compare.add_argument('--mtf50-relative-tolerance', type=float, required=True)
     compare.add_argument('--fixed-mtf-absolute-tolerance', type=float, required=True)
+    lens = sub.add_parser("calibrate-lens", help="Fit lens intrinsics from saved checkerboard images")
+    lens.add_argument("--camera-serial", required=True)
+    lens.add_argument("--corners", nargs=2, metavar=("COLS", "ROWS"), type=int, required=True)
+    lens.add_argument("--square-mm", type=float, required=True)
+    lens.add_argument("--output", type=Path, required=True)
+    lens.add_argument("--images", nargs="+", type=Path, required=True)
+    lens.add_argument("--validation", nargs="+", type=Path, required=True)
     sub.add_parser("chart", add_help=False, help="Generate printable SVG and layout; pass --help for chart options")
     args, rest = parser.parse_known_args(argv)
     if args.command == "chart":
@@ -61,7 +68,24 @@ def main(argv=None):
     if args.command == "analyze":
         print(analyze_run(args.run, allow_partial=args.allow_partial))
         return 0
-    recipe = load_recipe(args.recipe)
+    if args.command == "calibrate-lens":
+        import cv2
+        from .data import atomic_json
+        from .lens import calibrate_lens
+        from .quality import QualityThresholds
+        try:
+            if args.output.exists():
+                raise ValueError("Choose a new calibration output filename")
+            calibration = calibrate_lens(args.images, args.validation, board_size=tuple(args.corners),
+                square_mm=args.square_mm, camera_serial=args.camera_serial,
+                max_rms_px=QualityThresholds().max_marker_reprojection_px)
+            atomic_json(args.output, asdict(calibration))
+        except (OSError, ValueError, cv2.error) as exc:
+            lens.error(str(exc))
+        print(f"Saved {args.output}. Fit RMS {calibration.calibration_rms_px:.3f} px. "
+              f"Validation RMS {', '.join(f'{error:.3f}' for error in calibration.validation_rms_px)} px.")
+        return 0
+    recipe = replace(load_recipe(args.recipe), lens_calibration=None)
     if args.quick:
         recipe = replace(recipe, repetitions=1, frames_per_position=1, settle_s=0)
     fixture = simulation_fixture()

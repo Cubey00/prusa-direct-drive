@@ -6,7 +6,7 @@ import sys
 import threading
 
 import numpy as np
-from PySide6.QtCore import QObject, QThread, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, QSignalBlocker, QThread, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
@@ -14,14 +14,18 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
                                QSplitter, QTextEdit, QVBoxLayout, QWidget)
 
 from machine_settings import SETTINGS, load as load_settings
-from focusfield.acquisition import CameraAdapter, check_cancel
+from focusfield.acquisition import FORMATS, CameraAdapter, check_cancel
 from focusfield.chart import load_chart
-from focusfield.config import DEFAULT_RECIPE, load_recipe, simulation_fixture
+from focusfield.config import (DEFAULT_RECIPE, centered_scan_bounds, load_recipe, nominal_on_grid,
+                               simulation_fixture)
+from focusfield.data import storage_required
 from focusfield.calibration import XYCalibration, save_reference
+from focusfield.lens import LensCalibration
 from focusfield.controller import OperatorChecks, RunResult, ScanController
 from focusfield.hardware import SimCamera, SimStage, ZStage
 from focusfield.reports import analyze_run
 from focusfield.setup import CenteringLimits, SetupController, simulation_xy_calibration
+from .collapsible import CollapsibleBox
 from .printer_box import link_from_settings
 from .optical_setup_dialogs import measured_wd_dialog, scout_recipe_dialog
 
@@ -54,7 +58,7 @@ class FocusFieldPanel(QWidget):
         self.thread = self.worker = self.controller = None
         self.hardware_active = False
         self._borrowed_camera = False
-        self.run_path = None
+        self.run_path = self.report_path = None
         self._analysis_cancel = None
         self._task_cancel = None
         self.last_preview = None
@@ -63,6 +67,8 @@ class FocusFieldPanel(QWidget):
         self.scout_proposal = None
         self.setup_history = []
         self.recipe = load_recipe()
+        self.fixture_profile = SETTINGS.focusfield
+        self._applying_recipe = False
         outer = QVBoxLayout(self)
         notice = QLabel("Fixed lens focus · variable target distance · apparent focus-field variation. "
                         "Simulation and RGB8 results are provisional. Raw pipelines require physical validation.")
@@ -71,17 +77,33 @@ class FocusFieldPanel(QWidget):
         split = QSplitter(Qt.Horizontal)
         setup = QWidget()
         form = QFormLayout(setup)
+        self.simulate = QCheckBox("Simulation")
+        self.simulate.setChecked(True)
+        self.dry_run = QCheckBox("Motion-only dry run")
+        self.preset = QComboBox()
+        self.preset.addItems(["Quick check", "Measurement"])
+        form.addRow(self.simulate, self.dry_run)
+        form.addRow("Scan preset", self.preset)
+
+        setup_options = QWidget()
+        setup_form = QFormLayout(setup_options)
         load = QPushButton("Load scan recipe…")
         load.clicked.connect(self.load_recipe_dialog)
-        form.addRow(load)
+        setup_form.addRow(load)
         self.chart = QLineEdit(self.recipe.chart_path)
-        choose = QPushButton("Select chart layout…")
+        self.chart.setReadOnly(True)
+        choose = QPushButton("Change chart…")
         choose.clicked.connect(self.choose_chart)
-        form.addRow(choose, self.chart)
+        setup_form.addRow(choose, self.chart)
+
+        advanced = QWidget()
+        self.advanced_form = advanced_form = QFormLayout(advanced)
+        self.manual_bounds = QCheckBox("Use manual scan bounds")
+        advanced_form.addRow(self.manual_bounds)
         self.fields = {}
         for key, label, lo, hi, decimals in (
             ("wd_start_mm", "Start WD (mm)", 0.1, 500, 3), ("wd_end_mm", "End WD (mm)", 0.1, 500, 3),
-            ("step_mm", "Step (mm)", 0.001, 10, 3), ("nominal_wd_mm", "Nominal plane (mm)", 0.1, 500, 3),
+            ("nominal_wd_mm", "Nominal distance (mm)", 0.1, 500, 3), ("step_mm", "Step (mm)", 0.001, 10, 3),
             ("settle_s", "Settle (s)", 0, 60, 2), ("exposure_us", "Exposure (µs)", 1, 10000000, 0),
             ("gain", "Gain", 0, 100, 2), ("fixed_frequency_cpp", "Frequency (cycles/sensor pixel)", 0.001, 0.249, 3)):
             widget = QDoubleSpinBox()
@@ -89,28 +111,40 @@ class FocusFieldPanel(QWidget):
             widget.setDecimals(decimals)
             widget.setValue(getattr(self.recipe, key))
             self.fields[key] = widget
-            form.addRow(label, widget)
+            (form if key in {"nominal_wd_mm", "step_mm"} else advanced_form).addRow(label, widget)
+        self.half_span = QDoubleSpinBox()
+        self.half_span.setDecimals(3)
+        self.half_span.setRange(0.002, 250)
+        self.half_span.setSingleStep(0.05)
+        self.half_span.setValue((self.recipe.wd_end_mm - self.recipe.wd_start_mm) / 2)
+        form.insertRow(3, "Half-span (mm)", self.half_span)
         for key, label in (("frames_per_position", "Frames / position"), ("repetitions", "Sweeps")):
             widget = QSpinBox()
             widget.setRange(1, 100)
             widget.setValue(getattr(self.recipe, key))
             self.fields[key] = widget
-            form.addRow(label, widget)
+            advanced_form.addRow(label, widget)
         self.reverse = QCheckBox("Alternate reverse sweeps (hysteresis check)")
-        form.addRow(self.reverse)
+        advanced_form.addRow(self.reverse)
         self.nominal_note = QLabel()
         self.nominal_note.setWordWrap(True)
         form.addRow(self.nominal_note)
         self.format = QComboBox()
         self.format.addItems((["RGB8", "Mono8", "Mono16", "BayerRG8", "BayerRG10p", "BayerRG12p"] if sys.platform == 'darwin'
                               else ["RGB8", "Mono8", "Mono10", "Mono12", "Mono16", "BayerRG8", "BayerRG10", "BayerRG12"]))
-        form.addRow("Capture pixel format", self.format)
-        self.simulate = QCheckBox("Simulate stage and camera")
-        self.simulate.setChecked(True)
-        self.dry_run = QCheckBox("Motion only (collision-free dry run; no images)")
-        form.addRow(self.simulate)
-        form.addRow(self.dry_run)
-        checks = QGroupBox("Physical setup checks (required for real hardware)")
+        advanced_form.addRow("Measurement pixel format", self.format)
+        lens_buttons = QHBoxLayout()
+        self.load_lens = load_lens = QPushButton("Load lens calibration…")
+        load_lens.clicked.connect(self.load_lens_calibration)
+        self.clear_lens = QPushButton("Clear lens calibration")
+        self.clear_lens.clicked.connect(lambda: self.set_lens_calibration(None))
+        lens_buttons.addWidget(load_lens)
+        lens_buttons.addWidget(self.clear_lens)
+        setup_form.addRow(lens_buttons)
+        self.lens_label = QLabel()
+        self.lens_label.setWordWrap(True)
+        setup_form.addRow(self.lens_label)
+        self.check_group = checks = QGroupBox("Physical setup checks (required for real hardware)")
         check_layout = QVBoxLayout(checks)
         self.checks = {}
         for key, text in (("fixture_and_clearance", "Measured fixture and complete travel clearance verified"),
@@ -123,9 +157,6 @@ class FocusFieldPanel(QWidget):
             self.checks[key] = checkbox
             check_layout.addWidget(checkbox)
         form.addRow(checks)
-        form.addRow(QLabel("No automatic homing, touch, or recovery motion. Configure [focusfield] in machine settings."))
-        optical_setup = QGroupBox("Separate optical setup operations")
-        setup_form = QFormLayout(optical_setup)
         self.wd_btn = QPushButton("Record measured WD reference… (no motion)")
         self.wd_btn.clicked.connect(self.record_wd_reference)
         self.xy_btn = QPushButton("Load measured optical XY mapping…")
@@ -137,10 +168,19 @@ class FocusFieldPanel(QWidget):
         self.scout_btn = QPushButton("Scout focus interval… (bounded Z motion)")
         self.scout_btn.setEnabled(False)
         self.scout_btn.clicked.connect(lambda: self.start_setup('scout'))
-        for widget in (self.wd_btn, self.xy_btn, self.xy_label, self.center_btn, self.scout_btn):
+        for widget in (self.wd_btn, self.xy_btn, self.xy_label):
             setup_form.addRow(widget)
-        form.addRow(optical_setup)
-        gen = QGroupBox("Generate optical test chart")
+        alignment = QHBoxLayout()
+        alignment.addWidget(self.center_btn)
+        alignment.addWidget(self.scout_btn)
+        form.addRow(alignment)
+        self.scout_note = QLabel()
+        self.scout_note.setWordWrap(True)
+        form.addRow(self.scout_note)
+        self.review_scout = QPushButton("Review scout range…")
+        self.review_scout.clicked.connect(lambda: self.start_scan(use_scout=True))
+        form.addRow(self.review_scout)
+        gen = QWidget()
         gen_form = QFormLayout(gen)
         self.field_width, self.field_height = QDoubleSpinBox(), QDoubleSpinBox()
         for widget, value in ((self.field_width, 60), (self.field_height, 45)):
@@ -151,7 +191,9 @@ class FocusFieldPanel(QWidget):
         generate = QPushButton("Save SVG + physical layout…")
         generate.clicked.connect(self.generate_chart)
         gen_form.addRow(generate)
-        form.addRow(gen)
+        setup_form.addRow(CollapsibleBox("Generate chart", gen))
+        form.addRow(CollapsibleBox("Setup", setup_options))
+        form.addRow(CollapsibleBox("Advanced scan settings", advanced))
         scroll = QScrollArea()
         scroll.setWidget(setup)
         scroll.setWidgetResizable(True)
@@ -168,58 +210,231 @@ class FocusFieldPanel(QWidget):
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         buttons = QHBoxLayout()
-        self.start_btn = QPushButton("Start scan")
-        self.preview_btn = QPushButton("Check preview & chart")
+        self.plan_note = QLabel()
+        self.plan_note.setWordWrap(True)
+        layout.addWidget(self.plan_note)
+        self.start_btn = QPushButton("Review scan…")
+        self.preview_btn = QPushButton("Check chart")
         self.stop_btn = QPushButton("STOP")
         self.stop_btn.setStyleSheet("background:#c32626;color:white;font-weight:bold")
         self.stop_btn.setEnabled(False)
         self.reanalyze_btn = QPushButton("Analyze saved run…")
         self.report_btn = QPushButton("Open report")
         self.report_btn.setEnabled(False)
-        for button in (self.preview_btn, self.start_btn, self.stop_btn, self.reanalyze_btn, self.report_btn):
+        for button in (self.preview_btn, self.start_btn, self.stop_btn):
             buttons.addWidget(button)
-        self.start_btn.clicked.connect(self.start_scan)
+        results = QWidget()
+        result_actions = QHBoxLayout(results)
+        result_actions.addWidget(self.report_btn)
+        result_actions.addWidget(self.reanalyze_btn)
+        self.start_btn.clicked.connect(lambda: self.start_scan())
         self.preview_btn.clicked.connect(self.check_preview)
         self.stop_btn.clicked.connect(self.stop)
         self.reanalyze_btn.clicked.connect(self.reanalyze)
         self.report_btn.clicked.connect(self.open_report)
         layout.addLayout(buttons)
+        self.results = CollapsibleBox("Results", results)
+        layout.addWidget(self.results)
         split.addWidget(right)
+        split.setSizes([440, 680])
         outer.addWidget(split, 1)
         self.setup = setup
-        self.simulate.toggled.connect(self.invalidate_preview)
+        self.update_lens_label()
+        self.simulate.toggled.connect(self.change_mode)
+        self.dry_run.toggled.connect(self.update_controls)
         self.chart.textChanged.connect(self.invalidate_preview)
         self.format.currentTextChanged.connect(self.invalidate_preview)
-        for widget in self.fields.values():
-            widget.valueChanged.connect(self.invalidate_preview)
-        self.update_nominal_note()
+        self.preset.currentIndexChanged.connect(self.invalidate_preview)
+        self.manual_bounds.toggled.connect(self.range_changed)
+        self.half_span.valueChanged.connect(self.range_changed)
+        self.reverse.toggled.connect(self.update_controls)
+        for key, widget in self.fields.items():
+            if key in {"exposure_us", "gain"}:
+                widget.valueChanged.connect(self.invalidate_preview)
+            elif key in {"nominal_wd_mm", "step_mm", "wd_start_mm", "wd_end_mm", "fixed_frequency_cpp"}:
+                widget.valueChanged.connect(self.range_changed)
+            else:
+                widget.valueChanged.connect(self.update_controls)
+        self.apply_recipe(self.recipe, preset=0)
+
+    def change_mode(self, simulated):
+        if not simulated:
+            try:
+                self.fixture_profile = load_settings().focusfield
+            except ValueError as exc:
+                QMessageBox.warning(self, "Fixture settings", str(exc))
+        with QSignalBlocker(self.preset):
+            self.preset.setCurrentIndex(0 if simulated else 1)
+        self.update_lens_label()
+        self.invalidate_preview()
 
     def invalidate_preview(self, *args):
         self.last_preview = None
         self.scout_proposal = None
-        self.center_btn.setEnabled(False)
-        self.scout_btn.setEnabled(False)
-        self.update_nominal_note()
+        self.update_controls()
 
-    def update_nominal_note(self):
-        lo, hi, step, nominal = (self.fields[k].value() for k in
-                                ('wd_start_mm', 'wd_end_mm', 'step_mm', 'nominal_wd_mm'))
-        if not lo <= nominal <= hi:
-            message = (f"Separate measurement at requested {nominal:g} mm WD is required: "
-                       "this focus sweep does not include that plane. No extra move is scheduled.")
-        elif abs((nominal-lo)/step-round((nominal-lo)/step)) > 1e-7:
-            message = (f"Requested {nominal:g} mm WD is not on the sweep grid. Align bounds/step or "
-                       "take a separate nominal-plane measurement; interpolation is not a measurement.")
+    def range_changed(self, *args):
+        if not self._applying_recipe:
+            self.scout_proposal = None
+        self.update_controls()
+
+    def capture_format(self, fixture):
+        if self.preset.currentIndex() == 0:
+            return "RGB8"
+        if not self.simulate.isChecked() and fixture.camera_pipeline_verified and fixture.verified_pixel_format:
+            return fixture.verified_pixel_format
+        return self.format.currentText()
+
+    def scan_bounds(self):
+        if self.manual_bounds.isChecked():
+            return self.fields["wd_start_mm"].value(), self.fields["wd_end_mm"].value()
+        return centered_scan_bounds(self.fields["nominal_wd_mm"].value(), self.half_span.value(),
+                                    self.fields["step_mm"].value())
+
+    def current_recipe(self, *, fixture=None, use_scout=False):
+        fixture = fixture or self.fixture_profile
+        values = {key: widget.value() for key, widget in self.fields.items()}
+        if use_scout:
+            draft = self.scout_proposal["suggested_recipe"]
+            for key in ("wd_start_mm", "wd_end_mm", "step_mm"):
+                values[key] = draft[key]
         else:
-            message = f"Requested nominal {nominal:g} mm WD is on the sweep grid; absolute WD retains calibration uncertainty."
-        self.nominal_note.setText(message)
+            values["wd_start_mm"], values["wd_end_mm"] = self.scan_bounds()
+        if self.preset.currentIndex() == 0:
+            values.update(frames_per_position=1, repetitions=1)
+        pixel_format = self.capture_format(fixture)
+        supported = [self.format.itemText(i) for i in range(self.format.count())]
+        if pixel_format not in supported:
+            if not self.dry_run.isChecked():
+                raise ValueError(f"{pixel_format} is unsupported by this camera backend")
+            pixel_format = self.format.currentText()
+        size = self.recipe.expected_width_px, self.recipe.expected_height_px
+        lens = None if self.simulate.isChecked() else self.recipe.lens_calibration
+        if self.simulate.isChecked():
+            chart = load_chart(self.chart.text())
+            size = int(chart["page_width"] * SimCamera.scale), int(chart["page_height"] * SimCamera.scale)
+        if lens:
+            size = lens.image_size_px
+        if (self.last_preview and self.last_preview.get("image_size_px")
+                and self.last_preview.get("pixel_format") == pixel_format):
+            size = self.last_preview["image_size_px"]
+        return replace(self.recipe, **values, chart_path=self.chart.text(), pixel_format=pixel_format,
+                       lens_calibration=lens, expected_width_px=size[0], expected_height_px=size[1],
+                       separate_nominal_plane_required=not nominal_on_grid(
+                           values["wd_start_mm"], values["wd_end_mm"], values["step_mm"], values["nominal_wd_mm"]),
+                       reverse_alternate=values["repetitions"] > 1 and self.reverse.isChecked())
 
-    def current_recipe(self):
-        values = {key: w.value() for key, w in self.fields.items()}
-        return replace(self.recipe, **values,
-                       chart_path=self.chart.text(), pixel_format=self.format.currentText(),
-                       separate_nominal_plane_required=not values['wd_start_mm'] <= values['nominal_wd_mm'] <= values['wd_end_mm'],
-                       reverse_alternate=self.reverse.isChecked())
+    def scan_summary(self, recipe, dry_run):
+        per_sweep = len(recipe.distances())
+        positions = per_sweep * recipe.repetitions
+        frames = 0 if dry_run else positions * recipe.frames_per_position
+        bits, channels = FORMATS[recipe.pixel_format]
+        frame_bytes = recipe.expected_width_px * recipe.expected_height_px * channels * (1 if bits == 8 else 2)
+        space = storage_required(frames, frame_bytes) / 1e9
+        count = f"{positions} positions"
+        if recipe.repetitions > 1:
+            count += f" ({per_sweep} per sweep)"
+        return (f"{recipe.wd_start_mm:g}–{recipe.wd_end_mm:g} mm · {count} · "
+                f"{frames} frames · about {space:.2f} GB free disk required")
+
+    def update_controls(self, *args):
+        if self._applying_recipe:
+            return
+        dry_run, simulated = self.dry_run.isChecked(), self.simulate.isChecked()
+        quick = self.preset.currentIndex() == 0
+        idle = self.thread is None
+        self.start_btn.setText("Run dry run…" if dry_run else "Run scan" if simulated else "Review scan…")
+        self.preview_btn.setEnabled(idle and not dry_run)
+        self.check_group.setVisible(not simulated)
+        for name in ("lens_locked_and_chart_checked", "collision_free_dry_run"):
+            self.checks[name].setVisible(not dry_run)
+        self.half_span.setEnabled(not self.manual_bounds.isChecked())
+        for key in ("wd_start_mm", "wd_end_mm"):
+            self.fields[key].setEnabled(self.manual_bounds.isChecked())
+            self.advanced_form.setRowVisible(self.fields[key], self.manual_bounds.isChecked())
+        for key in ("frames_per_position", "repetitions"):
+            self.fields[key].setEnabled(not quick)
+            self.advanced_form.setRowVisible(self.fields[key], not quick)
+        self.reverse.setVisible(not quick and self.fields["repetitions"].value() > 1)
+        verified_format = (not simulated and self.fixture_profile.camera_pipeline_verified
+                           and bool(self.fixture_profile.verified_pixel_format))
+        self.format.setEnabled(not quick and not verified_format)
+        self.advanced_form.setRowVisible(self.format, not quick and not verified_format)
+        if not self.manual_bounds.isChecked():
+            try:
+                bounds = self.scan_bounds()
+            except ValueError:
+                pass
+            else:
+                for key, bound in zip(("wd_start_mm", "wd_end_mm"), bounds):
+                    with QSignalBlocker(self.fields[key]):
+                        self.fields[key].setValue(bound)
+        valid_preview = bool(self.last_preview and self.last_preview.get("preview_registration", {})
+                             .get("full_field_visible"))
+        center_error = self.last_preview["preview_registration"].get("center_error_px") if valid_preview else None
+        can_center = bool(valid_preview and (simulated or self.xy_calibration is not None) and center_error is not None
+                          and np.linalg.norm(center_error) > CenteringLimits().tolerance_px)
+        self.center_btn.setVisible(not dry_run and can_center)
+        self.scout_btn.setVisible(not dry_run and valid_preview)
+        self.center_btn.setEnabled(idle and not dry_run and can_center)
+        self.scout_btn.setEnabled(idle and not dry_run and valid_preview)
+        self.scout_note.setVisible(self.scout_proposal is not None)
+        self.review_scout.setVisible(self.scout_proposal is not None)
+        self.review_scout.setText("Dry run scout range…" if dry_run else "Review scout range…")
+        needs_native = not simulated and not dry_run and not quick and self.capture_format(self.fixture_profile) == "RGB8"
+        try:
+            recipe = self.current_recipe()
+            label = self.scan_summary(recipe, dry_run)
+            if not dry_run:
+                label += f" · {recipe.pixel_format}"
+                if recipe.pixel_format == "RGB8":
+                    label += " (provisional)"
+            self.plan_note.setText(label)
+            if needs_native:
+                self.plan_note.setText(label + "\nSelect a verified native format in Advanced scan settings.")
+            self.start_btn.setEnabled(idle and not needs_native)
+            self.nominal_note.setText(
+                f"Separate measurement at requested {recipe.nominal_wd_mm:g} mm is required. No extra move is scheduled."
+                if recipe.separate_nominal_plane_required else
+                f"Requested {recipe.nominal_wd_mm:g} mm is on the sweep grid")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self.plan_note.setText(str(exc))
+            self.start_btn.setEnabled(False)
+            self.nominal_note.clear()
+        if self.scout_proposal:
+            try:
+                draft = self.current_recipe(use_scout=True)
+                nominal = " · Separate nominal measurement required" if draft.separate_nominal_plane_required else ""
+                self.scout_note.setText("Scout proposal · " + self.scan_summary(draft, dry_run) + nominal)
+                self.review_scout.setEnabled(idle and not needs_native)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self.scout_note.setText(str(exc))
+                self.review_scout.setEnabled(False)
+
+    def update_lens_label(self):
+        lens = self.recipe.lens_calibration
+        self.clear_lens.setVisible(lens is not None)
+        self.clear_lens.setEnabled(lens is not None)
+        self.load_lens.setText("Replace lens calibration…" if lens else "Load lens calibration…")
+        if lens is None:
+            self.lens_label.setText("No lens correction")
+        else:
+            width, height = lens.image_size_px
+            mode = " · Inactive in simulation" if self.simulate.isChecked() else ""
+            self.lens_label.setText(f"Lens calibration for {lens.camera_serial} · {width} × {height} px{mode}")
+
+    def set_lens_calibration(self, lens):
+        self.recipe = replace(self.recipe, lens_calibration=lens)
+        self.update_lens_label()
+        self.invalidate_preview()
+
+    def load_lens_calibration(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Measured lens calibration", "", "Calibration (*.json)")
+        if path:
+            try:
+                self.set_lens_calibration(LensCalibration.load(path))
+            except (OSError, TypeError, ValueError) as exc:
+                QMessageBox.warning(self, "Lens calibration", str(exc))
 
     def devices(self, recipe, fixture, *, xy=None, motion_only=False):
         if self.simulate.isChecked():
@@ -244,7 +459,7 @@ class FocusFieldPanel(QWidget):
             path, _ = QFileDialog.getSaveFileName(self, "Save immutable measured WD reference", "wd_reference.json", "JSON (*.json)")
             if not path:
                 return
-            save_reference(record, path, settings.path)
+            self.fixture_profile = save_reference(record, path, settings.path).focusfield
             self.invalidate_preview()
             self.status.append(f"Measured WD reference saved to {path}. Physical motion remains disabled; verify all other calibration and safety checks.")
         except Exception as exc:
@@ -266,19 +481,22 @@ class FocusFieldPanel(QWidget):
         if self.thread is not None:
             return
         if self.dry_run.isChecked():
-            QMessageBox.warning(self, "Setup needs images", "Centering/scouting require images. Turn off Motion only; use Start scan for a supervised motion-only Z preflight.")
+            QMessageBox.warning(self, "Setup needs images", "Centering/scouting require images. Turn off Motion only; use Run dry run for a supervised motion-only Z preflight.")
             return
         simulated = self.simulate.isChecked()
-        if not self.last_preview or self.last_preview['simulated'] != simulated:
-            QMessageBox.warning(self, "Preview required", "Run Check preview & chart successfully before setup motion.")
+        if (not self.last_preview or self.last_preview["simulated"] != simulated
+                or not self.last_preview["preview_registration"]["full_field_visible"]):
+            QMessageBox.warning(self, "Preview required", "Run Check chart successfully before setup motion.")
             return
         if not simulated and (self.main.thread is not None or self.main.server.is_running() or self.main.printer._busy):
             QMessageBox.warning(self, "Printer in use", "Finish other printer/calibrator operations first.")
             return
         try:
-            recipe = self.current_recipe()
             settings = load_settings()
             fixture = simulation_fixture() if simulated else settings.focusfield
+            recipe = self.current_recipe(fixture=fixture)
+            if recipe.pixel_format != self.last_preview.get("pixel_format"):
+                raise ValueError("The capture format changed. Run Check chart again before setup motion.")
             checks = OperatorChecks(**{k: v.isChecked() for k, v in self.checks.items()})
             if not simulated:
                 fixture.validate_physical()
@@ -287,7 +505,8 @@ class FocusFieldPanel(QWidget):
             if simulated:
                 xy = simulation_xy_calibration(fixture)
                 chart = load_chart(recipe.chart_path)
-                width, height = int(chart['page_width']*16), int(chart['page_height']*16)
+                width = int(chart["page_width"] * SimCamera.scale)
+                height = int(chart["page_height"] * SimCamera.scale)
                 xy = replace(xy, optical_center_px=(width/2, height/2), image_size_px=(width, height))
             limits = CenteringLimits()
             scout = None
@@ -299,13 +518,11 @@ class FocusFieldPanel(QWidget):
                     f"{limits.max_step_mm:g} mm per step, {limits.max_total_mm:g} mm total, "
                     f"{limits.speed_mm_s:g} mm/s. No Z adjustment or homing. Approve this supervised operation?")
             else:
-                scout = scout_recipe_dialog(self, fixture)
+                scout = scout_recipe_dialog(self, fixture, recipe.nominal_wd_mm, physical=not simulated)
                 if scout is None:
                     return
-                description = (f"Scout Z {scout.z_start_mm:g}–{scout.z_end_mm:g} mm in {scout.step_mm:g} mm steps; "
-                    f"may extend once within verified Z {fixture.safe_z_min_mm:g}–{fixture.safe_z_max_mm:g} mm; "
-                    f"maximum {scout.max_positions} positions. Fine scan requires separate approval. Approve this supervised scout?")
-            if not simulated and QMessageBox.question(self, "Approve bounded optical setup motion", description,
+            if operation == "center" and not simulated and QMessageBox.question(
+                    self, "Approve bounded optical setup motion", description,
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
             stage, camera = self.devices(recipe, fixture, xy=xy)
@@ -340,14 +557,31 @@ class FocusFieldPanel(QWidget):
                 recipe = load_recipe(path)
                 if recipe.pixel_format not in [self.format.itemText(i) for i in range(self.format.count())]:
                     raise ValueError("Recipe pixel format is not supported by this camera backend; choose an explicitly supported native format")
-                self.recipe = recipe
-                for key, widget in self.fields.items():
-                    widget.setValue(getattr(recipe, key))
-                self.reverse.setChecked(recipe.reverse_alternate)
-                self.format.setCurrentText(recipe.pixel_format)
-                self.chart.setText(recipe.chart_path)
+                load_chart(recipe.chart_path)
+                self.apply_recipe(recipe)
             except Exception as exc:
                 QMessageBox.warning(self, "Recipe", str(exc))
+
+    def apply_recipe(self, recipe, *, preset=1):
+        self._applying_recipe = True
+        try:
+            self.recipe = recipe
+            self.preset.setCurrentIndex(preset)
+            for key, widget in self.fields.items():
+                widget.setValue(getattr(recipe, key))
+            self.half_span.setValue((recipe.wd_end_mm - recipe.wd_start_mm) / 2)
+            try:
+                centered = centered_scan_bounds(recipe.nominal_wd_mm, self.half_span.value(), recipe.step_mm)
+            except ValueError:
+                centered = None
+            self.manual_bounds.setChecked(centered != (recipe.wd_start_mm, recipe.wd_end_mm))
+            self.reverse.setChecked(recipe.reverse_alternate)
+            self.format.setCurrentText(recipe.pixel_format)
+            self.chart.setText(recipe.chart_path)
+            self.update_lens_label()
+        finally:
+            self._applying_recipe = False
+        self.invalidate_preview()
 
     def generate_chart(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save optical chart", "focus_field_chart.svg", "SVG (*.svg)")
@@ -364,7 +598,7 @@ class FocusFieldPanel(QWidget):
         except Exception as exc:
             QMessageBox.warning(self, "Chart generation", str(exc))
 
-    def start_scan(self):
+    def start_scan(self, *, use_scout=False):
         if self.thread is not None:
             return
         simulated = self.simulate.isChecked()
@@ -372,49 +606,60 @@ class FocusFieldPanel(QWidget):
             QMessageBox.warning(self, "Printer in use", "Close the calibrator and finish other printer operations first.")
             return
         try:
-            recipe = self.current_recipe()
-            chart = load_chart(recipe.chart_path)
+            if use_scout and not self.scout_proposal:
+                return
+            dry_run = self.dry_run.isChecked()
             settings = load_settings()
             fixture = simulation_fixture() if simulated else settings.focusfield
-            recipe.validate_fixture(fixture, settings.printer.z_max, simulation=simulated,
-                                    dry_run=self.dry_run.isChecked())
+            recipe = self.current_recipe(fixture=fixture, use_scout=use_scout)
+            load_chart(recipe.chart_path)
+            recipe.validate_fixture(fixture, settings.printer.z_max, simulation=simulated, dry_run=dry_run)
             checks = OperatorChecks(**{k: v.isChecked() for k, v in self.checks.items()})
             if not simulated:
-                checks.validate(self.dry_run.isChecked())
+                checks.validate(dry_run)
+                if not dry_run and self.preset.currentIndex() == 1 and recipe.pixel_format == "RGB8":
+                    raise ValueError("Select a verified native pixel format for Measurement, or choose Quick check.")
+                nominal = (f"Separate measurement at {recipe.nominal_wd_mm:g} mm is required."
+                           if recipe.separate_nominal_plane_required else
+                           f"The sweep includes the requested {recipe.nominal_wd_mm:g} mm plane.")
+                operation = "motion-only dry run" if dry_run else f"{self.preset.currentText()} image scan"
+                capture = "" if dry_run else (f"\n{recipe.pixel_format} · {recipe.exposure_us:g} µs exposure "
+                                               f"· {recipe.gain:g} gain")
                 if QMessageBox.question(self, "Approve optical scan motion",
-                        f"Run supervised {'motion-only dry run' if self.dry_run.isChecked() else 'image scan'} at calibrated WD "
-                        f"{recipe.wd_start_mm:g}–{recipe.wd_end_mm:g} mm, step {recipe.step_mm:g} mm? "
-                        f"Absolute WD uncertainty: {fixture.wd_uncertainty_mm:g} mm. "
-                        f"{self.nominal_note.text()} "
-                        "This is a separate operation from scouting and centering.",
+                        f"Run supervised {operation}?\n{self.scan_summary(recipe, dry_run)}{capture}\n"
+                        f"Step {recipe.step_mm:g} mm · Absolute WD uncertainty {fixture.wd_uncertainty_mm:g} mm.\n{nominal}",
                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                     return
-            stage, camera = self.devices(recipe, fixture, motion_only=self.dry_run.isChecked())
+            stage, camera = self.devices(recipe, fixture, motion_only=dry_run)
             # Construct PrusaLink from QSettings on the GUI thread; only network I/O runs in worker.
             link = link_from_settings(self.main.settings) if not simulated and self.main.printer.configured() else None
             self.controller = ScanController(recipe, settings, fixture, stage, camera,
                 Path(self.main.runs_folder()) / "focusfield", checks=checks, dry_run=self.dry_run.isChecked(),
                 operator_confirmed=not simulated,
                 setup_provenance=dict(history=self.setup_history,
-                                      scout_proposal=({**self.scout_proposal, 'approved': not simulated} if self.scout_proposal else None),
-                                      operator_approved_fine_scan=bool(self.scout_proposal and not simulated)),
+                                      scout_proposal=({**self.scout_proposal, 'approved': not simulated and not dry_run}
+                                                      if use_scout else None),
+                                      operator_approved_fine_scan=use_scout and not simulated and not dry_run),
                 printer_state=(lambda: link.status().state) if link else (lambda: None))
-            self._start_task(self.controller.run, physical=not simulated,
-                             borrow_camera=not simulated and not self.dry_run.isChecked())
+            self.last_preview = None
+            self._start_task(self.controller.run, physical=not simulated, borrow_camera=not simulated and not dry_run)
             self.controller.on_event = lambda kind, *args: self.worker.event.emit(kind, args)
             self.thread.start()
         except Exception as exc:
             QMessageBox.warning(self, "Cannot start optical scan", str(exc))
 
     def check_preview(self):
-        if self.thread:
+        if self.thread or self.dry_run.isChecked():
             return
         simulated = self.simulate.isChecked()
         if not simulated and (self.main.thread is not None or self.main.server.is_running() or self.main.printer._busy):
             QMessageBox.warning(self, "Devices in use", "Finish other printer/calibrator operations first.")
             return
         try:
-            recipe = replace(self.recipe, chart_path=self.chart.text(), pixel_format=self.format.currentText(),
+            if not simulated:
+                self.fixture_profile = load_settings().focusfield
+            recipe = replace(self.recipe, chart_path=self.chart.text(), pixel_format=self.capture_format(self.fixture_profile),
+                             lens_calibration=None if simulated else self.recipe.lens_calibration,
                              exposure_us=self.fields["exposure_us"].value(), gain=self.fields["gain"].value())
             chart = load_chart(recipe.chart_path)
             if simulated:
@@ -426,42 +671,48 @@ class FocusFieldPanel(QWidget):
                 camera.cancel = cancel
             calibrated_center = self.xy_calibration.optical_center_px if self.xy_calibration and not simulated else None
             def preview():
-                from focusfield.acquisition import analysis_plane
-                from focusfield.chart import register_chart, edge_rois
+                from focusfield.chart import register_capture, edge_rois
                 try:
                     check_cancel(cancel)
                     camera.open()
                     check_cancel(cancel)
                     camera.fresh()
                     check_cancel(cancel)
-                    capture = camera.capture()
+                    capture = camera.capture().validate()
                     check_cancel(cancel)
                     self.worker.event.emit("frame", (capture.metadata, capture.pixels))
-                    gray, pitch = analysis_plane(capture.pixels, capture.metadata)
-                    registration = register_chart(gray, chart, optical_center_px=calibrated_center, sensor_pitch=pitch,
-                        max_reprojection_rms_px=recipe.quality.max_marker_reprojection_px)
+                    try:
+                        registration, gray, _ = register_capture(capture, chart, recipe, optical_center_px=calibrated_center)
+                    except ValueError as exc:
+                        height, width = capture.pixels.shape[:2]
+                        serial = capture.metadata["camera_serial"]
+                        raise ValueError(f"Camera {serial} · {width} × {height} px. {exc}") from exc
                     h, error = registration.pop('homography'), registration['reprojection_rms_px']
+                    project_chart = registration.pop("project_chart")
                     local_count = 0
                     for square in chart["slanted_squares"]:
                         check_cancel(cancel)
                         try:
-                            local_count += len(edge_rois(gray, h, square))
+                            local_count += len(edge_rois(gray, h, square, project_chart=project_chart))
                         except ValueError:
                             pass
                     message = (f"All four chart markers detected; {local_count} local edges. "
                                f"Marker reprojection RMS {error:.2f} sensor pixels. "
+                               f"Lens correction {'on' if registration['lens_corrected'] else 'off'}. "
                                f"Camera {capture.metadata['camera_serial']}; {capture.metadata['pixel_format']}. "
                                f"Chart-center error {registration['center_error_px']} sensor pixels "
                                f"relative to {'calibrated optical center' if calibrated_center else 'image midpoint (diagnostic only)'}. "
                                "Registration does not authorize XY motion or establish absolute WD.")
                     check_cancel(cancel)
                     return RunResult("COMPLETED", "", message, details=dict(preview_registration=registration,
-                        simulated=simulated, camera_serial=capture.metadata['camera_serial']))
+                        simulated=simulated, camera_serial=capture.metadata["camera_serial"],
+                        image_size_px=(capture.pixels.shape[1], capture.pixels.shape[0]),
+                        pixel_format=capture.metadata["pixel_format"]))
                 except InterruptedError as exc:
                     return RunResult("ABORTED", "", str(exc))
                 finally:
                     camera.close()
-            self.invalidate_preview()
+            self.last_preview = None
             self._start_task(preview, physical=not simulated, borrow_camera=not simulated, task_cancel=cancel)
             self.thread.start()
         except Exception as exc:
@@ -488,9 +739,7 @@ class FocusFieldPanel(QWidget):
         self.preview_btn.setEnabled(False)
         self.reanalyze_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
-        self.report_btn.setEnabled(False)
-        self.center_btn.setEnabled(False)
-        self.scout_btn.setEnabled(False)
+        self.update_controls()
         self.status.clear()
 
     @Slot(str, object)
@@ -522,18 +771,18 @@ class FocusFieldPanel(QWidget):
             self._borrowed_camera = False
             self.main.photo.resume()
         self.setup.setEnabled(True)
-        self.start_btn.setEnabled(True)
-        self.preview_btn.setEnabled(True)
         self.reanalyze_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        self.run_path = Path(result.path) if result.path else None
-        self.report_btn.setEnabled(bool(self.run_path and (self.run_path / "report.html").exists()))
-        self.status.append(f"{result.state}: {result.message}\nRun: {result.path}")
+        if result.path:
+            self.run_path = Path(result.path)
+            if (self.run_path / "report.html").is_file():
+                self.report_path = self.run_path / "report.html"
+                self.report_btn.setEnabled(True)
+                self.results.set_expanded(True)
+        path_message = f"\nRun folder {result.path}" if result.path else ""
+        self.status.append(f"{result.state} · {result.message}{path_message}")
         if result.state == 'COMPLETED' and 'preview_registration' in result.details:
             self.last_preview = result.details
-        usable_preview = bool(self.last_preview and self.last_preview['preview_registration']['full_field_visible'])
-        self.center_btn.setEnabled(usable_preview)
-        self.scout_btn.setEnabled(usable_preview)
         if result.path and (Path(result.path) / 'setup_result.json').is_file() and result.state == 'COMPLETED':
             manifest = json.loads((Path(result.path) / 'manifest.json').read_text(encoding='utf-8'))
             details = manifest['setup_result']
@@ -543,19 +792,12 @@ class FocusFieldPanel(QWidget):
                 nominal_message = details.get('nominal_plane_message', '')
                 if nominal_message:
                     self.status.append(nominal_message)
-                if QMessageBox.question(self, 'Proposed fine scan — no automatic motion',
-                        f"{details['reasoning']}. Proposed Z {details['z_start_mm']:g}–{details['z_end_mm']:g} mm. "
-                        f"{nominal_message} "
-                        "Load the proposed recipe into the editor? Start scan requires a separate action and approval.",
-                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
-                    from focusfield.config import Recipe
-                    self.recipe = Recipe(**details['suggested_recipe'])
-                    for key, widget in self.fields.items():
-                        widget.setValue(getattr(self.recipe, key))
-                    self.scout_proposal = dict(path=result.path, **details)
+                self.scout_proposal = dict(path=result.path, **details)
         elif result.acquisition_complete or result.analysis_complete:
             self.status.append(f"Acquisition complete: {result.acquisition_complete}; analysis complete: "
                                f"{result.analysis_complete}; measurement valid: {result.measurement_valid}")
+
+        self.update_controls()
 
     def stop(self):
         if self.controller:
@@ -570,8 +812,6 @@ class FocusFieldPanel(QWidget):
         path = QFileDialog.getExistingDirectory(self, "Select optical run folder", str(Path(self.main.runs_folder()) / "focusfield"))
         if not path:
             return
-        import json
-        import threading
         try:
             manifest = json.loads((Path(path) / "manifest.json").read_text(encoding="utf-8"))
             if manifest.get('operation') in {'center', 'scout'}:
@@ -592,8 +832,8 @@ class FocusFieldPanel(QWidget):
             QMessageBox.warning(self, "Analysis", str(exc))
 
     def open_report(self):
-        if self.run_path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str((self.run_path / "report.html").resolve())))
+        if self.report_path and self.report_path.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.report_path.resolve())))
 
     def shutdown(self):
         if self.thread:

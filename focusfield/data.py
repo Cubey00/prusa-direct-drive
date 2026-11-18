@@ -15,9 +15,13 @@ from . import __version__
 from .config import ROOT
 
 
-def storage_preflight(root, frames, frame_bytes):
+def storage_required(frames, frame_bytes):
     """Uncompressed TIFF estimate: pixels + 2%/4 KiB per frame, reports and reserve."""
-    required = int(frames * (frame_bytes * 1.02 + 4096) + 64*1024**2 + 256*1024**2)
+    return int(frames * (frame_bytes * 1.02 + 4096) + 64*1024**2 + 256*1024**2)
+
+
+def storage_preflight(root, frames, frame_bytes):
+    required = storage_required(frames, frame_bytes)
     parent = Path(root).resolve()
     while not parent.exists():
         parent = parent.parent
