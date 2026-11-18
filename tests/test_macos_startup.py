@@ -65,7 +65,7 @@ def test_existing_path_programmer_window(tmp_path):
             window.load_program('program.json', ask=False)
             assert window.points.rowCount() == 1
             summary = run_program(program, window.transform, SimHardware(time_scale=0),
-                                  log_dir=Path('logs'))
+                                  run_dir=Path('run'))
             assert summary.outcome == 'completed' and summary.done == 1
             assert window.close()
             connect.assert_not_called()
