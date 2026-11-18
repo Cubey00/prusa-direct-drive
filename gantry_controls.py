@@ -357,38 +357,57 @@ def motionstop():
         _stop.clear()
 
 
-def emergency_drop(gauge, release_g=50.0, window=16):
-    """Stop all motion and drop the bed fast towards Z_MAX until the load cell
-    reads below `release_g` grams (or Z_MAX is reached), then stop the drop."""
+def emergency_drop(gauge, release_g=50.0, window=16, max_drop=30.0):
+    """Stop all motion and drop the bed fast until the load cell reads below `release_g` grams,
+    but never more than `max_drop` mm (nor past Z_MAX), then stop the drop. Returns the mm asked.
+    The cap matters when the force stays high anyway (load cell drift, a stuck reading): the bed
+    must not run all the way to the bottom then."""
     motionstop()
+    z0 = gauge.pos.get("z")
+    drop = max_drop if z0 is None else max(0.0, min(max_drop, Z_MAX - z0))
+    if drop <= 0:
+        return 0.0
     with _lock:
-        _send("G90")
-        # the G1 'ok' only comes once the move is done: don't wait for it, watch the force instead
-        _send_nowait(f"G1 Z{Z_MAX:.2f} F{DROP_FEED}")
+        _send("G91")            # relative: the cap holds even when the metrics Z is unknown
         try:
+            # the G1 'ok' only comes once the move is done: don't wait for it, watch the force instead
+            _send_nowait(f"G1 Z{drop:.2f} F{DROP_FEED}")
+            t_end = time.monotonic() + drop / (DROP_FEED / 60.0) + 2.0
             while abs(gauge.force_g(window) or 0) >= release_g:
                 z = gauge.pos.get("z")
-                if _stop.is_set() or (z is not None and z >= Z_MAX - 0.05):
+                if (_stop.is_set() or time.monotonic() > t_end
+                        or (z is not None and z0 is not None and z >= z0 + drop - 0.05)):
                     break       # a user stop is waiting for the lock, or the drop is done
                 time.sleep(0.005)
         finally:
             halt_move()         # M410 + drop the pending G1 'ok'
+            _send("G90")
+    return drop
 
 
-def force_guard(gauge, trip_g=500.0, release_g=50.0, window=16, on_trip=None, stop_event=None):
+def force_guard(gauge, trip_g=500.0, release_g=50.0, window=16, on_trip=None, stop_event=None,
+                max_drop=30.0):
     """Start a background thread that runs emergency_drop() whenever |force| > trip_g.
     Only start it after the gauge has been tared, or the raw offset trips it.
+    One trip drops at most `max_drop` mm; if the force is still over trip_g after a drop, it is
+    not the bed pressing (that went away): the guard waits until the force has been under
+    trip_g once before it may drop again, so drift never walks the bed to the bottom.
     Returns the event that ends the guard when set."""
     stop_event = stop_event or threading.Event()
     def loop():
+        armed = True
         while not stop_event.is_set():
-            if not _homing.is_set() and abs(gauge.force_g(window) or 0) > trip_g:
+            f = abs(gauge.force_g(window) or 0)
+            if not armed and f <= trip_g:
+                armed = True
+            if armed and not _homing.is_set() and f > trip_g:
                 if on_trip:
                     on_trip()
                 try:
-                    emergency_drop(gauge, release_g, window)
+                    emergency_drop(gauge, release_g, window, max_drop=max_drop)
                 except Exception as e:
                     print(f"Emergency drop failed: {e}")
+                armed = False
             time.sleep(0.005)
     threading.Thread(target=loop, daemon=True).start()
     return stop_event

@@ -21,7 +21,7 @@ def test_default_file_loads_with_the_known_values():
     assert s.printing.filament == "Generic PETG @COREONE HF0.4"
     assert s.work_area.usable == ((0.0, 200.0), (56.0, 179.0))
     assert s.printer.travel == ((-2.0, 201.0), (42.0, 221.0))
-    assert s.sensor.offset == (0.0, -40.0, -80.0)
+    assert len(s.sensor.offset) == 3            # the value itself is this laptop's last calibration
     assert s.work_area.probe_points == ((189.0, 52.0), (194.0, 44.0))
     assert (s.fiducials.inset, s.fiducials.height) == (10.0, 5.0)
     assert (s.forces.contact_g, s.forces.max_force_g, s.forces.guard_trip_g) == (5.0, 450.0, 500.0)
@@ -96,7 +96,7 @@ def test_unreadable_file_gives_settings_error(tmp_path):
 
 
 def test_sensor_helpers_predict_head_position_and_travel_height():
-    s = ms.SETTINGS.sensor
+    s = ms.Sensor(**{**ms.SETTINGS.sensor.__dict__, "offset_x": 0.0, "offset_y": -40.0, "offset_z": -80.0})
     assert s.head_xy(10.0, 66.0) == (10.0, 106.0)          # sensor 40 mm in front: head 40 mm back
     assert s.hover_z(5.0) == 5.0 + s.hover_clearance + 80.0  # sensor 80 mm below the nozzle
 

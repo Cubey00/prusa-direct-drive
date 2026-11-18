@@ -13,6 +13,8 @@ class ForceGraph(QWidget):
         self.samples = None
         self.max_g = None           # next point's force target, None for depth points / no point
         self.threshold_g = None
+        self.empty_text = ("Geen load cell data: die komt zodra de printerverbinding loopt "
+                           "(Start kalibratie of Meten)")
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll)
         self.timer.start(interval_ms)
@@ -32,7 +34,7 @@ class ForceGraph(QWidget):
         except Exception:
             s = None
         if s or self.samples:
-            self.samples = s
+            self.samples = list(s) if s else s
             self.update()
 
     def paintEvent(self, e):
@@ -77,4 +79,5 @@ class ForceGraph(QWidget):
             p.drawText(left + 4, top + 14, f"{vals[-1]:.1f} g")
         else:
             p.setPen(QColor("gray"))
-            p.drawText(self.rect().adjusted(left, top, 0, 0), Qt.AlignCenter, "No gauge data (runs only)")
+            p.drawText(self.rect().adjusted(left, top, 0, 0), Qt.AlignCenter | Qt.TextWordWrap,
+                       self.empty_text)

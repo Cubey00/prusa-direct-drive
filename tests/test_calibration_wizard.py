@@ -58,6 +58,9 @@ def win(qtbot, tmp_path, monkeypatch):
     settings_file = tmp_path / "machine_settings.toml"
     settings_file.write_text(machine_settings.DEFAULT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
     monkeypatch.setenv(machine_settings.ENV_VAR, str(settings_file))     # saving must not touch the repo
+    # start from the shipped guesses, not from this laptop's last calibration
+    machine_settings.save_values("sensor", {"offset_x": 0.0, "offset_y": -40.0, "offset_z": -80.0, "measured": False})
+    machine_settings.save_values("calibration", {"cone_F1": [], "cone_F2": [], "cone_F3": []})
     w = MainWindow(QSettings(str(tmp_path / "s.ini"), QSettings.IniFormat))
     qtbot.addWidget(w)
     w.server.close()
@@ -79,14 +82,14 @@ def visible(wiz):
             if w.isVisible()}
 
 
-def do_point(w, p, x, y):
+def do_point(w, p, x, y, z=85.2):
     """Ga naar kegel -> calibrator arrives -> insturen -> calibrator answers with the position."""
     wiz = w.wizard
     wiz.go_btn.click()
     msg(w, "goto_done", label=p, ok=True, message=f"At {p}")
     wiz.send_btn.click()
     assert w.server.requests[-1] == p
-    msg(w, "position", point=p, x=x, y=y, z=85.2)
+    msg(w, "position", point=p, x=x, y=y, z=z)
 
 
 def test_button_opens_the_wizard_and_asks_for_a_plate_first(win):
@@ -215,3 +218,62 @@ def test_no_answer_from_the_calibrator_is_explained(win, plate, qtbot, monkeypat
     msg(win, "goto_done", label="F1", ok=True, message="At F1")
     qtbot.wait(300)
     assert "nog niets" not in wiz.link_label.text() and visible(wiz) == {"jogger"}
+
+
+def test_only_cone_2_gives_a_shift_calibration(win, plate):
+    win.open_model(plate)
+    win.start_calibration()
+    wiz = win.wizard
+    fids = fiducials(plate)
+    assert wiz.mode_box.isVisible()
+    wiz.mode_f2.setChecked(True)
+    assert wiz.go_btn.text() == "Ga naar kegel 2" and "van" not in wiz.step_label.text()
+    do_point(win, "F2", fids["F2"]["x"] - 0.6, fids["F2"]["y"] + 39.2)
+    assert win.server.homes == [True]                         # X/Y homed before the only cone
+    assert visible(wiz) == {"finish"} and "Alleen kegel 2" in wiz.text_label.text()
+    cal = win.left.cal_points()
+    for p in ("F1", "F3"):                                    # filled in as F2 + bed distance
+        assert cal.machine[p] == pytest.approx((fids[p]["x"] - 0.6, fids[p]["y"] + 39.2))
+    assert win.transform is not None
+    saved = machine_settings.load()
+    assert saved.sensor.offset == pytest.approx((0.6, -39.2, fids["F2"]["z"] - 85.2))
+    assert saved.calibration.cone_position("F1") is None and saved.calibration.cone_position("F3") is None
+    # the choice is remembered for the next calibration
+    win.wizard = None
+    win.start_calibration()
+    assert win.wizard.mode_f2.isChecked() and win.wizard.go_btn.text() == "Ga naar kegel 2"
+
+
+def test_offset_outside_reach_still_saves_cones_and_height(win, plate):
+    """Sensor measured 1.5 mm left of the nozzle: the reach check refuses that X offset, but the
+    cone positions and the measured height must still be saved (Meten needs them)."""
+    win.open_model(plate)
+    win.start_calibration()
+    wiz = win.wizard
+    wiz.mode_f2.setChecked(True)
+    fids = fiducials(plate)
+    do_point(win, "F2", fids["F2"]["x"] + 1.5, fids["F2"]["y"] + 39.2)
+    assert "Kalibratie geslaagd" in wiz.text_label.text() and "niet opgeslagen" in wiz.text_label.text()
+    saved = machine_settings.load()
+    assert saved.calibration.cone_position("F2") is not None
+    assert saved.sensor.offset == pytest.approx((0.0, -40.0, fids["F2"]["z"] - 85.2))
+
+
+def test_cone_2_with_a_big_x_offset_saves_and_meten_works(win, plate):
+    """Real case: the sensor sits 13.6 mm right of the nozzle. F1/F3 calculated from F2 lie
+    outside the head's travel; only F2 is saved, the height too, and Meten can go."""
+    from pathprogrammer import measure
+    win.open_model(plate)
+    win.start_calibration()
+    wiz = win.wizard
+    wiz.mode_f2.setChecked(True)
+    fids = fiducials(plate)
+    do_point(win, "F2", fids["F2"]["x"] - 13.61, fids["F2"]["y"] + 37.89, z=64.5)
+    saved = machine_settings.load()
+    assert saved.calibration.cone_position("F2") == pytest.approx((fids["F2"]["x"] - 13.61, fids["F2"]["y"] + 37.89, 64.5))
+    assert saved.sensor.offset[2] == pytest.approx(fids["F2"]["z"] - 64.5)
+    manifest = json.loads(plate.with_suffix(".json").read_text())
+    t = measure.hover_target(manifest, saved)                     # no session: from the saved F2 alone
+    part = manifest["parts"][0]
+    assert t.source == "opgeslagen positie van kegel 2"
+    assert (t.x, t.y) == pytest.approx((part["x"] - 13.61, part["y"] + 37.89))

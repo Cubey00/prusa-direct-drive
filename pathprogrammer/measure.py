@@ -30,14 +30,24 @@ class HoverTarget:
     source: str               # where the cone positions came from
 
 
-def machine_points(session_cal, settings):
-    """Head X/Y on F1-F3: this session's calibration if complete, else the saved cone positions.
+SINGLE_POINT = "F2"          # "Alleen kegel 2": only this cone saved
+
+
+def machine_points(session_cal, settings, manifest=None):
+    """Head X/Y on F1-F3: this session's calibration if complete, else the saved cone positions,
+    else only the saved F2 plus each cone's bed distance from F2 (shift only, plate square).
     Returns (dict name -> (x, y), source text) or (None, reason)."""
     if session_cal is not None and all(session_cal.machine[p] is not None for p in calibration.POINTS):
         return dict(session_cal.machine), "kalibratie van deze sessie"
     saved = {p: settings.calibration.cone_position(p) for p in calibration.POINTS}
     if all(saved.values()):
         return {p: (v[0], v[1]) for p, v in saved.items()}, "opgeslagen kegelposities"
+    f2 = saved[SINGLE_POINT]
+    fids = {f["name"]: f for f in (manifest or {}).get("fiducials", [])}
+    if f2 and all(p in fids for p in calibration.POINTS):
+        b2 = fids[SINGLE_POINT]
+        return ({p: (f2[0] + fids[p]["x"] - b2["x"], f2[1] + fids[p]["y"] - b2["y"]) for p in calibration.POINTS},
+                "opgeslagen positie van kegel 2")
     return None, "Kalibreer eerst (Start kalibratie): de printer weet nog niet waar de kegels zijn."
 
 
@@ -64,10 +74,11 @@ def hover_target(manifest, settings, session_cal=None, part_index=0, hover=HOVER
         raise MeasureError("Open eerst een plaat (Print plates): er zijn geen onderdelen geladen.")
     if not 0 <= part_index < len(manifest["parts"]):
         raise MeasureError(f"Punt {part_index + 1} bestaat niet: de plaat heeft {len(manifest['parts'])} onderdelen.")
-    if not settings.sensor.measured and not all(settings.calibration.cone_position(p) for p in calibration.POINTS):
-        raise MeasureError("De hoogte van de sensor is nog niet gemeten. Kalibreer eerst (Start kalibratie), "
-                           "anders kan de sensor op het onderdeel botsen.")
-    machine, source = machine_points(session_cal, settings)
+    if not settings.sensor.measured and not any(settings.calibration.cone_position(p) for p in calibration.POINTS):
+        raise MeasureError("De hoogte van de sensor is nog niet gemeten: er is nog geen geslaagde kalibratie "
+                           "opgeslagen. Kalibreer eerst tot 'Kalibratie geslaagd!' (Start kalibratie), anders kan de "
+                           "sensor op het onderdeel botsen.")
+    machine, source = machine_points(session_cal, settings, manifest)
     if machine is None:
         raise MeasureError(source)
     to_head = bed_transform(manifest, machine)

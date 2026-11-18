@@ -19,6 +19,7 @@ Z convention (see gantry_controls): higher Z = lower bed, so touching means decr
 Forces are in grams via StrainGauge.force_g (calibration.json scale).
 """
 import time
+from collections import deque
 from dataclasses import dataclass, asdict, field
 
 from gantry_controls import _lock, _send, _send_nowait, _resync_serial, _stop, _POS_RE, halt_move, PrinterError
@@ -257,16 +258,45 @@ def _press_images(gauge, res, mode, value, step, speed, limit_z, max_force_g, ca
     return z
 
 
+class RiseDetector:
+    """Contact as a quick rise of the force (a peak), not a level, so load cell drift does not
+    count: hit when the signed force differs `rise_g` or more from its mean over the window
+    [now - 2*lag_s, now - lag_s] (before that window has data: from the first reading). A slow
+    drift of d g/s moves that difference only ~1.5*lag_s*d. `abs_g`: hit anyway at this |force|
+    (a contact too soft to make a quick rise must not press on forever)."""
+
+    def __init__(self, gauge, rise_g=10.0, lag_s=1.0, abs_g=None, clock=None):
+        self.gauge, self.rise_g, self.lag_s, self.abs_g = gauge, rise_g, lag_s, abs_g
+        self.clock = clock or time.monotonic
+        self.hist = deque()
+        self.rise = 0.0          # last difference from the baseline (g)
+
+    def __call__(self, _abs_f=None):
+        f = _force(self.gauge)
+        t = self.clock()
+        h = self.hist
+        h.append((t, f))
+        while h and h[0][0] < t - 2 * self.lag_s - 0.5:
+            h.popleft()
+        base = [v for tt, v in h if t - 2 * self.lag_s <= tt <= t - self.lag_s]
+        b = sum(base) / len(base) if base else h[0][1]
+        self.rise = f - b
+        return abs(self.rise) >= self.rise_g or (self.abs_g is not None and abs(f) >= self.abs_g)
+
+
 CREEP_SPEED = 0.1         # mm/s: "heel langzaam" towards the object (Meten)
 CREEP_FAST_SPEED = 0.5    # mm/s for the part that is known to be free (above the expected contact)
 
 
 def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, fast_mm=0.0,
-                     speed=CREEP_SPEED, fast_speed=CREEP_FAST_SPEED, cancel=None, on_status=print):
-    """Bed up very slowly until the load cell feels contact_g, then stop (M410) and STAY there:
+                     speed=CREEP_SPEED, fast_speed=CREEP_FAST_SPEED, cancel=None, on_status=print,
+                     rise_g=None, rise_s=1.0, abs_g=None):
+    """Bed up very slowly until the load cell feels contact, then stop (M410) and STAY there:
     the sensor just touches the object. fast_mm: the first part of the way that is known to be
-    free (e.g. 8 of the 10 mm hover gap) goes at fast_speed. Tares right before moving, so drift
-    does not count. Returns a TouchResult (status ok / no_contact / overload / aborted / error;
+    free (e.g. 8 of the 10 mm hover gap) goes at fast_speed. Tares right before moving.
+    Contact: with rise_g, a quick rise of rise_g within ~rise_s s (RiseDetector: drift does not
+    count; abs_g stops it anyway); without, |force| >= contact_g.
+    Returns a TouchResult (status ok / no_contact / overload / aborted / error;
     contact_z = end_z = where it stopped, final_g the force there)."""
     res = TouchResult()
     trace = _Tracer(res, gauge)
@@ -280,7 +310,10 @@ def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, f
             if not gauge.tare_fresh(TARE_SAMPLES):
                 raise PrinterError("No fresh load cell data for the tare")
             limit_z = res.start_z - max_travel
-            contact = lambda f: f >= contact_g
+            if rise_g:
+                contact = RiseDetector(gauge, rise_g, rise_s, abs_g)
+            else:
+                contact = lambda f: f >= contact_g
             z = res.start_z
             fast_mm = max(0.0, min(fast_mm, max_travel))
             segments = ([(res.start_z - fast_mm, fast_speed)] if fast_mm > 0 else []) + [(limit_z, speed)]
@@ -296,6 +329,43 @@ def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, f
             res.contact_z = res.end_z = _stopped_z(gauge, trace)
             res.final_g = _settled_force(gauge, res, max_force_g, cancel, trace)
             res.status = "ok"
+            return res
+        except _Abort:
+            return res
+        except PrinterError as e:
+            res.status = "aborted" if _stop.is_set() else "error"
+            res.message = str(e)
+            return res
+
+
+def press_step(gauge, step_mm=0.1, stop_g=300.0, max_force_g=450.0, speed=CREEP_SPEED, cancel=None):
+    """Meten: bed `step_mm` further up (the sensor presses deeper), M410 as soon as |force|
+    reaches stop_g. Refused when the force is already at stop_g. The bed stays where it ends.
+    Returns a TouchResult: status ok (whole step) / limit (stopped at stop_g) / overload /
+    aborted / error; start_z, end_z and final_g (settled |force|) filled in."""
+    res = TouchResult()
+    trace = _Tracer(res, gauge)
+    with _lock:
+        try:
+            _wait_for_data(gauge)
+            _send("G90")
+            _send("M400", timeout=60)
+            res.start_z = _z()
+            f0 = abs(_force(gauge))
+            if f0 >= stop_g:
+                res.status, res.end_z, res.final_g = "limit", res.start_z, f0
+                res.message = f"De kracht is al {f0:.0f} g (grens {stop_g:g} g): niet verder."
+                return res
+            target = res.start_z - step_mm
+            if _move_watch(gauge, res, res.start_z, target, speed, lambda f: f >= stop_g, max_force_g,
+                           cancel, trace, "press") == "hit":
+                res.end_z = _stopped_z(gauge, trace)
+                res.status = "limit"
+                res.message = f"Gestopt: de kracht kwam boven {stop_g:g} g."
+            else:
+                res.end_z = _z()
+                res.status = "ok"
+            res.final_g = _settled_force(gauge, res, max_force_g, cancel, trace)
             return res
         except _Abort:
             return res

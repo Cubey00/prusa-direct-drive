@@ -116,12 +116,12 @@ class CameraFeed:
     def is_running(self):
         return self._thread is not None
 
-    def take_photo(self, folder):
-        """Save the next frame to folder. False if there is no camera."""
+    def take_photo(self, folder, name=None):
+        """Save the next frame to folder (as `name`, default photo_name()). False if there is no camera."""
         if not self.connected:
             return False
         with self._lock:
-            self._photo.append(Path(folder))
+            self._photo.append((Path(folder), name))
         return True
 
     def set_settings(self, exposure_us=None, gain=None):
@@ -182,8 +182,8 @@ class CameraFeed:
                     continue
                 with self._lock:
                     folders, self._photo = self._photo, []
-                for folder in folders:
-                    path = folder / photo_name()
+                for folder, name in folders:
+                    path = folder / (name or photo_name())
                     saver.put(frame, path)
                     self.on_saved(path, None)
                 while reported < len(saver.errors):

@@ -50,7 +50,8 @@ class PrinterHardware:
                 raise gc.PrinterError("No load cell data over UDP metrics")
             time.sleep(0.1)
         self._guard_stop = gc.force_guard(self.gauge, trip_g=config.GUARD_TRIP_G, release_g=config.GUARD_RELEASE_G,
-                                          on_trip=lambda: self.on_status("FORCE LIMIT: bed dropped"))
+                                          on_trip=lambda: self.on_status("FORCE LIMIT: bed dropped"),
+                                          max_drop=config.SETTINGS.forces.guard_drop_mm)
 
     def position(self):
         import gantry_controls as gc

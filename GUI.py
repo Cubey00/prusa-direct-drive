@@ -276,6 +276,9 @@ class App:
         if kind == "creep":
             self.link_creep(msg)
             return
+        if kind == "step":
+            self.link_step(msg)
+            return
         if kind == "halt":
             self._creep_cancel.set()
             self.motion.halt()
@@ -358,12 +361,41 @@ class App:
         self._creep_cancel.clear()
 
         def work():
-            res = creep_to_contact(self.gauge, contact_g=SETTINGS.forces.contact_g,
-                                   max_force_g=SETTINGS.forces.max_force_g, max_travel=max_mm, fast_mm=fast_mm,
-                                   cancel=self._creep_cancel, on_status=lambda m: None)
+            fo = SETTINGS.forces
+            res = creep_to_contact(self.gauge, contact_g=fo.contact_g, max_force_g=fo.max_force_g,
+                                   max_travel=max_mm, fast_mm=fast_mm, cancel=self._creep_cancel,
+                                   on_status=lambda m: None, rise_g=fo.contact_rise_g,
+                                   rise_s=fo.contact_rise_s, abs_g=fo.jog_stop_g)
             self.motion.halt()                       # next jog starts from the real position
             texts = {"ok": "De sensor raakt het object.", "no_contact": res.message,
                      "overload": f"Te veel kracht ({res.peak_g:.0f} g): gestopt.", "aborted": "Gestopt."}
+            self.link.send_touch_done(res.status == "ok", res.status, texts.get(res.status, res.message),
+                                      res.end_z, res.final_g)
+            self.root.after(0, self.update_position_labels)
+        threading.Thread(target=work, daemon=True).start()
+
+    def link_step(self, msg):
+        """Meten: press `mm` deeper (bed up), stop at stop_g grams."""
+        from touch import press_step
+        try:
+            mm, stop_g = float(msg.get("mm", 0.1)), float(msg.get("stop_g", 300.0))
+        except (TypeError, ValueError):
+            return
+        fo = SETTINGS.forces
+        if not 0 < mm <= 1.0 or not 0 < stop_g < fo.max_force_g:
+            self.link.send_touch_done(False, "error", f"Stap geweigerd: max 1 mm en de grens onder {fo.max_force_g:g} g")
+            return
+        if not self._tared:
+            self.link.send_touch_done(False, "error", "Nog geen krachtdata van de load cell; wacht even en probeer opnieuw.")
+            return
+        self.motion.halt()
+        self._creep_cancel.clear()
+
+        def work():
+            res = press_step(self.gauge, step_mm=mm, stop_g=stop_g, max_force_g=fo.max_force_g,
+                             cancel=self._creep_cancel)
+            self.motion.halt()
+            texts = {"overload": f"Te veel kracht ({res.peak_g:.0f} g): gestopt.", "aborted": "Gestopt."}
             self.link.send_touch_done(res.status == "ok", res.status, texts.get(res.status, res.message),
                                       res.end_z, res.final_g)
             self.root.after(0, self.update_position_labels)
@@ -428,6 +460,9 @@ class App:
     def _on_guard_trip(self):
         self.motion.halt()      # drop queued nudges
         self.root.after(0, lambda: self.alert("FORCE LIMIT: bed dropped"))
+        if self.link is not None:   # hidden calibrator: the path programmer shows why the bed dropped
+            self.link.send_status(False, f"Krachtbeveiliging: meer dan {SETTINGS.forces.guard_trip_g:.0f} g gemeten, "
+                                         f"bed max {SETTINGS.forces.guard_drop_mm:.0f} mm gezakt.")
 
     ALERT_S = 10.0          # how long an alert stays
     ALERT_BLINK_MS = 400
@@ -534,7 +569,7 @@ class App:
                     # (only armed once tared, the raw offset would trip it)
                     force_guard(self.gauge, trip_g=SETTINGS.forces.guard_trip_g,
                                 release_g=SETTINGS.forces.guard_release_g, window=GUARD_WINDOW,
-                                on_trip=self._on_guard_trip)
+                                on_trip=self._on_guard_trip, max_drop=SETTINGS.forces.guard_drop_mm)
             if len(s) > 1:
                 lv = self.get_line_value()
                 peak_up = max(max(s), 0)
@@ -563,7 +598,22 @@ class App:
                 for i, v in enumerate(s):
                     pts += [i * step, to_y(v)]
                 c.create_line(*pts, fill="orange", width=1)
+        self._stream_force()
         self.root.after(30, self.poll_gauge)
+
+    FORCE_STREAM_S = 0.1        # the path programmer's graph gets the force 10x per second
+
+    def _stream_force(self):
+        """Send the tared force to the path programmer for its live graph (pressing = positive)."""
+        if self.link is None or not self._tared:
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_last_force_sent", 0.0) < self.FORCE_STREAM_S:
+            return
+        self._last_force_sent = now
+        g = self.gauge.force_g(GUARD_WINDOW)
+        if g is not None:
+            self.link.send_force(-g)
 
     # --- Load cell calibration ---
 

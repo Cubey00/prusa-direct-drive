@@ -233,3 +233,60 @@ def test_creep_can_be_stopped(rig):
     cancel = threading.Event()
     cancel.set()
     assert creep(gauge, cancel=cancel).status == "aborted"
+
+
+class DriftingGauge(FakeGauge):
+    """Load cell that drifts `rate` g/s on top of the real force."""
+
+    def __init__(self, axis, rate):
+        super().__init__(axis)
+        self.rate = rate
+
+    def force_g(self, n=300):
+        return super().force_g(n) - self.rate * self.axis.clock.monotonic()
+
+
+def rise_creep(gauge, **kw):
+    return creep(gauge, rise_g=10.0, rise_s=1.0, abs_g=100.0, **kw)
+
+
+def test_drift_alone_is_no_contact(rig):
+    axis, _ = rig
+    gauge = DriftingGauge(axis, rate=2.0)                 # 2 g/s: 5 g after 2.5 s, 20 g after 10 s
+    res = rise_creep(gauge, max_travel=0.5)              # no object within reach (surface 1.5 below)
+    assert res.status == "no_contact"
+
+
+def test_level_contact_would_have_stopped_on_drift(rig):
+    axis, _ = rig
+    gauge = DriftingGauge(axis, rate=2.0)
+    assert creep(gauge, max_travel=0.5).status == "ok"   # the old 5 g level: a false contact
+
+
+def test_rise_finds_the_real_contact_despite_drift(rig):
+    axis, _ = rig
+    gauge = DriftingGauge(axis, rate=2.0)
+    res = rise_creep(gauge, fast_mm=2.5, max_travel=10.0)
+    assert res.status == "ok", res.message
+    assert abs(res.contact_z - SURFACE) < 0.2
+    assert gauge.peak_true < 30                            # touching, not pressing hard
+
+
+def test_press_step_goes_0_1_mm_deeper(rig):
+    axis, gauge = rig
+    axis.move(SURFACE, 1.0)                               # sensor just on the object
+    axis.clock.sleep(10)
+    res = touch_mod.press_step(gauge, step_mm=0.1, stop_g=300.0)
+    assert res.status == "ok", res.message
+    assert res.start_z - res.end_z == pytest.approx(0.1, abs=0.01)
+    assert res.final_g == pytest.approx(10.0, abs=1.5)     # 100 g/mm x 0.1 mm
+
+
+def test_press_step_stops_at_the_force_limit(rig):
+    axis, gauge = rig
+    axis.move(SURFACE - 0.25, 1.0)                        # already pressing 25 g
+    axis.clock.sleep(10)
+    res = touch_mod.press_step(gauge, step_mm=0.1, stop_g=30.0)
+    assert res.status == "limit" and gauge.peak_true < 40
+    res = touch_mod.press_step(gauge, step_mm=0.1, stop_g=20.0)       # already above: no move
+    assert res.status == "limit" and res.end_z == res.start_z
