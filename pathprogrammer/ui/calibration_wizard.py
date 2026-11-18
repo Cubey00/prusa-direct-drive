@@ -12,6 +12,10 @@ After F3 the 3-point fit decides: "Kalibratie geslaagd" or what to check. A good
 the head position on each cone (machine_settings.toml [calibration] cone_F1..3) and the sensor
 offset measured from them; the next calibration drives straight to the saved spots, hover_clearance
 (1 cm) higher, so only a short way down is left to jog.
+
+"Alleen kegel 2" (choice at the start): only F2 is measured. That gives the plate's shift but no
+rotation or scale: F1 and F3 are filled in as F2 + their bed distance from F2 (the plate assumed
+square on the bed, machine steps exact), so everything after it (fit, Meten, saving) works as usual.
 """
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QButtonGroup, QDialog, QGridLayout, QHBoxLayout, QLabel, QMessageBox,
@@ -28,6 +32,10 @@ JOG_FEED = 120.0                        # mm/min = 2 mm/s: slow, for fine-tuning
 OK_COLOR, WARN_COLOR, ERR_COLOR = "#1b7a1b", "#b36b00", "#c00000"
 BIG = "font-size: 16px; padding: 10px;"
 
+MODE_ALL, MODE_F2 = "all", "F2"
+SINGLE_POINT = "F2"
+MODE_KEY = "calibration/mode"            # QSettings: last choice, per laptop
+
 # states
 NO_PLATE, GOTO, MOVING, JOG, SENDING, DONE = "no_plate", "goto", "moving", "jog", "sending", "done"
 
@@ -43,6 +51,7 @@ class CalibrationWizard(QDialog):
         self.state = NO_PLATE
         self.success = False
         self.sent = {}                 # fiducial -> (x, y, z) head position the calibrator sent
+        self.mode = MODE_F2 if str(self._qsettings().value(MODE_KEY, MODE_ALL)) == MODE_F2 else MODE_ALL
 
         self.step_label = QLabel("")
         self.step_label.setStyleSheet("font-size: 18px; font-weight: bold;")
@@ -50,6 +59,20 @@ class CalibrationWizard(QDialog):
         self.text_label.setWordWrap(True)
         self.text_label.setTextFormat(Qt.RichText)
         self.text_label.setMinimumHeight(60)
+
+        # --- which cones: all three or only cone 2 ---
+        self.mode_box = QWidget()
+        ml = QVBoxLayout(self.mode_box)
+        ml.setContentsMargins(0, 0, 0, 0)
+        self.mode_group = QButtonGroup(self)
+        self.mode_all = QRadioButton("Alle 3 kegels (nauwkeurigst: verschuiving, draaiing en schaal)")
+        self.mode_f2 = QRadioButton("Alleen kegel 2, rechtsvoor (sneller: alleen verschuiving, de plaat "
+                                    "ligt recht)")
+        for i, rb in enumerate((self.mode_all, self.mode_f2)):
+            self.mode_group.addButton(rb, i)
+            ml.addWidget(rb)
+        (self.mode_f2 if self.mode == MODE_F2 else self.mode_all).setChecked(True)
+        self.mode_group.idToggled.connect(self._mode_toggled)
 
         self.go_btn = QPushButton("")
         self.go_btn.setStyleSheet(BIG)
@@ -112,6 +135,7 @@ class CalibrationWizard(QDialog):
         lay = QVBoxLayout(self)
         lay.addWidget(self.step_label)
         lay.addWidget(self.text_label)
+        lay.addWidget(self.mode_box)
         lay.addWidget(self.go_btn)
         lay.addWidget(self.jogger)
         lay.addWidget(self.finish_btn)
@@ -129,8 +153,26 @@ class CalibrationWizard(QDialog):
         m = self.manifest()
         return {f["name"]: f for f in m["fiducials"]} if m else {}
 
+    def _qsettings(self):
+        return getattr(self.main, "settings", None) or _NoSettings()
+
+    def _mode_toggled(self, button_id, checked):
+        if not checked or self.index > 0 or self.state not in (GOTO, NO_PLATE):
+            return
+        self.mode = MODE_F2 if button_id == 1 else MODE_ALL
+        self._qsettings().setValue(MODE_KEY, self.mode)
+        self.refresh()
+
+    def sequence(self):
+        """The cones to measure, in order."""
+        return (SINGLE_POINT,) if self.mode == MODE_F2 else calibration.POINTS
+
     def point(self):
-        return calibration.POINTS[min(self.index, len(calibration.POINTS) - 1)]
+        seq = self.sequence()
+        return seq[min(self.index, len(seq) - 1)]
+
+    def cone_number(self, name=None):
+        return calibration.POINTS.index(name or self.point()) + 1
 
     def travel_z(self):
         """Machine Z that keeps the sensor clear of the cones and the tallest part."""
@@ -170,8 +212,9 @@ class CalibrationWizard(QDialog):
         elif self.state == NO_PLATE:
             self.state = GOTO
         p = self.point()
-        n = self.index + 1
-        total = len(calibration.POINTS)
+        n = self.cone_number(p)
+        step, total = self.index + 1, len(self.sequence())
+        self.mode_box.setVisible(self.state == GOTO and self.index == 0)
         self.go_btn.setVisible(self.state in (GOTO, MOVING))
         self.jogger.setVisible(self.state in (JOG, SENDING))
         self.finish_btn.setVisible(self.state == DONE and self.success)
@@ -187,7 +230,8 @@ class CalibrationWizard(QDialog):
                                     "<i>Print plates</i> de geprinte plaat en klik <i>Open plate in "
                                     "programmer</i>.</span>")
         elif self.state in (GOTO, MOVING):
-            self.step_label.setText(f"Kegel {n} van {total} ({p}, {PLACE[p]})")
+            self.step_label.setText(f"Kegel {n} ({p}, {PLACE[p]})" if total == 1 else
+                                    f"Kegel {n} van {total} ({p}, {PLACE[p]})")
             x, y, z, z_final, from_saved = self.target(p)
             where = ("Hij gaat naar de plek van de vorige kalibratie, 1 cm erboven." if from_saved else
                      "Hij gaat naar de plek die de sensorafstand voorspelt (nog geen opgeslagen plek).")
@@ -213,7 +257,8 @@ class CalibrationWizard(QDialog):
                                         + ("dan X/Y homen, " if self.homes() else "")
                                         + f"dan X{x:.1f} Y{y:.1f} ...")
         elif self.state in (JOG, SENDING):
-            self.step_label.setText(f"Kegel {n} van {total}: fijn afstellen")
+            self.step_label.setText(f"Kegel {n}: fijn afstellen" if total == 1 else
+                                    f"Kegel {step} van {total}: fijn afstellen")
             down = ("De sensor hangt 1 cm boven de vorige plek: breng het bed ongeveer 10 mm omhoog "
                     "(1x 5 mm met <b>Bed omhoog</b>, daarna met 1 mm en kleinere stappen: de plaat kan "
                     "iets hoger liggen dan de vorige keer). "
@@ -226,7 +271,7 @@ class CalibrationWizard(QDialog):
             self.step_label.setText("Kalibratie klaar" if self.success else "Kalibratie niet gelukt")
 
     def homes(self):
-        """Cone 1 starts from a fresh X/Y home: the head may have been moved by hand."""
+        """The first cone starts from a fresh X/Y home: the head may have been moved by hand."""
         return self.index == 0
 
     def set_state(self, state):
@@ -304,15 +349,31 @@ class CalibrationWizard(QDialog):
                 self.set_state(JOG)
         elif kind == "position" and msg.get("point") == self.point() and self.state != DONE:
             self.sent[msg["point"]] = (float(msg["x"]), float(msg["y"]), float(msg.get("z", 0.0)))
-            self.link_label.setText(f"Kegel {self.index + 1} ingestuurd: X{msg['x']:.2f} Y{msg['y']:.2f}.")
+            self.link_label.setText(f"Kegel {self.cone_number()} ingestuurd: X{msg['x']:.2f} Y{msg['y']:.2f}.")
             self.index += 1
-            if self.index >= len(calibration.POINTS):
+            if self.index >= len(self.sequence()):
                 self.finish()
             else:
                 self.set_state(GOTO)
 
+    def fill_from_single(self):
+        """Only cone 2 measured: F1 and F3 = F2 + their bed distance from F2 (shift only)."""
+        fids = self.fiducials()
+        x2, y2, z2 = self.sent[SINGLE_POINT]
+        f2 = fids[SINGLE_POINT]
+        for p in calibration.POINTS:
+            if p == SINGLE_POINT or p not in fids:
+                continue
+            f = fids[p]
+            x, y = x2 + f["x"] - f2["x"], y2 + f["y"] - f2["y"]
+            self.sent[p] = (x, y, z2 + f["z"] - f2["z"])        # head Z = tip Z - offset_z
+            self.main.left.set_machine_point(p, x, y)
+
     def finish(self):
-        self.index = len(calibration.POINTS) - 1
+        self.index = len(self.sequence()) - 1
+        single = self.mode == MODE_F2
+        if single and SINGLE_POINT in self.sent:
+            self.fill_from_single()
         cal = self.main.left.cal_points()
         issues = calibration.validate(cal)
         errors = [i.msg for i in issues if i.level == "error"]
@@ -325,6 +386,9 @@ class CalibrationWizard(QDialog):
             res = calibration.residuals(cal, t)
             details = (f"Restfouten: " + ", ".join(f"kegel {i + 1} {r:.2f} mm" for i, r in enumerate(res.values()))
                        + f"; rotatie {t.rotation_deg:.2f}°.")
+            if single:
+                details = ("Alleen kegel 2 gemeten: de plaat is verschoven, niet gedraaid (kegel 1 en 3 "
+                           "berekend uit hun afstand tot kegel 2).")
             if issues:
                 text = (f"<span style='color:{WARN_COLOR}'><b>De punten kloppen niet goed:</b> "
                         + " ".join(i.msg for i in issues) + f"</span><br>{details}<br>"
@@ -360,18 +424,28 @@ class CalibrationWizard(QDialog):
         if any(p not in self.sent for p in calibration.POINTS):
             return ""
         off, off_z = self.measured_offset(), self.measured_offset_z()
+        xy_refused = ""
         try:
             self.settings = machine_settings.save_values(
                 "calibration", {f"cone_{p}": [round(v, 3) for v in self.sent[p]] for p in calibration.POINTS})
             if off is not None and off_z is not None:
-                self.settings = machine_settings.save_values(
-                    "sensor", {"offset_x": round(off[0], 2), "offset_y": round(off[1], 2),
-                               "offset_z": round(off_z, 2), "measured": True})
+                try:
+                    self.settings = machine_settings.save_values(
+                        "sensor", {"offset_x": round(off[0], 2), "offset_y": round(off[1], 2),
+                                   "offset_z": round(off_z, 2), "measured": True})
+                except machine_settings.SettingsError as e:
+                    # X/Y outside what the reach check allows: keep at least the measured height,
+                    # Meten needs it to stay clear of the parts (X/Y come from the cone positions)
+                    self.settings = machine_settings.save_values("sensor", {"offset_z": round(off_z, 2)})
+                    xy_refused = (f"Gemeten sensorafstand X {off[0]:+.2f}, Y {off[1]:+.2f} niet opgeslagen "
+                                  f"({e}); hoogte Z {off_z:+.2f} mm wel.")
         except machine_settings.SettingsError as e:
             return f"Niet opgeslagen: {e}"
         text = ("Posities van de kegels opgeslagen in machine_settings.toml: de volgende kalibratie rijdt "
                 "er direct heen, 1 cm erboven.")
-        if off is not None and off_z is not None:
+        if xy_refused:
+            text += " " + xy_refused
+        elif off is not None and off_z is not None:
             text += (f" Gemeten sensorafstand: X {off[0]:+.2f}, Y {off[1]:+.2f}, Z {off_z:+.2f} mm "
                      "(ook opgeslagen).")
         return text
@@ -395,3 +469,11 @@ class CalibrationWizard(QDialog):
                 return
         self.main.server.quit_calibrator()     # it runs without a window: close it with the wizard
         super().closeEvent(e)
+
+
+class _NoSettings:
+    def value(self, key, default=None):
+        return default
+
+    def setValue(self, key, value):
+        pass

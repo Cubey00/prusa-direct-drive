@@ -428,6 +428,9 @@ class App:
     def _on_guard_trip(self):
         self.motion.halt()      # drop queued nudges
         self.root.after(0, lambda: self.alert("FORCE LIMIT: bed dropped"))
+        if self.link is not None:   # hidden calibrator: the path programmer shows why the bed dropped
+            self.link.send_status(False, f"Krachtbeveiliging: meer dan {SETTINGS.forces.guard_trip_g:.0f} g gemeten, "
+                                         f"bed max {SETTINGS.forces.guard_drop_mm:.0f} mm gezakt.")
 
     ALERT_S = 10.0          # how long an alert stays
     ALERT_BLINK_MS = 400
@@ -534,7 +537,7 @@ class App:
                     # (only armed once tared, the raw offset would trip it)
                     force_guard(self.gauge, trip_g=SETTINGS.forces.guard_trip_g,
                                 release_g=SETTINGS.forces.guard_release_g, window=GUARD_WINDOW,
-                                on_trip=self._on_guard_trip)
+                                on_trip=self._on_guard_trip, max_drop=SETTINGS.forces.guard_drop_mm)
             if len(s) > 1:
                 lv = self.get_line_value()
                 peak_up = max(max(s), 0)

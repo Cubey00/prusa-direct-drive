@@ -65,8 +65,9 @@ def hover_target(manifest, settings, session_cal=None, part_index=0, hover=HOVER
     if not 0 <= part_index < len(manifest["parts"]):
         raise MeasureError(f"Punt {part_index + 1} bestaat niet: de plaat heeft {len(manifest['parts'])} onderdelen.")
     if not settings.sensor.measured and not all(settings.calibration.cone_position(p) for p in calibration.POINTS):
-        raise MeasureError("De hoogte van de sensor is nog niet gemeten. Kalibreer eerst (Start kalibratie), "
-                           "anders kan de sensor op het onderdeel botsen.")
+        raise MeasureError("De hoogte van de sensor is nog niet gemeten: er is nog geen geslaagde kalibratie "
+                           "opgeslagen. Kalibreer eerst tot 'Kalibratie geslaagd!' (Start kalibratie), anders kan de "
+                           "sensor op het onderdeel botsen.")
     machine, source = machine_points(session_cal, settings)
     if machine is None:
         raise MeasureError(source)

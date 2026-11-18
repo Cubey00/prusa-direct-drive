@@ -215,3 +215,42 @@ def test_no_answer_from_the_calibrator_is_explained(win, plate, qtbot, monkeypat
     msg(win, "goto_done", label="F1", ok=True, message="At F1")
     qtbot.wait(300)
     assert "nog niets" not in wiz.link_label.text() and visible(wiz) == {"jogger"}
+
+
+def test_only_cone_2_gives_a_shift_calibration(win, plate):
+    win.open_model(plate)
+    win.start_calibration()
+    wiz = win.wizard
+    fids = fiducials(plate)
+    assert wiz.mode_box.isVisible()
+    wiz.mode_f2.setChecked(True)
+    assert wiz.go_btn.text() == "Ga naar kegel 2" and "van" not in wiz.step_label.text()
+    do_point(win, "F2", fids["F2"]["x"] - 0.6, fids["F2"]["y"] + 39.2)
+    assert win.server.homes == [True]                         # X/Y homed before the only cone
+    assert visible(wiz) == {"finish"} and "Alleen kegel 2" in wiz.text_label.text()
+    cal = win.left.cal_points()
+    for p in ("F1", "F3"):                                    # filled in as F2 + bed distance
+        assert cal.machine[p] == pytest.approx((fids[p]["x"] - 0.6, fids[p]["y"] + 39.2))
+    assert win.transform is not None
+    saved = machine_settings.load()
+    assert saved.sensor.offset == pytest.approx((0.6, -39.2, fids["F2"]["z"] - 85.2))
+    assert saved.calibration.cone_position("F3")[2] == pytest.approx(85.2 + fids["F3"]["z"] - fids["F2"]["z"])
+    # the choice is remembered for the next calibration
+    win.wizard = None
+    win.start_calibration()
+    assert win.wizard.mode_f2.isChecked() and win.wizard.go_btn.text() == "Ga naar kegel 2"
+
+
+def test_offset_outside_reach_still_saves_cones_and_height(win, plate):
+    """Sensor measured 1.5 mm left of the nozzle: the reach check refuses that X offset, but the
+    cone positions and the measured height must still be saved (Meten needs them)."""
+    win.open_model(plate)
+    win.start_calibration()
+    wiz = win.wizard
+    wiz.mode_f2.setChecked(True)
+    fids = fiducials(plate)
+    do_point(win, "F2", fids["F2"]["x"] + 1.5, fids["F2"]["y"] + 39.2)
+    assert "Kalibratie geslaagd" in wiz.text_label.text() and "niet opgeslagen" in wiz.text_label.text()
+    saved = machine_settings.load()
+    assert saved.calibration.cone_position("F2") is not None
+    assert saved.sensor.offset == pytest.approx((0.0, -40.0, fids["F2"]["z"] - 85.2))

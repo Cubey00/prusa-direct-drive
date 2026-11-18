@@ -480,9 +480,9 @@ class MainWindow(QMainWindow):
 
     def on_calibrator_message(self, msg):
         self._measure_message(msg)
-        if (msg.get("type") == "goto_done" and msg.get("ok")
-                and msg.get("label") == calibration.POINTS[0]):
-            self._needs_home = False          # the wizard homed X/Y on its way to cone 1
+        first = self.wizard.sequence()[0] if self.wizard is not None else calibration.POINTS[0]
+        if msg.get("type") == "goto_done" and msg.get("ok") and msg.get("label") == first:
+            self._needs_home = False          # the wizard homed X/Y on its way to its first cone
         kind = msg.get("type")
         if kind == "hello":
             self.left.link_label.setText("Calibrator verbonden: volg de stappen in het kalibratievenster")
@@ -492,6 +492,9 @@ class MainWindow(QMainWindow):
             self.left.set_machine_point(msg["point"], msg["x"], msg["y"])
             self.left.link_label.setText(f"{msg['point']} ontvangen: "
                                          f"X{msg['x']:.2f} Y{msg['y']:.2f} Z{msg['z']:.2f}")
+        elif kind == "status" and str(msg.get("message", "")).startswith("Krachtbeveiliging"):
+            self.left.link_label.setText(msg["message"])          # the hidden calibrator dropped the bed
+            self.measure.set_status(msg["message"], "error")
         if self.wizard is not None:
             self.wizard.on_message(msg)
             if self.wizard.state == "done":
