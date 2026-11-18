@@ -1,10 +1,15 @@
+"""Shared test fixtures and simulated camera defaults."""
 from dataclasses import asdict, replace
 import json
+import os
 
 import pytest
 
 from focusfield.calibration import WDReference
 from focusfield.config import simulation_fixture
+
+# The Foto control live feed stays off unless a test explicitly enables it.
+os.environ.setdefault("PRINTERPROJECT_NO_CAMERA", "1")
 
 
 @pytest.fixture

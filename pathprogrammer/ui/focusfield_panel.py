@@ -53,6 +53,7 @@ class FocusFieldPanel(QWidget):
         self.main = main_window
         self.thread = self.worker = self.controller = None
         self.hardware_active = False
+        self._borrowed_camera = False
         self.run_path = None
         self._analysis_cancel = None
         self._task_cancel = None
@@ -314,9 +315,9 @@ class FocusFieldPanel(QWidget):
             if scout:
                 kwargs['scout_recipe'] = scout
             self.controller = SetupController(recipe, settings, fixture, stage, camera,
-                Path(self.main.log_folder()) / 'focusfield', checks=checks,
+                Path(self.main.runs_folder()) / 'focusfield', checks=checks,
                 printer_state=(lambda: link.status().state) if link else (lambda: None), **kwargs)
-            self._start_task(self.controller.run, physical=not simulated)
+            self._start_task(self.controller.run, physical=not simulated, borrow_camera=not simulated)
             self.controller.on_event = lambda kind, *args: self.worker.event.emit(kind, args)
             self.invalidate_preview()
             self.thread.start()
@@ -392,13 +393,14 @@ class FocusFieldPanel(QWidget):
             # Construct PrusaLink from QSettings on the GUI thread; only network I/O runs in worker.
             link = link_from_settings(self.main.settings) if not simulated and self.main.printer.configured() else None
             self.controller = ScanController(recipe, settings, fixture, stage, camera,
-                Path(self.main.log_folder()) / "focusfield", checks=checks, dry_run=self.dry_run.isChecked(),
+                Path(self.main.runs_folder()) / "focusfield", checks=checks, dry_run=self.dry_run.isChecked(),
                 operator_confirmed=not simulated,
                 setup_provenance=dict(history=self.setup_history,
                                       scout_proposal=({**self.scout_proposal, 'approved': not simulated} if self.scout_proposal else None),
                                       operator_approved_fine_scan=bool(self.scout_proposal and not simulated)),
                 printer_state=(lambda: link.status().state) if link else (lambda: None))
-            self._start_task(self.controller.run, physical=not simulated)
+            self._start_task(self.controller.run, physical=not simulated,
+                             borrow_camera=not simulated and not self.dry_run.isChecked())
             self.controller.on_event = lambda kind, *args: self.worker.event.emit(kind, args)
             self.thread.start()
         except Exception as exc:
@@ -460,12 +462,15 @@ class FocusFieldPanel(QWidget):
                 finally:
                     camera.close()
             self.invalidate_preview()
-            self._start_task(preview, physical=not simulated, task_cancel=cancel)
+            self._start_task(preview, physical=not simulated, borrow_camera=not simulated, task_cancel=cancel)
             self.thread.start()
         except Exception as exc:
             QMessageBox.warning(self, "Preview", str(exc))
 
-    def _start_task(self, work, *, physical=False, task_cancel=None):
+    def _start_task(self, work, *, physical=False, borrow_camera=False, task_cancel=None):
+        if borrow_camera:
+            self.main.photo.release()
+        self._borrowed_camera = borrow_camera
         self._task_cancel = task_cancel or threading.Event()
         self.thread = QThread(self)
         self.worker = OpticalWorker(work)
@@ -513,6 +518,9 @@ class FocusFieldPanel(QWidget):
         if self.hardware_active:
             self.hardware_active = False
             self.hardwareActivityChanged.emit(False)
+        if self._borrowed_camera:
+            self._borrowed_camera = False
+            self.main.photo.resume()
         self.setup.setEnabled(True)
         self.start_btn.setEnabled(True)
         self.preview_btn.setEnabled(True)
@@ -559,7 +567,7 @@ class FocusFieldPanel(QWidget):
         self.status.append("STOP requested; waiting for any current camera call to return before cleanup (frame timeout 5 s)")
 
     def reanalyze(self):
-        path = QFileDialog.getExistingDirectory(self, "Select optical run folder", str(Path(self.main.log_folder()) / "focusfield"))
+        path = QFileDialog.getExistingDirectory(self, "Select optical run folder", str(Path(self.main.runs_folder()) / "focusfield"))
         if not path:
             return
         import json

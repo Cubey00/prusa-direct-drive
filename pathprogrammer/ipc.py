@@ -10,6 +10,8 @@ Message contract (dicts, all with "v": 1):
      "x": float, "y": float, "z": float, "t": iso timestamp}    absolute head position (mm)
     {"v": 1, "type": "goto_done", "label": str, "ok": bool, "message": str}
     {"v": 1, "type": "status", "ok": bool, "message": str}       e.g. why a position could not be sent
+    {"v": 1, "type": "touch_done", "ok": bool, "status": str, "message": str,
+     "z": float | None, "force_g": float | None}               end of a "creep"
     {"v": 1, "type": "bye"}                                     calibrator closing
   path programmer -> calibrator
     {"v": 1, "type": "goto", "x": float, "y": float, "z": float, "label": str, "home_xy": bool,
@@ -19,6 +21,11 @@ Message contract (dicts, all with "v": 1):
     {"v": 1, "type": "jog", "dx": float, "dy": float, "dz": float, "feed": float}
         small relative move (mm, feed in mm/min) for fine-tuning onto a cone
     {"v": 1, "type": "request_position", "point": "F1" | "F2" | "F3"}
+    {"v": 1, "type": "quit"}                                    close the calibrator (it runs hidden)
+    {"v": 1, "type": "creep", "fast_mm": float, "max_mm": float}
+        bed up very slowly until the load cell feels contact, then stay (touch.creep_to_contact);
+        the first fast_mm (known free) a bit faster. Answered with "touch_done".
+    {"v": 1, "type": "halt"}                                    stop a creep / move now (M410)
         answer with a "position" message for that point (the head's current position)
 Unknown types are ignored by the receiver, so either side can add messages.
 """
@@ -50,6 +57,18 @@ def request_position_msg(point):
     if point not in POINTS:
         raise ValueError(f"Unknown calibration point {point!r}")
     return {"v": VERSION, "type": "request_position", "point": point}
+
+
+def creep_msg(fast_mm, max_mm):
+    return {"v": VERSION, "type": "creep", "fast_mm": float(fast_mm), "max_mm": float(max_mm)}
+
+
+def halt_msg():
+    return {"v": VERSION, "type": "halt"}
+
+
+def quit_msg():
+    return {"v": VERSION, "type": "quit"}
 
 
 def position_msg(point, x, y, z):
@@ -115,12 +134,30 @@ class CalibratorServer:
     def request_position(self, point):
         return self.send(request_position_msg(point))
 
-    def launch(self, script):
+    def launch(self, script, hidden=True):
+        """Start the calibrator. hidden: without its own window; the wizard drives it and shows
+        its messages (no extra window, no pop-ups)."""
         if self.is_running():
             return
         env = dict(os.environ, **{KEY_ENV: self.key.hex()})
-        self.proc = subprocess.Popen([sys.executable, str(script), "--link", str(self.port)],
-                                     cwd=os.path.dirname(str(script)), env=env)
+        args = [sys.executable, str(script), "--link", str(self.port)] + (["--hidden"] if hidden else [])
+        self.proc = subprocess.Popen(args, cwd=os.path.dirname(str(script)), env=env)
+
+    def creep(self, fast_mm, max_mm):
+        return self.send(creep_msg(fast_mm, max_mm))
+
+    def halt(self):
+        return self.send(halt_msg())
+
+    def quit_calibrator(self, wait=5.0):
+        """Ask the calibrator to close properly (M410, port released); kill it if it doesn't."""
+        if not self.is_running():
+            return
+        self.send(quit_msg())
+        try:
+            self.proc.wait(wait)
+        except subprocess.TimeoutExpired:
+            self.terminate()
 
     def is_running(self):
         return self.proc is not None and self.proc.poll() is None
@@ -193,6 +230,11 @@ class CalibratorClient:
     def send_goto_done(self, label, ok, message=""):
         return self._send({"v": VERSION, "type": "goto_done", "label": str(label), "ok": bool(ok),
                            "message": str(message)})
+
+    def send_touch_done(self, ok, status, message="", z=None, force_g=None):
+        return self._send({"v": VERSION, "type": "touch_done", "ok": bool(ok), "status": str(status),
+                           "message": str(message), "z": None if z is None else float(z),
+                           "force_g": None if force_g is None else float(force_g)})
 
     def send_status(self, ok, message=""):
         return self._send({"v": VERSION, "type": "status", "ok": bool(ok), "message": str(message)})

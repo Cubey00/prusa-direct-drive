@@ -50,6 +50,7 @@ class TouchResult:
     final_g: float = None
     message: str = ""
     trace: list = field(default_factory=list)   # [t (s), phase, metrics Z, |force| (g)]
+    images: list = field(default_factory=list)  # one dict per capture(): increment, target, forces, z
 
     def to_dict(self):
         return asdict(self)
@@ -206,12 +207,112 @@ def _press_force(gauge, res, target_g, speed, limit_z, max_force_g, cancel, trac
     return _stopped_z(gauge, trace)
 
 
+def _image_stop(gauge, res, k, target, z, max_force_g, cancel, trace, capture):
+    """Bed stands still (M410 done): settle, expose, settle again. Force = mean of before/after."""
+    trace.phase = "image"
+    before = _settled_force(gauge, res, max_force_g, cancel, trace)
+    capture(k, target)                      # blocks for the exposure; the bed does not move
+    after = _settled_force(gauge, res, max_force_g, cancel, trace)
+    res.images.append({"increment": k, "target": target, "force_before_g": round(before, 2),
+                       "force_after_g": round(after, 2), "force_g": round((before + after) / 2, 2),
+                       "z": z, "t": round(time.monotonic() - trace.t0, 3)})
+
+
+def _press_images(gauge, res, mode, value, step, speed, limit_z, max_force_g, cancel, trace, capture,
+                  on_status):
+    """Press as a series of continuous moves, each stopped with M410 at the next image target
+    (not chunked into small steps: one G1 per image). Returns the final Z."""
+    n = int(value / step + 1e-9)
+    targets = [(k, k * step) for k in range(1, n + 1)]
+    z = res.contact_z
+    for k, target in targets:
+        if mode == "force":
+            if abs(_force(gauge)) >= target and res.images:        # overshoot already passed it
+                on_status(f"Image target {target:g} g skipped (already passed)")
+                continue
+            stop = lambda f, t=target: f >= t
+            to_z = limit_z
+        else:
+            stop = lambda f: False
+            to_z = max(res.contact_z - target, limit_z)
+        r = _move_watch(gauge, res, z, to_z, speed, stop, max_force_g, cancel, trace, "press")
+        if mode == "force" and r != "hit":
+            res.status, res.message = "no_contact", f"{target:g} g not reached within travel limit"
+            raise _Abort
+        z = _stopped_z(gauge, trace) if r == "hit" else _z()
+        _image_stop(gauge, res, k, target, z, max_force_g, cancel, trace, capture)
+    # the remainder up to `value` (value not a multiple of step)
+    if mode == "force":
+        if abs(_force(gauge)) < value:
+            if _move_watch(gauge, res, z, limit_z, speed, lambda f: f >= value, max_force_g, cancel,
+                           trace, "press") != "hit":
+                res.status, res.message = "no_contact", f"{value:g} g not reached within travel limit"
+                raise _Abort
+            z = _stopped_z(gauge, trace)
+    else:
+        target_z = max(res.contact_z - value, limit_z)
+        if z - target_z > REACH_TOL:
+            _move_watch(gauge, res, z, target_z, speed, lambda f: False, max_force_g, cancel, trace, "press")
+            z = _z()
+    return z
+
+
+CREEP_SPEED = 0.1         # mm/s: "heel langzaam" towards the object (Meten)
+CREEP_FAST_SPEED = 0.5    # mm/s for the part that is known to be free (above the expected contact)
+
+
+def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, fast_mm=0.0,
+                     speed=CREEP_SPEED, fast_speed=CREEP_FAST_SPEED, cancel=None, on_status=print):
+    """Bed up very slowly until the load cell feels contact_g, then stop (M410) and STAY there:
+    the sensor just touches the object. fast_mm: the first part of the way that is known to be
+    free (e.g. 8 of the 10 mm hover gap) goes at fast_speed. Tares right before moving, so drift
+    does not count. Returns a TouchResult (status ok / no_contact / overload / aborted / error;
+    contact_z = end_z = where it stopped, final_g the force there)."""
+    res = TouchResult()
+    trace = _Tracer(res, gauge)
+    with _lock:
+        try:
+            _wait_for_data(gauge)
+            _send("G90")
+            _send("M400", timeout=120)
+            res.start_z = _z()
+            time.sleep(SETTLE)
+            if not gauge.tare_fresh(TARE_SAMPLES):
+                raise PrinterError("No fresh load cell data for the tare")
+            limit_z = res.start_z - max_travel
+            contact = lambda f: f >= contact_g
+            z = res.start_z
+            fast_mm = max(0.0, min(fast_mm, max_travel))
+            segments = ([(res.start_z - fast_mm, fast_speed)] if fast_mm > 0 else []) + [(limit_z, speed)]
+            for to_z, v in segments:
+                on_status(f"Omhoog met {v:g} mm/s ...")
+                if _move_watch(gauge, res, z, to_z, v, contact, max_force_g, cancel, trace,
+                               "approach" if v > speed else "search") == "hit":
+                    break
+                z = to_z
+            else:
+                res.status, res.message = "no_contact", f"Geen contact binnen {max_travel:g} mm"
+                return res
+            res.contact_z = res.end_z = _stopped_z(gauge, trace)
+            res.final_g = _settled_force(gauge, res, max_force_g, cancel, trace)
+            res.status = "ok"
+            return res
+        except _Abort:
+            return res
+        except PrinterError as e:
+            res.status = "aborted" if _stop.is_set() else "error"
+            res.message = str(e)
+            return res
+
+
 def touch(gauge, mode, value, touch_speed, approach_speed=2.0, contact_g=5.0, max_force_g=450.0,
           max_travel=15.0, hold=0.1, expect_z=None, search_speed=SEARCH_SPEED, cancel=None,
-          on_status=print):
+          on_status=print, image_step=0.0, capture=None):
     """mode: "force" (value in g) or "depth" (value in mm past contact). Speeds in mm/s.
     expect_z: expected contact height (e.g. the previous point's), searched slowly; None = unknown.
     cancel: optional threading.Event that aborts the touch (M410, then the return).
+    image_step (g or mm like value) with capture(k, target): the press stops every image_step for an
+    exposure, the bed standing still (res.images lists them). 0 or no capture = a plain press.
     Starts from the current Z and returns there, also when cancelled; not during a motionstop."""
     mode = getattr(mode, "value", mode)
     search_speed = min(search_speed, touch_speed)
@@ -234,7 +335,10 @@ def touch(gauge, mode, value, touch_speed, approach_speed=2.0, contact_g=5.0, ma
                                       contact_g, max_force_g, expect_z, cancel, trace, on_status)
             on_status(f"Contact at Z{res.contact_z:.3f}")
 
-            if mode == "force":
+            if image_step > 0 and capture is not None:
+                res.end_z = _press_images(gauge, res, mode, value, image_step, touch_speed, limit_z,
+                                          max_force_g, cancel, trace, capture, on_status)
+            elif mode == "force":
                 res.end_z = _press_force(gauge, res, value, touch_speed, limit_z, max_force_g,
                                          cancel, trace)
             else:

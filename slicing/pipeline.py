@@ -97,3 +97,19 @@ def run(dataset, out_dir, pitch=cfg.CELL_PITCH, profile=cfg.SLICER_PROFILE, do_s
                "filament": None if slice_error or not do_slice else used_filament}
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     return {**summary, "manifests": manifests}
+
+
+def load_result(out_dir):
+    """The result of an earlier run() from the files it left in out_dir (summary.json and the
+    plate_NN.json manifests), or None if there is no complete one. Used to show the last plates
+    again when the path programmer starts."""
+    out_dir = Path(out_dir)
+    try:
+        summary = json.loads((out_dir / "summary.json").read_text())
+        manifests = [json.loads((out_dir / Path(model).with_suffix(".json").name).read_text())
+                     for model in summary["plates"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not manifests or any(not (out_dir / m["model"]).exists() for m in manifests):
+        return None
+    return {**summary, "out": str(out_dir), "manifests": manifests}

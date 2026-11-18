@@ -235,15 +235,39 @@ def _quickstop():
         pass
 
 
+METRICS = ("loadcell", "pos_x", "pos_y", "pos_z")     # the only metrics the PC reads
+
+
 def enable_metrics(port=8514, pc_ip=None):
     pc_ip = pc_ip or get_local_ip()
     # M334 asks for confirmation on the printer screen if the metrics settings change
     send_gcode(f"M334 {pc_ip} {port}", timeout=300)
-    for cmd in ("M331 loadcell", "M331 pos_x", "M331 pos_y", "M331 pos_z"):
-        send_gcode(cmd)
+    # The printer can have dozens of diagnostic metrics on (after a firmware update/reset). Its
+    # sender then drops points, and the low-rate pos_x/y/z are the ones that go missing while the
+    # load cell keeps arriving. Switch off everything we don't read.
+    for line in send_gcode("M333", timeout=10).splitlines():
+        parts = line.removeprefix("echo:").split()
+        if len(parts) == 2 and parts[1] == "1" and parts[0] not in METRICS:
+            send_gcode(f"M332 {parts[0]}")
+    for name in METRICS:
+        send_gcode(f"M331 {name}")
 
 
 # ---------------- motion ----------------
+
+def bed_up_refusal(dz, force_g, limit_g):
+    """Why a jog must not run, or None. Moving the bed up (dz < 0) is refused once the sensor
+    already feels more than limit_g grams, or while the force is unknown (no tared data):
+    otherwise a jog could press the sensor into the plate."""
+    if dz >= 0:
+        return None
+    if force_g is None:
+        return "Bed up refused: no force data yet (the load cell is not tared); wait a moment."
+    if abs(force_g) > limit_g:
+        return (f"Bed up refused: the sensor already feels {abs(force_g):.0f} g (limit {limit_g:g} g). "
+                "It touches the cone; lower the bed or move X/Y.")
+    return None
+
 
 def read_position(*, cancel=None):
     m = _POS_RE.search(send_gcode("M114", cancel=cancel))

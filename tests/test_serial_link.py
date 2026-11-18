@@ -171,3 +171,15 @@ def test_optical_cancel_breaks_forever_busy_acknowledgement_and_allows_stop(fake
             gc.move_absolute(z=100.1, cancel=cancel)
     finally:
         gc.disconnect()
+
+
+@pytest.mark.parametrize("dz, force, refused", [
+    (-1.0, 60.0, False),     # bed up, below the limit (drift, light contact)
+    (-1.0, 120.0, True),     # bed up while the sensor already presses
+    (-1.0, -120.0, True),    # sign of the load cell doesn't matter
+    (-1.0, None, True),      # no tared force data: can't tell
+    (1.0, 300.0, False),     # bed down is always allowed (moves away)
+    (0.0, 300.0, False),     # X/Y jog
+])
+def test_bed_up_jog_refused_when_the_sensor_touches(dz, force, refused):
+    assert (gc.bed_up_refusal(dz, force, 100.0) is not None) == refused

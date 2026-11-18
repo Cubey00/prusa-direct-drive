@@ -9,9 +9,10 @@ from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFormLay
 
 from machine_settings import SETTINGS
 from prusalink import PrusaLink, PrusaLinkError, fmt_duration
+from .style import GO, GO_DARK, action_button
 
 POLL_MS = 2000              # while the printer answers
-POLL_OFFLINE_MS = 10000     # after it didn't
+POLL_OFFLINE_MS = 3000      # after it didn't: retried often, so it connects soon after it is plugged in
 
 STATE_COLORS = {"PRINTING": "#2d7be5", "PAUSED": "#b36b00", "FINISHED": "#1b7a1b", "STOPPED": "#b36b00",
                 "ERROR": "#c00000", "ATTENTION": "#c00000", "BUSY": "#b36b00"}
@@ -116,9 +117,11 @@ class PrinterBox(QGroupBox):
 
         self.settings_btn = QPushButton("Printer settings...")
         self.print_btn = QPushButton("Print this plate")
-        self.print_btn.setStyleSheet("font-weight: bold;")
+        action_button(self.print_btn, GO, GO_DARK)
         self.state_label = QLabel("")
         self.state_label.setWordWrap(True)
+        self.link_dot = QLabel("")
+        self.link_dot.setStyleSheet("font-weight: normal;")
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.detail_label = QLabel("")
@@ -128,13 +131,14 @@ class PrinterBox(QGroupBox):
         self.stop_btn = QPushButton("Stop print")
 
         g = QGridLayout(self)
-        g.addWidget(self.settings_btn, 0, 0)
-        g.addWidget(self.print_btn, 0, 1)
-        g.addWidget(self.state_label, 1, 0, 1, 2)
-        g.addWidget(self.progress, 2, 0, 1, 2)
-        g.addWidget(self.detail_label, 3, 0, 1, 2)
-        g.addWidget(self.pause_btn, 4, 0)
-        g.addWidget(self.stop_btn, 4, 1)
+        g.addWidget(self.print_btn, 0, 0, 1, 2)
+        g.addWidget(self.link_dot, 1, 0)
+        g.addWidget(self.settings_btn, 1, 1)
+        g.addWidget(self.state_label, 2, 0, 1, 2)
+        g.addWidget(self.progress, 3, 0, 1, 2)
+        g.addWidget(self.detail_label, 4, 0, 1, 2)
+        g.addWidget(self.pause_btn, 5, 0)
+        g.addWidget(self.stop_btn, 5, 1)
 
         self.settings_btn.clicked.connect(self.open_settings)
         self.print_btn.clicked.connect(self.print_plate)
@@ -163,6 +167,7 @@ class PrinterBox(QGroupBox):
             self.poll()
         else:
             self.timer.stop()
+            self._set_dot(None)
             self.state_label.setStyleSheet("color: #b36b00;")
             self.state_label.setText(f"Printer {printer_host(self.settings)}: enter the PrusaLink "
                                      "password once with 'Printer settings...'")
@@ -179,6 +184,14 @@ class PrinterBox(QGroupBox):
         self.pause_btn.setText("Resume" if st is not None and st.state == "PAUSED" else "Pause")
         self.stop_btn.setEnabled(has_job and not busy)
         self.progress.setVisible(st is not None and st.progress is not None)
+
+    def _set_dot(self, connected):
+        """Connection indicator: True connected, False searching, None no login saved."""
+        text, color = {True: ("● Verbonden", "#16a34a"),
+                       False: ("○ Niet verbonden, zoekt automatisch", "#b45309"),
+                       None: ("○ Geen login opgeslagen", "#64748b")}[connected]
+        self.link_dot.setText(text)
+        self.link_dot.setStyleSheet(f"color: {color}; font-weight: normal;")
 
     # ---------------- polling ----------------
     def _run(self, work, ok_signal, fail_signal):
@@ -213,6 +226,7 @@ class PrinterBox(QGroupBox):
         self._polling = False
         was = self.status
         self.status = st
+        self._set_dot(True)
         if self.timer.interval() != POLL_MS:
             self.timer.setInterval(POLL_MS)
         text = f"Printer: <b>{st.state}</b>"
@@ -241,6 +255,7 @@ class PrinterBox(QGroupBox):
     def _on_poll_failed(self, message):
         self._polling = False
         self.status = None
+        self._set_dot(False)
         self.timer.setInterval(POLL_OFFLINE_MS)
         self.state_label.setStyleSheet("color: #c00000;")
         self.state_label.setText(f"Printer not reachable: {message}")

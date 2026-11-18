@@ -1,9 +1,19 @@
-"""Main window: print plates + left panel | face view + rotate controls | point list + run controls."""
+"""Main window: print plates, printer and calibration | Foto control + model preview + model control
+(folded) | points (folded), force graph and run controls."""
+import re
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (QFileDialog, QGridLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
                                QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget)
+
+from .collapsible import CollapsibleBox
+from .photo_panel import PhotoPanel
+from .measure_box import MeasureBox
+from .. import measure
+from .sensor_offset import SensorOffsetDialog, offset_text
+import machine_settings
 
 from .. import calibration, config, program as prog_mod
 from ..executor import ExecutorWorker
@@ -41,6 +51,7 @@ class MainWindow(QMainWindow):
         self._render_cache = {}
         self.thread = self.worker = None
         self.wizard = None                # 'Start kalibratie' window, made on first use
+        self.model_path = None            # file the current model was opened from
 
         self.points = PointTableModel(self.program.points)
         self.left = LeftPanel()
@@ -51,14 +62,33 @@ class MainWindow(QMainWindow):
         self.run = RunControls()
         self.run_settings = RunSettingsBox()
         self.graph = ForceGraph()
+        self.photo = PhotoPanel(self.settings)
+        self.measure = MeasureBox()
+        self._pending_goto = None         # goto for Meten, sent once the calibrator says hello
+        self._measuring = None            # label of the Meten move under way
+        self._needs_home = True           # X/Y position unknown until the calibrator homed them
+        self._hovering = False            # the sensor hangs 1 cm above point 1 (nothing moved since)
         self._running_row = None
         self.view.set_selection_model(self.table.selection_model())
         self.run_settings.set_settings(self.program.settings)
 
-        # centre: view + model controls
+        # centre: Foto control, a small model preview and the (folded) model controls
         centre = QWidget()
         cl = QVBoxLayout(centre)
-        cl.addWidget(self.view, 1)
+        cl.setContentsMargins(4, 4, 4, 4)
+        cl.addWidget(self.photo, 3)
+        view_box = QWidget()
+        vl = QVBoxLayout(view_box)
+        vl.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("Model")
+        title.setStyleSheet("font-weight: 600; color: #334155;")
+        vl.addWidget(title)
+        vl.addWidget(self.view, 1)
+        self.view.setMinimumHeight(160)
+        cl.addWidget(view_box, 2)
+        model_ctl = QWidget()
+        mcl = QVBoxLayout(model_ctl)
+        mcl.setContentsMargins(6, 0, 6, 6)
         ctl = QGridLayout()
         self.rot_btns = {}
         for key, text, r, c in (("up", "^", 0, 2), ("left", "<", 1, 1), ("spin", "rotate", 1, 2),
@@ -68,9 +98,6 @@ class MainWindow(QMainWindow):
             ctl.addWidget(b, r, c)
             self.rot_btns[key] = b
             b.clicked.connect(lambda _=False, k=key: self.rotate(k))
-        lbl = QLabel("model controls")
-        lbl.setStyleSheet("font-size: 16px;")
-        ctl.addWidget(lbl, 1, 0)
         fit = QPushButton("Fit view")
         fit.clicked.connect(self.view.fit)
         ctl.addWidget(fit, 2, 0)
@@ -78,28 +105,46 @@ class MainWindow(QMainWindow):
         ctl.addWidget(self.run_settings, 0, 5, 3, 1)
         hint = QLabel("Click the face to add a point, drag to move it. Wheel zooms, middle-drag pans.")
         hint.setStyleSheet("color: gray;")
-        cl.addLayout(ctl)
-        cl.addWidget(hint)
+        mcl.addLayout(ctl)
+        mcl.addWidget(hint)
+        mcl.addWidget(self.left)
+        self.model_box = CollapsibleBox("Model control", model_ctl, expanded=False,
+                                        settings=self.settings, key="ui/model_control_open")
+        cl.addWidget(self.model_box)
 
+        # right: points (folded), force graph, run controls
         right = QWidget()
         rl = QVBoxLayout(right)
-        rl.addWidget(self.table, 1)
-        rl.addWidget(self.graph)
-        rl.addWidget(self.run)
+        rl.setContentsMargins(4, 4, 4, 4)
+        self.table.title_label.hide()
+        self.points_box = CollapsibleBox("Points in ascending order", self.table, expanded=False,
+                                         settings=self.settings, key="ui/points_open")
+        rl.addWidget(self.points_box)
+        rl.addWidget(self.measure)
+        rl.addWidget(self.graph, 1)
+        run_box = QWidget()
+        run_box.setObjectName("runBox")
+        run_box.setStyleSheet("QWidget#runBox { background: #ffffff; border: 1px solid #dde2ea; "
+                              "border-radius: 8px; }")
+        QVBoxLayout(run_box).addWidget(self.run)
+        rl.addWidget(run_box)
 
+        # left: print plates, printer, calibration
         left_col = QWidget()
         lcl = QVBoxLayout(left_col)
-        lcl.setContentsMargins(0, 0, 0, 0)
+        lcl.setContentsMargins(4, 4, 4, 4)
         lcl.addWidget(self.plates)
         lcl.addWidget(self.printer)
-        lcl.addWidget(self.left)
+        lcl.addWidget(self.left.cal_box)
+        lcl.addStretch()
         left_scroll = QScrollArea()
         left_scroll.setWidget(left_col)
         left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         split = QSplitter(Qt.Horizontal)
         for w in (left_scroll, centre, right):
             split.addWidget(w)
-        split.setSizes([470, 700, 470])
+        split.setSizes([430, 760, 430])
         self.focusfield = FocusFieldPanel(self)
         self.focusfield.hardwareActivityChanged.connect(self._optical_activity)
         tabs = QTabWidget()
@@ -110,8 +155,11 @@ class MainWindow(QMainWindow):
         # wiring
         self.left.open_btn.clicked.connect(self.open_model_dialog)
         self.left.save_folder_btn.clicked.connect(self.choose_save_folder)
-        self.left.log_folder_btn.clicked.connect(self.choose_log_folder)
+        self.left.runs_folder_btn.clicked.connect(self.choose_runs_folder)
         self.left.calib_btn.clicked.connect(self.start_calibration)
+        self.left.offset_btn.clicked.connect(self.edit_sensor_offset)
+        self.measure.hover_btn.clicked.connect(self.hover_above_point)
+        self.measure.touch_btn.clicked.connect(self.creep_to_object)
         self.left.calibrationChanged.connect(self.refit)
         self.left.faceSizeChanged.connect(self.refit)
         self.view.faceClicked.connect(self.add_point_at)
@@ -125,7 +173,7 @@ class MainWindow(QMainWindow):
         self.run.load_btn.clicked.connect(self.load_program_dialog)
         self.run.save_btn.clicked.connect(self.save_program_dialog)
         self.calibratorMessage.connect(self.on_calibrator_message)
-        self.plates.openPlateRequested.connect(self.open_model)
+        self.plates.openPlateRequested.connect(self.open_plate)
         self.plates.plate_list.currentRowChanged.connect(lambda _: self.printer.refresh())
         self.run_settings.changed.connect(self.update_graph_lines)
         self.table.selection_model().selectionChanged.connect(self.update_graph_lines)
@@ -134,9 +182,11 @@ class MainWindow(QMainWindow):
 
         self.server = CalibratorServer(self.calibratorMessage.emit)
         self.left.folder_label.setText(f"Programs folder: {self.save_folder()}")
-        self.left.log_folder_label.setText(f"Run logs folder: {self.log_folder()}")
+        self.left.runs_folder_label.setText(f"Runs folder: {self.runs_folder()}")
         self.refit()
         self.update_graph_lines()
+        self.plates.restore_last()        # the last plates again, the selected one opened as the model
+        self.show_sensor_offset()
         geo = self.settings.value("geometry")
         if geo is not None:
             self.restoreGeometry(geo)
@@ -161,14 +211,25 @@ class MainWindow(QMainWindow):
             self.settings.setValue("save_folder", path)
             self.left.folder_label.setText(f"Programs folder: {path}")
 
-    def log_folder(self):
-        return self.settings.value("log_folder", str(config.RUN_LOG_DIR))
+    def runs_folder(self):
+        return self.settings.value("runs_folder", str(config.RUNS_DIR))
 
-    def choose_log_folder(self):
-        path = QFileDialog.getExistingDirectory(self, "Select run logs folder", self.log_folder())
+    def choose_runs_folder(self):
+        path = QFileDialog.getExistingDirectory(self, "Select runs folder", self.runs_folder())
         if path:
-            self.settings.setValue("log_folder", path)
-            self.left.log_folder_label.setText(f"Run logs folder: {path}")
+            self.settings.setValue("runs_folder", path)
+            self.left.runs_folder_label.setText(f"Runs folder: {path}")
+
+    def new_run_dir(self):
+        """(folder, name): the typed name made filesystem-safe, a timestamp if empty, _2, _3... if taken."""
+        name = re.sub(r'[<>:"/\|?*\x00-\x1f]', "_", self.left.run_name.text()).strip(" .")
+        name = name or f"run_{datetime.now():%Y%m%d_%H%M%S}"
+        base, n, d = name, 1, Path(self.runs_folder()) / name
+        while d.exists() and any(d.iterdir()):
+            n += 1
+            name = f"{base}_{n}"
+            d = Path(self.runs_folder()) / name
+        return d, name
 
     def open_model_dialog(self):
         start = self.settings.value("model_folder", str(config.PROJECT_DIR))
@@ -179,6 +240,12 @@ class MainWindow(QMainWindow):
             self.settings.setValue("model_folder", str(Path(path).parent))
             self.open_model(path)
 
+    def open_plate(self, path):
+        """A plate selected in the Print plates box: open it, unless it already is."""
+        if self.model is not None and self.model_path == Path(path):
+            return True
+        return self.open_model(path)
+
     def open_model(self, path, orientation=None):
         try:
             self.model = load_model(path)
@@ -186,6 +253,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open model", f"Could not load {path}:\n{e}")
             return False
         self._render_cache.clear()
+        self.model_path = Path(path)
         self.orientation = orientation or Orientation()
         self.left.file_label.setText(self.model.filename)
         self.left.units_label.setText(self.model.units_note)
@@ -252,6 +320,28 @@ class MainWindow(QMainWindow):
             text += "\n" + "\n".join(i.msg for i in issues)
         self.left.set_diagnostics(text, "warning" if issues else "ok")
 
+    def show_sensor_offset(self, settings=None):
+        """Nozzle -> sensor offset from machine_settings.toml above the calibration button."""
+        try:
+            settings = settings or machine_settings.load()
+        except machine_settings.SettingsError as e:
+            self.left.offset_label.setText(f"<span style='color:#c00000'>machine_settings.toml: {e}</span>")
+            return
+        self.left.offset_label.setText(offset_text(settings.sensor))
+
+    def edit_sensor_offset(self):
+        try:
+            settings = machine_settings.load()
+        except machine_settings.SettingsError as e:
+            QMessageBox.warning(self, "Sensorafstand", str(e))
+            return
+        dlg = SensorOffsetDialog(settings, self)
+        if dlg.exec() and dlg.saved is not None:
+            self.show_sensor_offset(dlg.saved)
+            if self.wizard is not None:
+                self.wizard.settings = dlg.saved
+                self.wizard.refresh()
+
     def start_calibration(self):
         """'Start kalibratie': the step-by-step window; it starts the calibrator when needed."""
         if self.focusfield.hardware_active:
@@ -281,12 +371,118 @@ class MainWindow(QMainWindow):
             return
         try:
             self.server.launch(config.GUI_SCRIPT)
+            self._needs_home = True           # a new calibrator: home X/Y before driving anywhere
         except Exception as e:
             QMessageBox.critical(self, "Calibrator", f"Could not start {config.GUI_SCRIPT.name}:\n{e}")
             return
         self.left.link_label.setText("Calibrator starting...")
 
+    # ---------------- Meten ----------------
+    MEASURE_LABEL = "punt 1"
+    MEASURE_ANSWER_MS = 120000            # homing X/Y + the move
+
+    def hover_above_point(self):
+        """'Ga 1 cm boven punt 1 hangen': sensor 1 cm above the first part of the opened plate."""
+        if self.focusfield.hardware_active or self.thread is not None or self._measuring:
+            return
+        manifest = calibration.manifest_for(self.model_path) if self.model_path else None
+        try:
+            settings = machine_settings.load()
+            t = measure.hover_target(manifest, settings, self.left.cal_points())
+        except (measure.MeasureError, machine_settings.SettingsError) as e:
+            self.measure.set_status(str(e), "error")
+            return
+        self._hover_target = t
+        args = (t.x, t.y, t.travel_z, self.MEASURE_LABEL)
+        self._measuring = self.MEASURE_LABEL
+        self.measure.hover_btn.setEnabled(False)
+        self.measure.touch_btn.setEnabled(False)
+        self._hovering = False
+        QTimer.singleShot(self.MEASURE_ANSWER_MS, self, self._measure_timed_out)
+        where = f"punt 1 ({t.part_id}, bed X{t.bed_x:g} Y{t.bed_y:g})"
+        if self.server.is_running() and self._send_measure_goto(args):
+            self.measure.set_status(f"Onderweg naar {where}...", "busy")
+            return
+        self._pending_goto = args
+        if not self.server.is_running():
+            self.open_calibrator()
+        self.measure.set_status(f"De printerverbinding wordt gestart; daarna gaat de kop naar {where}.", "busy")
+
+    CREEP_MAX_MM = 15.0                   # never more than this far up (1 cm gap + 5 mm)
+    CREEP_FREE_MM = 8.0                   # of the 1 cm gap after "boven punt 1": known free, a bit faster
+    CREEP_ANSWER_MS = 240000
+
+    def creep_to_object(self):
+        """'Beweeg heel langzaam tot de sensor het object raakt': the calibrator creeps the bed up
+        and stops on the load cell's first contact."""
+        if self.focusfield.hardware_active or self.thread is not None or self._measuring:
+            return
+        if not self.server.is_running():
+            self.measure.set_status("Ga eerst 1 cm boven punt 1 hangen: er is nog geen verbinding met de printer.",
+                                    "error")
+            return
+        fast = self.CREEP_FREE_MM if self._hovering else 0.0
+        if not self.server.creep(fast, self.CREEP_MAX_MM):
+            self.measure.set_status("De printerverbinding reageert niet; probeer het opnieuw.", "error")
+            return
+        self._measuring = "aanraken"
+        self.measure.hover_btn.setEnabled(False)
+        self.measure.touch_btn.setEnabled(False)
+        QTimer.singleShot(self.CREEP_ANSWER_MS, self, self._measure_timed_out)
+        self.measure.set_status("Het bed gaat heel langzaam omhoog tot de sensor iets voelt... (STOP stopt het)",
+                                "busy")
+
+    def _send_measure_goto(self, args):
+        x, y, z, label = args
+        return self.server.goto(x, y, z, label, home_xy=self._needs_home, z_final=self._hover_target.z)
+
+    def _measure_done(self, text, level):
+        self._measuring = None
+        self._pending_goto = None
+        self.measure.hover_btn.setEnabled(True)
+        self.measure.touch_btn.setEnabled(True)
+        self.measure.set_status(text, level)
+
+    def _measure_timed_out(self):
+        if self._measuring:
+            self._measure_done("Geen antwoord van de printer. Staat hij aan en zit de USB-kabel erin?", "error")
+
+    def _measure_message(self, msg):
+        kind = msg.get("type")
+        if kind == "hello" and self._pending_goto is not None:
+            args, self._pending_goto = self._pending_goto, None
+            if self._send_measure_goto(args):
+                self.measure.set_status("Onderweg naar punt 1...", "busy")
+            else:
+                self._measure_done("De printerverbinding reageert niet; probeer het opnieuw.", "error")
+        elif kind == "goto_done" and msg.get("label") == self._measuring:
+            if msg.get("ok"):
+                self._needs_home = False
+                self._hovering = True
+                t = self._hover_target
+                self._measure_done(f"De sensor hangt 1 cm boven punt 1 ({t.part_id}). Kop X{t.x:.2f} Y{t.y:.2f} "
+                                   f"Z{t.z:.2f} (uit de {t.source}).", "ok")
+            else:
+                self._measure_done(f"Niet gelukt: {msg.get('message', '')}", "error")
+        elif kind == "touch_done" and self._measuring == "aanraken":
+            self._hovering = False
+            if msg.get("ok"):
+                self._measure_done(f"{msg.get('message', '')} Kop Z{msg.get('z') or 0:.3f}, "
+                                   f"kracht {msg.get('force_g') or 0:.1f} g.", "ok")
+            else:
+                self._measure_done(msg.get("message", "") or "Niet gelukt.", "error")
+        elif kind == "status" and not msg.get("ok") and self._measuring:
+            self._measure_done(msg.get("message", ""), "error")
+        elif kind == "bye":
+            self._needs_home = True
+            if self._measuring:
+                self._measure_done("De printerverbinding is gesloten.", "error")
+
     def on_calibrator_message(self, msg):
+        self._measure_message(msg)
+        if (msg.get("type") == "goto_done" and msg.get("ok")
+                and msg.get("label") == calibration.POINTS[0]):
+            self._needs_home = False          # the wizard homed X/Y on its way to cone 1
         kind = msg.get("type")
         if kind == "hello":
             self.left.link_label.setText("Calibrator verbonden: volg de stappen in het kalibratievenster")
@@ -298,6 +494,8 @@ class MainWindow(QMainWindow):
                                          f"X{msg['x']:.2f} Y{msg['y']:.2f} Z{msg['z']:.2f}")
         if self.wizard is not None:
             self.wizard.on_message(msg)
+            if self.wizard.state == "done":
+                self.show_sensor_offset(self.wizard.settings)    # a good calibration saves a new one
 
     # ---------------- points ----------------
     def add_point_at(self, x, y):
@@ -396,25 +594,31 @@ class MainWindow(QMainWindow):
             return
         simulate = self.run.simulate.isChecked()
         if not simulate and self.server.is_running():
-            r = QMessageBox.question(self, "Calibrator open",
-                                     "The visual calibrator holds the printer connection. Close it now?")
+            r = QMessageBox.question(self, "Kalibratie open",
+                                     "De kalibratie gebruikt de printerverbinding nog. Nu sluiten?")
             if r != QMessageBox.Yes:
                 return
-            self.server.terminate()
+            self.server.quit_calibrator()
         xs, ys = zip(*(self.transform.face_to_machine(p.x, p.y) for p in prog.points))
+        run_dir, run_name = self.new_run_dir()
+        n_images = sum(p.n_images() for p in prog.points)
         msg = (f"Run {len(prog.points)} points{' (SIMULATION)' if simulate else ''}?\n\n"
+               f"Run folder: {run_dir}\n{n_images} images planned.\n\n"
                f"Machine X {min(xs):.1f} - {max(xs):.1f} mm, Y {min(ys):.1f} - {max(ys):.1f} mm.\n"
                "The bed's CURRENT Z will be the travel height: make sure the head clears the part.")
         if QMessageBox.question(self, "Execute program", msg) != QMessageBox.Yes:
             return
 
-        hw = SimHardware(on_status=print) if simulate else PrinterHardware(on_status=print)
+        use_camera = not simulate and n_images > 0
+        if use_camera:
+            self.photo.release()              # one owner at a time: the run opens the camera itself
+        hw = SimHardware(on_status=print) if simulate else PrinterHardware(on_status=print, use_camera=use_camera)
         self.points.clear_states()
         self.run.progress.setRange(0, len(prog.points))
         self.run.progress.setValue(0)
         self.set_running(True)
         self.thread = QThread(self)
-        self.worker = ExecutorWorker(prog, self.transform, hw, Path(self.log_folder()))
+        self.worker = ExecutorWorker(prog, self.transform, hw, run_dir, self.mesh, run_name)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.status.connect(self.run.status.setText)
@@ -456,14 +660,18 @@ class MainWindow(QMainWindow):
         self.thread.wait()
         self.thread = self.worker = None
         self.graph.set_source(None)
+        self.photo.resume()
         self._running_row = None
         self.update_graph_lines()
         self.set_running(False)
-        self.run.status.setText(f"{summary.outcome}: {summary.message}\nLog: {summary.log_path}")
+        self.run.status.setText(f"{summary.outcome}: {summary.message}\nRun folder: {summary.log_path}")
         if summary.outcome != "completed":
             QMessageBox.warning(self, "Run ended", f"{summary.outcome}: {summary.message}")
 
     def stop(self):
+        if self._measuring and self.server.is_running():
+            self.server.halt()                 # Meten: stop the creep or move now
+            self.measure.set_status("STOP gestuurd.", "error")
         if self.focusfield.thread is not None:
             self.focusfield.stop()
             if self.focusfield.hardware_active:
@@ -479,6 +687,8 @@ class MainWindow(QMainWindow):
         self.table.set_editable(not on)
         self.view.set_editable(not on)
         self.left.setEnabled(not on)
+        self.left.cal_box.setEnabled(not on)
+        self.measure.setEnabled(not on)
         self.run_settings.setEnabled(not on)
         for b in self.rot_btns.values():
             b.setEnabled(not on)
@@ -507,6 +717,8 @@ class MainWindow(QMainWindow):
                 return
             self.plates.shutdown()
         self.printer.shutdown()
+        self.photo.shutdown()
         self.settings.setValue("geometry", self.saveGeometry())
+        self.server.quit_calibrator()
         self.server.close()
         super().closeEvent(e)

@@ -16,6 +16,9 @@ class FakeServer:
     def __init__(self):
         self.gotos, self.homes, self.finals, self.jogs, self.requests = [], [], [], [], []
 
+    def quit_calibrator(self):
+        pass
+
     def is_running(self):
         return True
 

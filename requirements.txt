@@ -12,3 +12,5 @@ pytest-qt
 requests
 opencv-contrib-python>=4.8,<5
 tifffile
+ids_peak; sys_platform != "darwin"
+ids_peak_ipl; sys_platform != "darwin"

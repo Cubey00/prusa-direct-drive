@@ -8,7 +8,7 @@ from pathprogrammer.ui.main_window import MainWindow
 @pytest.fixture
 def window(qtbot, tmp_path):
     w = MainWindow(QSettings(str(tmp_path / "settings.ini"), QSettings.IniFormat))
-    w.settings.setValue("log_folder", str(tmp_path))
+    w.settings.setValue("runs_folder", str(tmp_path))
     qtbot.addWidget(w)
     yield w
     w.server.close()
@@ -107,7 +107,7 @@ def test_nominal_plane_warning_is_persistent_and_preserves_user_distance(window)
 
 @pytest.mark.parametrize('approved', [False, True])
 def test_physical_motion_only_workflow_never_constructs_a_camera(window, qtbot, monkeypatch,
-                                                               verified_optical_fixture, approved):
+                                                               verified_optical_fixture, approved, tmp_path):
     from dataclasses import replace
     from focusfield.hardware import SimStage
     from machine_settings import SETTINGS
@@ -121,6 +121,8 @@ def test_physical_motion_only_workflow_never_constructs_a_camera(window, qtbot, 
     def forbidden_camera(*args):
         raise AssertionError('A motion-only dry run must not construct a camera')
     monkeypatch.setattr(focusfield_panel, 'CameraAdapter', forbidden_camera)
+    monkeypatch.setattr(window.photo, 'release', forbidden_camera)
+    monkeypatch.setattr(window.photo, 'resume', forbidden_camera)
     monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.Yes if approved else QMessageBox.No)
     p = window.focusfield
     p.simulate.setChecked(False)
@@ -132,6 +134,7 @@ def test_physical_motion_only_workflow_never_constructs_a_camera(window, qtbot, 
     if approved:
         qtbot.waitUntil(lambda: p.thread is None, timeout=10000)
         assert 'Motion-only dry run completed' in p.status.toPlainText()
+        assert p.run_path.parent == tmp_path / 'focusfield'
         assert len([call for call in stage.calls if call[0] == 'move']) == 42
     else:
         assert p.thread is None and not any(call[0] == 'move' for call in stage.calls)
@@ -143,6 +146,10 @@ def test_physical_preview_cancel_disconnect_and_close_release_camera_in_worker(w
     from device_session import DeviceLease
     from focusfield.acquisition import check_cancel
     from pathprogrammer.ui import focusfield_panel
+    handoff = []
+    monkeypatch.setattr(window.photo, 'release', lambda: handoff.append('released'))
+    monkeypatch.setattr(window.photo, 'resume', lambda: handoff.append('resumed'))
+
     class Camera:
         def __init__(self, recipe):
             self.cancel = threading.Event()
@@ -150,6 +157,7 @@ def test_physical_preview_cancel_disconnect_and_close_release_camera_in_worker(w
             self.closed = False
             self.lease = DeviceLease('camera')
         def open(self):
+            assert handoff == ['released']
             self.lease.acquire()
             self.opened.set()
         def fresh(self):
@@ -179,6 +187,7 @@ def test_physical_preview_cancel_disconnect_and_close_release_camera_in_worker(w
         window.stop()  # global STOP, including the preview mode
     qtbot.waitUntil(lambda: p.thread is None, timeout=10000)
     assert camera.closed and not p.hardware_active
+    assert handoff == ['released', 'resumed']
     assert ('FAILED' if finish == 'disconnect' else 'ABORTED') in p.status.toPlainText()
     with DeviceLease('camera'):
         pass

@@ -54,6 +54,7 @@ def test_missing_key_names_section_and_key(data):
     ("raster", "min_gap", 25.0, "larger than min_gap"),
     ("fiducials", "inset", 18.0, "do not fit"),
     ("forces", "max_force_g", 600.0, "contact_g < max_force_g < guard_trip_g"),
+    ("forces", "jog_stop_g", 600.0, "contact_g < jog_stop_g < guard_trip_g"),
     ("work_area", "usable_y", [50.0, 179.0], "probes the bed"),
     ("work_area", "usable_y", [56.0, 200.0], "sensor can reach"),
     ("work_area", "usable_x", [0.0, 205.0], "nozzle can reach"),

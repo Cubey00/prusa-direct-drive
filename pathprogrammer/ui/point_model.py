@@ -5,8 +5,8 @@ from PySide6.QtGui import QColor
 from .. import config
 from ..program import TouchMode, TouchPoint
 
-COLUMNS = ("#", "x (mm)", "y (mm)", "type", "value", "mm/s")
-COL_X, COL_Y, COL_TYPE, COL_VALUE, COL_SPEED = 1, 2, 3, 4, 5
+COLUMNS = ("#", "x (mm)", "y (mm)", "type", "value", "mm/s", "image every")
+COL_X, COL_Y, COL_TYPE, COL_VALUE, COL_SPEED, COL_IMG = 1, 2, 3, 4, 5, 6
 
 STATE_COLORS = {"running": QColor(255, 215, 80), "ok": QColor(170, 230, 170),
                 "failed": QColor(240, 150, 150)}
@@ -54,9 +54,10 @@ class PointTableModel(QAbstractTableModel):
         if role == Qt.DisplayRole:
             return [index.row() + 1, f"{p.x:.2f}", f"{p.y:.2f}",
                     "Mass (g)" if p.mode is TouchMode.FORCE else "Depth (mm)",
-                    f"{p.mode.label} = {p.value:g}{p.mode.unit}", f"{p.speed:g}"][c]
+                    f"{p.mode.label} = {p.value:g}{p.mode.unit}", f"{p.speed:g}",
+                    f"{p.image_step:g} {p.mode.unit}" if p.image_step > 0 else "off"][c]
         if role == Qt.EditRole:
-            return [index.row() + 1, p.x, p.y, p.mode.value, p.value, p.speed][c]
+            return [index.row() + 1, p.x, p.y, p.mode.value, p.value, p.speed, p.image_step][c]
         return None
 
     def setData(self, index, value, role=Qt.EditRole):
@@ -74,9 +75,13 @@ class PointTableModel(QAbstractTableModel):
                     p.mode = mode
                     lo, hi = mode.value_range
                     p.value = min(max(p.value, lo), hi)
+                    p.image_step = min(p.image_step, p.value)
             elif c == COL_VALUE:
                 lo, hi = p.mode.value_range
                 p.value = min(max(float(value), lo), hi)
+                p.image_step = min(p.image_step, p.value)
+            elif c == COL_IMG:
+                p.image_step = min(max(float(value), 0.0), p.value)
             elif c == COL_SPEED:
                 lo, hi = config.TOUCH_SPEED_RANGE
                 p.speed = min(max(float(value), lo), hi)
@@ -100,7 +105,7 @@ class PointTableModel(QAbstractTableModel):
         row = len(self.points)
         self.states.clear()
         self.beginInsertRows(QModelIndex(), row, row)
-        self.points.append(TouchPoint(x, y, t.mode, t.value, t.speed))
+        self.points.append(TouchPoint(x, y, t.mode, t.value, t.speed, min(t.image_step, t.value)))
         self.endInsertRows()
         return row
 
