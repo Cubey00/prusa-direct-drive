@@ -44,8 +44,16 @@ def _missing_markers(detected_ids, expected_ids):
     return len(unique_ids) == len(detected_ids) < len(expected_ids) and unique_ids.issubset(expected_ids)
 
 
+def marker_corners_mm(marker):
+    """Match OpenCV's decoded top-left, top-right, bottom-right, bottom-left order."""
+    x, y = marker["top_left_mm"]
+    s = marker["size_mm"]
+    return np.array([[x, y], [x+s, y], [x+s, y+s], [x, y+s]], dtype=float)
+
+
 def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0,
-                   max_reprojection_rms_px=3.0, lens_calibration=None, sensor_offset=(0, 0)):
+                   max_reprojection_rms_px=3.0, lens_calibration=None, sensor_offset=(0, 0),
+                   refine_optical_corners=False):
     image = np.uint8(np.clip(gray, 0, 1) * 255)
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     detector = cv2.aruco.ArucoDetector(dictionary)
@@ -54,6 +62,7 @@ def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0,
     detected_ids = ids.ravel().tolist() if ids is not None else []
     rectified_matrix = None
     detection_image = image
+    detection_params = None
     if lens_calibration is not None and _missing_markers(detected_ids, expected_ids):
         rectified_matrix, maps = rectification_maps(
             lens_calibration, sensor_pitch, sensor_offset, (image.shape[1], image.shape[0]))
@@ -69,6 +78,7 @@ def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0,
         retry_ids = ids.ravel().tolist() if ids is not None else []
         if sorted(retry_ids) == expected_ids:
             corners, detected_ids = retry_corners, retry_ids
+            detection_params = params
     if sorted(detected_ids) != expected_ids:
         missing_ids = sorted(set(expected_ids).difference(detected_ids))
         raise ValueError(
@@ -76,14 +86,16 @@ def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0,
             f"Detected IDs {sorted(detected_ids) or 'none'}, missing IDs {missing_ids or 'none'}. "
             "Check the printed chart and the light margin around each marker."
         )
-    found = dict(zip(detected_ids, corners))
-    source, observed = [], []
-    for f in chart["fiducials"]:
-        x, y = f["top_left_mm"]
-        s = f["size_mm"]
-        source.extend([[x, y], [x+s, y], [x+s, y+s], [x, y+s]])
-        observed.extend(found[f["id"]].reshape(4, 2))
-    observed = np.asarray(observed, dtype=float)
+    def ordered_corners(ids, corners):
+        found = dict(zip(ids, corners))
+        return np.asarray([found[f["id"]].reshape(4, 2) for f in chart["fiducials"]], dtype=float).reshape(-1, 2)
+
+    def native_markers(points):
+        native = points.reshape(-1, 4, 2)*sensor_pitch + sensor_offset
+        return {str(f["id"]): v.tolist() for f, v in zip(chart["fiducials"], native)}
+
+    source = np.concatenate([marker_corners_mm(f) for f in chart["fiducials"]])
+    observed = ordered_corners(detected_ids, corners)
     ideal = observed
     if lens_calibration is not None:
         raw_matrix = lens_calibration.analysis_matrix(sensor_pitch, sensor_offset)
@@ -135,15 +147,32 @@ def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0,
         perimeter = project_chart(boundary) * sensor_pitch + sensor_offset
     inside = bool(np.all(perimeter >= 2*sensor_pitch) and
                   np.all(perimeter < [width-2*sensor_pitch, height-2*sensor_pitch]))
-    native_corners = observed.reshape(-1, 4, 2)*sensor_pitch + sensor_offset
-    marker_corners = {str(f["id"]): corners for f, corners in zip(chart["fiducials"], native_corners)}
-    return dict(homography=h, project_chart=project_chart, reprojection_rms_px=error_px,
-                lens_corrected=lens_calibration is not None, rectified_marker_detection=rectified_matrix is not None,
-                marker_corners_px={k: v.tolist() for k, v in marker_corners.items()},
-                marker_centers_px={k: v.mean(axis=0).tolist() for k, v in marker_corners.items()},
-                field_corners_px=field_corners.tolist(), chart_center_px=center.tolist(),
-                optical_center_px=target.tolist(), center_error_px=(center-target).tolist(),
-                optical_center_calibrated=optical_center_px is not None, full_field_visible=inside)
+    marker_corners = native_markers(observed)
+    registration = dict(homography=h, project_chart=project_chart, reprojection_rms_px=error_px,
+                        lens_corrected=lens_calibration is not None,
+                        rectified_marker_detection=rectified_matrix is not None,
+                        marker_corners_px=marker_corners,
+                        marker_centers_px={k: np.mean(v, axis=0).tolist() for k, v in marker_corners.items()},
+                        field_corners_px=field_corners.tolist(), chart_center_px=center.tolist(),
+                        optical_center_px=target.tolist(), center_error_px=(center-target).tolist(),
+                        optical_center_calibrated=optical_center_px is not None, full_field_visible=inside)
+    if refine_optical_corners:
+        # Use the same image and threshold that decoded the chart. Refined
+        # corners are separate from the existing MTF search homography.
+        params = detection_params if detection_params is not None else cv2.aruco.DetectorParameters()
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        try:
+            refined, ids, _ = cv2.aruco.ArucoDetector(dictionary, params).detectMarkers(detection_image)
+            if ids is not None and sorted(ids.ravel()) == expected_ids:
+                points = ordered_corners(ids.ravel(), refined)
+                if rectified_matrix is not None:
+                    points = distort_points(points, ideal_matrix, raw_matrix, coeffs, model=lens_calibration.model)
+                if np.isfinite(points).all():
+                    registration["refined_marker_corners_px"] = native_markers(points)
+        except cv2.error:
+            # MTF still has the successful original registration.
+            pass
+    return registration
 
 
 def detect_chart(gray, chart):
@@ -151,7 +180,7 @@ def detect_chart(gray, chart):
     return registration["homography"], registration["reprojection_rms_px"]
 
 
-def register_capture(capture, chart, recipe, *, optical_center_px=None):
+def register_capture(capture, chart, recipe, *, optical_center_px=None, refine_optical_corners=False):
     from .acquisition import analysis_plane
 
     gray, pitch = analysis_plane(capture.pixels, capture.metadata)
@@ -162,7 +191,8 @@ def register_capture(capture, chart, recipe, *, optical_center_px=None):
     offset = (1, 0) if lens is not None and pitch == 2 else (0, 0)
     registration = register_chart(gray, chart, optical_center_px=optical_center_px,
                                   sensor_pitch=pitch, sensor_offset=offset, lens_calibration=lens,
-                                  max_reprojection_rms_px=recipe.quality.max_marker_reprojection_px)
+                                  max_reprojection_rms_px=recipe.quality.max_marker_reprojection_px,
+                                  refine_optical_corners=refine_optical_corners and lens is not None)
     return registration, gray, pitch
 
 

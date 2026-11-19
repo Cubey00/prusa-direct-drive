@@ -19,11 +19,12 @@ from focusfield.chart import load_chart
 from focusfield.config import (DEFAULT_RECIPE, centered_scan_bounds, load_recipe, nominal_on_grid,
                                simulation_fixture)
 from focusfield.data import storage_required
-from focusfield.calibration import XYCalibration, save_reference
+from focusfield.calibration import XYCalibration, save_reference, validate_reference
 from focusfield.lens import LensCalibration, nominal_field_of_view_mm
 from focusfield.flat_calibration import FlatCalibrationController
 from focusfield.controller import OperatorChecks, RunResult, ScanController
 from focusfield.hardware import SimCamera, SimStage, ZStage
+from focusfield.optical_distance import verify_working_distance
 from focusfield.reports import analyze_run
 from focusfield.setup import CenteringLimits, SetupController, simulation_xy_calibration
 from .collapsible import CollapsibleBox
@@ -31,6 +32,46 @@ from .photo_panel import LiveView, to_qimage
 from .printer_box import link_from_settings
 from .optical_setup_dialogs import measured_wd_dialog, scout_recipe_dialog
 from .style import ACCENT, ACCENT_DARK, STOP, STOP_DARK, action_button
+
+
+def _preview_printer_wd(fixture, camera_serial, cancel):
+    import gantry_controls as gc
+
+    if not fixture.measured or fixture.camera_serial != str(camera_serial):
+        return None, None
+    try:
+        reference = validate_reference(fixture)
+        check_cancel(cancel)
+        _, _, z = gc.read_position_snapshot(cancel=cancel)
+        wd = fixture.wd_for_z(z)
+        return (wd, reference) if np.isfinite(wd) else (None, None)
+    except InterruptedError:
+        raise
+    except (gc.PrinterError, OSError, RuntimeError, ValueError, TypeError):
+        # The camera preview is still useful if the printer/reference is offline.
+        return None, None
+
+
+def _working_distance_message(result):
+    printer = result["printer_working_distance_mm"]
+    optical = result["optical_working_distance_mm"]
+    lines = ["Working-distance verification",
+             "Printer working distance: " + (f"{printer:.2f} mm" if printer is not None else "Unavailable")]
+    lines.append("Optical working distance: " + (f"{optical:.2f} mm" if optical is not None else "Unavailable"))
+    difference = result["working_distance_difference_mm"]
+    if difference is not None:
+        lines.append(f"Difference (optical − printer): {difference:+.2f} mm")
+    uncertainty = result["optical_distance_uncertainty_mm"]
+    if uncertainty is not None:
+        lines.append(f"Optical distance uncertainty: ±{uncertainty:.2f} mm")
+    pose = result["optical_pose"]
+    if pose:
+        if optical is None:
+            lines.append(f"Camera projection centre to target along optical axis: {pose['camera_center_axial_distance_mm']:.2f} mm")
+        lines.extend((f"Target tilt: {pose['tilt_deg']:.2f}°",
+                      f"Pose reprojection error: {pose['reprojection_rms_px']:.2f} px"))
+    lines.append(f"Status: {result['optical_distance_status']} · {result['optical_distance_reason']}")
+    return "\n".join(lines)
 
 
 class OpticalWorker(QObject):
@@ -987,7 +1028,8 @@ class FocusFieldPanel(QWidget):
         try:
             if not simulated:
                 self.fixture_profile = load_settings().focusfield
-            recipe = replace(self.recipe, chart_path=self.chart.text(), pixel_format=self.capture_format(self.fixture_profile),
+            fixture = self.fixture_profile if not simulated else simulation_fixture()
+            recipe = replace(self.recipe, chart_path=self.chart.text(), pixel_format=self.capture_format(fixture),
                              lens_calibration=None if simulated else self.recipe.lens_calibration,
                              exposure_us=self.fields["exposure_us"].value(), gain=self.fields["gain"].value())
             chart = load_chart(recipe.chart_path)
@@ -1013,10 +1055,18 @@ class FocusFieldPanel(QWidget):
                     height, width = capture.pixels.shape[:2]
                     frame_info = (f"Camera {capture.metadata['camera_serial']} · {width} × {height} px · "
                                   f"{capture.metadata['pixel_format']}")
+                    printer_wd, printer_reference = ((fixture.wd_for_z(stage.position()), None) if simulated else
+                        _preview_printer_wd(fixture, capture.metadata["camera_serial"], cancel))
+                    check_cancel(cancel)
+                    comparison = dict(printer_wd=printer_wd, printer_reference=printer_reference, simulated=simulated,
+                                      pixel_format=capture.metadata["pixel_format"])
                     try:
-                        registration, gray, _ = register_capture(capture, chart, recipe, optical_center_px=calibrated_center)
+                        registration, gray, _ = register_capture(capture, chart, recipe, optical_center_px=calibrated_center,
+                                                                refine_optical_corners=recipe.optical_refine_corners)
                     except ValueError as exc:
-                        raise ValueError(f"{frame_info}. {exc}") from exc
+                        verification = verify_working_distance(chart, recipe, None, registration_failure=str(exc), **comparison)
+                        return RunResult("FAILED", "", f"{frame_info}. {exc}\n{_working_distance_message(verification)}")
+                    verification = verify_working_distance(chart, recipe, registration, **comparison)
                     h, error = registration.pop('homography'), registration['reprojection_rms_px']
                     project_chart = registration.pop("project_chart")
                     local_count = 0
@@ -1032,9 +1082,10 @@ class FocusFieldPanel(QWidget):
                                f"{frame_info}. "
                                f"Chart-center error {registration['center_error_px']} sensor pixels "
                                f"relative to {'calibrated optical center' if calibrated_center else 'image midpoint (diagnostic only)'}. "
-                               "Registration does not authorize XY motion or establish absolute WD.")
+                               f"\n\n{_working_distance_message(verification)}")
                     check_cancel(cancel)
                     return RunResult("COMPLETED", "", message, details=dict(preview_registration=registration,
+                        optical_distance=verification,
                         simulated=simulated, camera_serial=capture.metadata["camera_serial"],
                         image_size_px=(capture.pixels.shape[1], capture.pixels.shape[0]),
                         pixel_format=capture.metadata["pixel_format"]))

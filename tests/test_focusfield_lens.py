@@ -15,6 +15,7 @@ from focusfield.config import Recipe, load_recipe, simulation_fixture
 from focusfield.controller import ScanController
 from focusfield.hardware import SimCamera, SimStage
 from focusfield.lens import LensCalibration
+from focusfield.pose import estimate_chart_pose
 from focusfield.reports import analyze_run
 from machine_settings import SETTINGS
 
@@ -72,17 +73,23 @@ def test_rectification_fallback_still_requires_all_four_tags(distorted_chart, mo
     class RetryDetector:
         def __init__(self, *args):
             self.detector = original(*args)
+            self.refinement = self.detector.getDetectorParameters().cornerRefinementMethod
 
         def detectMarkers(self, image):
-            calls.append(image.shape)
+            calls.append((image, self.refinement))
             if len(calls) == 1:
                 return (), None, ()
             return self.detector.detectMarkers(image)
 
     monkeypatch.setattr(cv2.aruco, "ArucoDetector", RetryDetector)
-    registration, _, _ = register_capture(frame, chart, recipe)
+    registration, gray, _ = register_capture(frame, chart, recipe, refine_optical_corners=True)
     assert registration["rectified_marker_detection"]
-    assert registration["reprojection_rms_px"] < 3 and len(calls) == 2
+    assert registration["reprojection_rms_px"] < 3 and len(calls) == 3
+    assert calls[1][0] is calls[2][0] and calls[2][1] == cv2.aruco.CORNER_REFINE_SUBPIX
+    np.testing.assert_array_equal(gray, frame.pixels / 65535)
+    for key in ("marker_corners_px", "refined_marker_corners_px"):
+        pose = estimate_chart_pose(chart, registration[key], recipe.lens_calibration)
+        assert pose.camera_center_axial_distance_mm == pytest.approx(920 / 16, abs=0.4)
     frame.pixels[:400, :520] = 54000
     with pytest.raises(ValueError, match="missing IDs"):
         register_capture(frame, chart, recipe)

@@ -269,11 +269,27 @@ def bed_up_refusal(dz, force_g, limit_g):
     return None
 
 
-def read_position(*, cancel=None):
-    m = _POS_RE.search(send_gcode("M114", cancel=cancel))
+def read_position(*, cancel=None, timeout=30):
+    m = _POS_RE.search(send_gcode("M114", timeout=timeout, cancel=cancel))
     if not m:
         raise PrinterError("Could not parse M114 response")
     return float(m.group(1)), float(m.group(2)), float(m.group(3))
+
+
+def read_position_snapshot(*, cancel=None):
+    """Read idle position for a camera preview without retaining a new connection."""
+    with _lock:
+        was_connected = _ser is not None and _ser.is_open
+        try:
+            return read_position(cancel=cancel, timeout=3)
+        except (PrinterError, OSError):
+            # A timed-out command can leave a reply pending on the serial link.
+            if was_connected:
+                disconnect()
+            raise
+        finally:
+            if not was_connected and _ser is not None:
+                disconnect()
 
 
 _homing = threading.Event()  # set while G28 runs; force_guard ignores force then

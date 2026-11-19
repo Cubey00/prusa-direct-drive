@@ -6,6 +6,7 @@ import time
 from .chart import load_chart, register_capture
 from .data import RunWriter, storage_preflight
 from .acquisition import FrameGuard
+from .optical_distance import measure_capture_distance
 
 
 @dataclass(frozen=True)
@@ -140,6 +141,8 @@ class ScanController:
             self.writer.manifest["storage_preflight"] = estimate
             self.writer.manifest['setup_provenance'] = self.setup_provenance
             self.writer.manifest['operator_confirmed'] = self.operator_confirmed
+            if self.recipe.measure_optical_distance and not self.dry_run:
+                self.writer.manifest["optical_distance_potentially_invalid"] = False
             if not self.simulated:
                 from .calibration import validate_reference
                 self.writer.manifest["wd_reference"] = validate_reference(self.fixture)
@@ -184,10 +187,21 @@ class ScanController:
                         self._check_abort()
                         if abs(self.stage.position()-z) > self.fixture.position_tolerance_mm:
                             raise RuntimeError("Position drifted during capture")
+                        printer_wd = self.fixture.wd_for_z(reported)
+                        distance = {}
+                        if self.recipe.measure_optical_distance:
+                            verification = measure_capture_distance(
+                                capture, chart, self.recipe, printer_wd=printer_wd,
+                                printer_reference=self.writer.manifest.get("wd_reference"), simulated=self.simulated)
+                            self._check_abort()
+                            distance["optical_distance"] = verification
+                            if verification["optical_distance_status"] == "Warning":
+                                self.writer.manifest["optical_distance_potentially_invalid"] = True
                         record = self.writer.add(capture, printer_z_command_mm=z,
-                            printer_z_reported_mm=reported, nominal_working_distance_mm=self.fixture.wd_for_z(reported),
+                            printer_z_reported_mm=reported, nominal_working_distance_mm=printer_wd,
                             wd_calibration_id=self.fixture.calibration_id, repetition=repetition,
-                            scan_direction="reverse" if self.recipe.reverse_alternate and repetition % 2 else "forward")
+                            scan_direction="reverse" if self.recipe.reverse_alternate and repetition % 2 else "forward",
+                            **distance)
                         self.on_event("frame", record, capture.pixels)
                 self.on_event("progress", index+1, len(schedule))
             self._check_abort()
@@ -213,6 +227,8 @@ class ScanController:
                 message = "Motion-only dry run completed; no images acquired"
             else:
                 message = f"Saved {len(self.writer.manifest['frames'])} frames"
+            if self.writer.manifest.get("optical_distance_potentially_invalid"):
+                message += " Distance discrepancy: scan potentially invalid."
             self._check_abort()
             outcome = "COMPLETED"
         except InterruptedError as exc:

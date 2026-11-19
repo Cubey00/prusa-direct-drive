@@ -201,6 +201,144 @@ machine profile receives the reference, calibration ID and absolute record path,
 Changing WD calibration requires a new preview and review of physical bounds before enabling.
 The record is copied into every physical scan/setup manifest for reproducibility.
 
+### Verify working distance with the camera
+
+**Check chart** estimates pose from the 16 outer corners of markers 0–3. The
+camera profile must match the camera serial and native frame dimensions. The
+pose fit uses the measured pinhole or fisheye model and checks both planar
+solutions, positive depth, tilt and corner reprojection in native sensor
+pixels. BayerRG uses the existing G1 lattice with a two-sensor-pixel pitch and
+a one-pixel horizontal origin offset. The marker homography still locates the
+MTF regions. SFR samples still come directly from the captured image.
+
+The fitted plane in camera coordinates has a unit normal `n` and contains
+`t`, the chart origin in camera coordinates. The optical-axis intersection
+from the camera projection centre is `dot(n, t) / n.z`. The perpendicular
+distance is `abs(dot(n, t))`, and tilt is `acos(n.z)`. The signed optical
+reference offset is the Z coordinate where the physical front-lens reference
+plane intersects the optical axis, with positive Z toward the chart.
+**Optical WD = axial distance − offset.** A camera profile alone supplies only
+the projection-centre distances. Reported printer WD comes from the existing
+measured fixture reference and a read-only position query. Both WD values need
+the same reference plane and target surface definition for a comparison.
+
+#### Measure and validate the optical reference
+
+1. Use the IDS U3-38L1XLS-C and Lensagon B10M3218S123C in their final fixture.
+   Lock focus and calibrate the lens at the intended close distances, with
+   held-out calibration views covering the field. Use the native frame size
+   and the intended acquisition format.
+2. Measure the printed outer edges of all four markers and their positions
+   with a calibrated instrument. Check the chart's flatness and verify its
+   printed scale. Use a copy of the layout with measured `top_left_mm` and
+   `size_mm`, using the same coordinate system as the MTF regions. If the
+   print has appreciable skew, unequal axis scales or non-square markers,
+   replace the print. The layout represents each marker as an axis-aligned square.
+3. Identify the physical plane and patterned surface used by the existing WD
+   reference. With a stationary, near-normal chart, independently measure
+   several gaps from that plane to the patterned surface at the optical-axis
+   intercept using suitable calibrated metrology. Use Check chart with the
+   lens profile to obtain the corresponding camera-centre axial distances.
+   The difference between each axial distance and independent gap estimates
+   the offset. Record its sign, uncertainty, method, instrument, date and
+   operator. Nominal focal length, viewing angle and mechanical dimensions do
+   not determine this offset.
+4. Freeze the lens, layout, detection mode and offset. Capture repeated,
+   stationary images at separately verified gaps near 18, 19, 20, 21 and
+   22 mm, including a case where printer WD reads 20 mm and independent
+   metrology shows 18 mm. Cover the intended tilt and lateral offsets and
+   include low-contrast and defocused frames. Use independently measured
+   optical-axis gaps at the tilted positions. Report signed error (bias),
+   absolute error, repeatability, detection/failure rates, and the total
+   optical uncertainty including the offset and independent metrology. Retain
+   the validation data separately from the images used to determine the offset.
+5. Compare the two values of `optical_refine_corners` on the same frames,
+   checking rejection rate, reprojection and distance error against ground
+   truth. Subpixel mode uses the successful detection image (including the
+   existing lens-rectified fallback) and maps the corners back to native
+   coordinates. Choose the mode supported by the measured results. The
+   default preserves the original corner detector. A low pixel residual on
+   its own cannot establish metric accuracy. Uniform print-scale error and
+   some errors in intrinsics can yield a good reprojection fit at the wrong
+   distance.
+
+#### Load the measured record
+
+Get fingerprints for the exact lens and marker geometry from the repo.
+
+```sh
+python - <<'PY'
+from focusfield.chart import load_chart
+from focusfield.lens import LensCalibration
+from focusfield.optical_distance import lens_fingerprint, marker_geometry_fingerprint
+
+print(lens_fingerprint(LensCalibration.load("lens.json")))
+print(marker_geometry_fingerprint(load_chart("measured_layout.json")))
+PY
+```
+
+Save an `optical_reference.json` with the following fields. The numbers
+below illustrate the schema. Replace them with measured values and both
+fingerprints with the generated strings.
+
+```json
+{
+  "offset_mm": 1.25,
+  "uncertainty_mm": 0.08,
+  "lens_reference_plane": "Exact description from the measured printer WD reference",
+  "provenance": "Offset record: method, instrument, date, operator and data location",
+  "lens_sha256": "<lens fingerprint>",
+  "marker_geometry_sha256": "<marker geometry fingerprint>",
+  "pixel_format": "BayerRG8",
+  "refine_corners": false,
+  "validation": {
+    "checks_mm": [[18.00, 19.29], [20.00, 21.24], [22.00, 23.21]],
+    "uncertainty_mm": 0.20,
+    "max_tilt_deg": 5.0,
+    "max_axis_offset_mm": 4.0,
+    "max_reprojection_rms_px": 2.0,
+    "provenance": "Independent validation record and uncertainty budget"
+  }
+}
+```
+
+Each `checks_mm` pair is `[independent physical WD, fitted camera-centre axial
+distance]`. Use at least two distinct gaps spanning the measured operating
+range. The range, tilt, lateral distance of the axis intercept from the marker
+field centre, and reprojection limit gate absolute WD. The total validation
+uncertainty must cover the offset uncertainty and the residual of every check.
+Without matching and applicable validation, Check chart reports the
+projection-centre distance when pose is available.
+
+Add these top-level options to a copy of your scan recipe before any TOML
+table headers. Paths are relative to the recipe. Load it through
+**Other run options → Load recipe…**, select the same
+capture format as the record, and run **Check chart**.
+
+```toml
+chart_path = "measured_layout.json"
+lens_calibration = "lens.json"
+optical_reference = "optical_reference.json"
+pixel_format = "BayerRG8"
+optical_refine_corners = false
+measure_optical_distance = true
+# Optional minimum warning threshold in mm, chosen from physical validation.
+# optical_discrepancy_threshold_mm = 0.5
+```
+
+The warning threshold is the greater of the configured value and the sum of
+the validated optical and printer WD uncertainties. Verify that an intentional
+2 mm mismatch reliably exceeds this threshold before relying on the warning.
+`measure_optical_distance` opts scans into per-frame verification. Check chart
+always attempts optical verification when a lens profile is loaded. A scan
+warning flags a potentially invalid measurement in the manifest and report.
+The feature adds diagnostics only. Motion and focus-curve distances still use
+the measured printer reference.
+
+The automated tests use synthetic images and corner coordinates. Absolute
+accuracy, reliable detection of a 2 mm difference, and the best refinement
+mode for this camera and lens still require physical validation.
+
 ### Optional physical XY centering
 
 **Check chart** reports the projected chart-field center,
@@ -512,6 +650,13 @@ lens curvature. Optical distortion, flatness, chart quality, camera/bed alignmen
 sensor processing remain contributors to measured system performance.
 
 ## Files and offline review
+
+Opt-in scans include an `optical_distance` record for each frame in
+`manifest.json`, with the printer and optical values, comparison status and
+pose. `config.json` snapshots the lens model and reference record used.
+Analysis writes `working_distance.csv` with per-frame distances and quality
+and links it from the HTML report. Offline analysis can calculate missing
+optical records for an opted-in scan from its stored frames and calibration.
 
 Each unique folder under `logs/runs/focusfield/` contains:
 
