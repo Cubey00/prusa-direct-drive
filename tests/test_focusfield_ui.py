@@ -52,9 +52,10 @@ def test_preview_keeps_frame_edges_visible_when_panel_shrinks(window, qtbot):
     panel.preview.setFixedSize(340, 240)
     qtbot.waitUntil(lambda: panel.preview.pixmap().width() <= 340)
     visible = panel.preview.grab().toImage()
+    ratio = visible.devicePixelRatio()          # grab() is in device pixels (2x on Retina)
     assert panel.preview.pixmap().size().toTuple() == (320, 240)
-    assert visible.pixelColor(14, 120).getRgb()[:3] == (255, 0, 0)
-    assert visible.pixelColor(326, 120).getRgb()[:3] == (0, 255, 0)
+    assert visible.pixelColor(round(14 * ratio), round(120 * ratio)).getRgb()[:3] == (255, 0, 0)
+    assert visible.pixelColor(round(326 * ratio), round(120 * ratio)).getRgb()[:3] == (0, 255, 0)
 
 
 def test_loading_and_clearing_lens_profile_invalidates_preview(window, tmp_path, monkeypatch):

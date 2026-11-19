@@ -14,10 +14,20 @@ def feed(gauge, value, n, delay=0.0005):
 def test_tare_fresh_ignores_samples_from_before_the_call():
     g = StrainGauge()
     feed(g, 1000.0, 300, delay=0)            # load while the head was moving
-    t = threading.Thread(target=feed, args=(g, 10.0, 600))
+    done = threading.Event()
+
+    def stream():                             # keeps streaming like the UDP thread, so a slow
+        while not done.is_set():              # start of tare_fresh can't leave it short of samples
+            feed(g, 10.0, 1, delay=0)
+            time.sleep(0)                     # yield, without a timer that can be stretched
+
+    t = threading.Thread(target=stream)
     t.start()
-    assert g.tare_fresh(300, timeout=5)
-    t.join()
+    try:
+        assert g.tare_fresh(300, timeout=5)
+    finally:
+        done.set()
+        t.join()
     assert abs(g.offset - 10.0) < 1e-9
 
 
