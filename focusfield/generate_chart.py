@@ -197,6 +197,31 @@ def generate_chart(args):
              fill="#666666", font_size="2.1",
              font_family="Arial, sans-serif")
 
+    checkerboard = None
+    if getattr(args, "with_checkerboard", False):
+        # The layout retains the MTF panel's coordinate system and simulation size.
+        # The additional artwork is placed to its right on the same sheet.
+        cols, rows = 8, 6
+        square_mm = math.floor(10 * min(args.field_width / (2 * cols),
+                                        args.field_height / (2 * rows))) / 10
+        board_width, board_height = cols * square_mm, rows * square_mm
+        panel_width = max(board_width + 24, 62)
+        sheet_width = args.page_width + panel_width
+        svg.set("width", f"{sheet_width:g}mm")
+        svg.set("viewBox", f"0 0 {sheet_width:g} {args.page_height:g}")
+        svg_element(svg, "rect", x=f"{args.page_width:g}", y="0", width=f"{panel_width:g}",
+                    height=f"{args.page_height:g}", fill="white")
+        x, y = args.page_width + (panel_width - board_width) / 2, (args.page_height - board_height) / 2
+        add_text(svg, args.page_width + 8, y - 5, f"LENS CHECKERBOARD  |  {square_mm:g} mm squares",
+                 font_size="2.3", font_family="Arial, sans-serif")
+        group = svg_element(svg, "g", id="lens-checkerboard")
+        for row in range(rows):
+            for col in range(cols):
+                if (row + col) % 2 == 0:
+                    svg_element(group, "rect", x=f"{x+col*square_mm:.4f}", y=f"{y+row*square_mm:.4f}",
+                                width=f"{square_mm:g}", height=f"{square_mm:g}", fill="black")
+        checkerboard = {"inner_corners": [cols - 1, rows - 1], "square_mm": square_mm}
+
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     ET.ElementTree(svg).write(out, encoding="utf-8", xml_declaration=True)
@@ -217,6 +242,8 @@ def generate_chart(args):
         ],
     }
     layout_path = out.with_name(out.stem + "_layout.json")
+    if checkerboard is not None:
+        layout["checkerboard"] = checkerboard
     layout_path.write_text(json.dumps(layout, indent=2) + "\n", encoding="utf-8")
     print(f"Created: {out.resolve()}")
     print(f"Created: {layout_path.resolve()}")
@@ -246,6 +273,8 @@ def build_parser():
                         help="Slanted edge angle in degrees (default: 5)")
     parser.add_argument("--edge-color", default="#404040",
                         help="Slanted square color, in SVG hex RGB; marker remains black")
+    parser.add_argument("--with-checkerboard", action="store_true",
+                        help="Print a lens calibration checkerboard beside the MTF target")
     return parser
 
 

@@ -3,7 +3,7 @@ from dataclasses import asdict, dataclass, field
 import threading
 import time
 
-from .chart import load_chart
+from .chart import load_chart, register_capture
 from .data import RunWriter, storage_preflight
 from .acquisition import FrameGuard
 
@@ -152,6 +152,10 @@ class ScanController:
                 self.camera.open()
                 initial = self.camera.capture()
                 self._capture_check(initial)
+                if not self.simulated and self.recipe.lens_calibration is not None and "checkerboard" in chart:
+                    registration, _, _ = register_capture(initial, chart, self.recipe)
+                    if not registration["full_field_visible"]:
+                        raise ValueError("The combined sheet's MTF chart must be in view before scanning")
                 self.writer.manifest["storage_preflight_actual"] = storage_preflight(self.output_root, frames, initial.pixels.nbytes)
             self._check_abort()
             self._state("READY")
