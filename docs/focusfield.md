@@ -68,10 +68,13 @@ python -m focusfield chart --help
 python -m focusfield chart --output charts/my_chart.svg --rows 5 --cols 7 --angle 5
 ```
 
-Each command writes the SVG and `<stem>_layout.json` together. The UI generator exposes
+Each command writes the artwork and `<stem>_layout.json` together. The UI generator exposes
 visible field dimensions and selects its new JSON for the next run. **Generate both charts…**
-prints the MTF target and a smaller lens checkerboard side by side, equivalent to adding
-`--with-checkerboard` to the CLI command. For other generator
+exports the MTF target and lens checkerboard side by side, with a Siemens star below them.
+Choose **A4 PDF** or **SVG** when saving. The PDF switches to landscape if needed and
+preserves actual size. For sheets too large for a single A4 page, save an SVG and use larger paper.
+The equivalent CLI command adds `--with-checkerboard`; use a `.pdf` output to get A4.
+For other generator
 options use the CLI, then **Use existing layout…**. The default is 31 slanted squares
 (5 × 7 grid with empty corners) and four unique `DICT_4X4_50` markers, IDs 0/1/2/3.
 These are optical markers, separate from tactile plate cones F1–F3 and slicing manifests.
@@ -83,8 +86,10 @@ checked across the complete scan. For a distorted lens, use a measured lens prof
 
 ### Calibrate and measure on the combined sheet
 
-1. Print the SVG at 100%, verify the 10 mm scale bar, and tape the sheet flat to the bed.
-   Lock the lens focus. Complete the physical fixture and dry-run checks, including a
+1. Print at **Actual Size** (100%), verify the 10 mm scale bar, and tape the sheet flat to the bed.
+   Center the Siemens star at the planned working distance. Adjust the lens until its
+   blurred center is smallest in the camera image, then lock the focus.
+   Complete the physical fixture and dry-run checks, including a
    verified XY clearance envelope across the entire sheet and selected Z range.
 2. In **Optional centering and scouting**, load the measured optical XY mapping. Use
    the printer controls and camera preview to center the checkerboard once, then select

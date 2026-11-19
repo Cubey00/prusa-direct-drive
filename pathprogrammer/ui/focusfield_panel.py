@@ -428,7 +428,8 @@ class FocusFieldPanel(QWidget):
             "Simulation uses the active layout below. You can also generate or select a different chart."
             if simulated else
             "Enter the visible field at the working distance and generate both patterns. "
-            "Print at 100%, verify the 10 mm scale, and tape the sheet flat to the bed."
+            "Print at actual size, verify the 10 mm scale, and tape the sheet flat to the bed. "
+            "Use the star to set focus."
         )
         mode = "Motion-only dry run" if dry_run else self.preset.currentText()
         self.review_group.setTitle(f"{2 if dry_run else 4}. Review the scan · {mode}")
@@ -765,20 +766,25 @@ class FocusFieldPanel(QWidget):
         self.chart_changed()
 
     def generate_chart(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save optical chart", "focus_field_chart.svg", "SVG (*.svg)")
+        path, selected = QFileDialog.getSaveFileName(
+            self, "Save target sheet", "focus_field_chart.pdf", "A4 PDF (*.pdf);;SVG (*.svg)")
         if not path:
             return
+        output = Path(path)
+        if output.suffix.lower() not in {".pdf", ".svg"}:
+            output = output.with_suffix(".svg" if selected.startswith("SVG") else ".pdf")
         try:
             from focusfield.generate_chart import build_parser, generate_chart
             w, h = self.field_width.value(), self.field_height.value()
-            args = build_parser().parse_args(["--output", path, "--with-checkerboard",
+            args = build_parser().parse_args(["--output", str(output), "--with-checkerboard",
+                                              "--focus-distance-mm", str(self.fields["nominal_wd_mm"].value()),
                                               "--field-width", str(w), "--field-height", str(h),
                                               "--page-width", str(max(100, w+40)), "--page-height", str(max(80, h+35))])
             generate_chart(args)
             with QSignalBlocker(self.chart):
-                self.chart.setText(str(Path(path).with_name(Path(path).stem + "_layout.json")))
+                self.chart.setText(str(output.with_name(output.stem + "_layout.json")))
             self.chart_changed()
-            self.status.append(f"Both targets saved to {path}. Print at 100% and verify the 10 mm scale.")
+            self.status.append(f"Target sheet saved to {output}. Print at actual size and verify the 10 mm scale.")
         except Exception as exc:
             QMessageBox.warning(self, "Chart generation", str(exc))
 

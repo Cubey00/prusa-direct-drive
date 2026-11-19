@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -25,7 +26,8 @@ def test_supplied_chart_and_generated_chart_match(tmp_path):
 
 def test_combined_print_keeps_mtf_coordinates_and_describes_the_checkerboard(tmp_path):
     output = tmp_path / "combined.svg"
-    generate_chart(build_parser().parse_args(["--output", str(output), "--with-checkerboard"]))
+    generate_chart(build_parser().parse_args(["--output", str(output), "--with-checkerboard",
+                                              "--focus-distance-mm", "20.5"]))
     layout = load_chart(tmp_path / "combined_layout.json")
     board = layout.pop("checkerboard")
     assert layout == load_chart(DEFAULT_CHART)
@@ -36,6 +38,34 @@ def test_combined_print_keeps_mtf_coordinates_and_describes_the_checkerboard(tmp
     assert len(squares) == 24
     assert min(float(rect.attrib["x"]) for rect in squares) > layout["page_width"]
     assert all(float(rect.attrib["width"]) == board["square_mm"] for rect in squares)
+    assert len(svg.findall(".//svg:g[@id='lens-focus-star']/svg:path", namespace)) == 24
+    assert "Set the working distance to 20.5 mm." in "".join(svg.itertext())
+    assert float(svg.attrib["height"].removesuffix("mm")) > layout["page_height"]
+
+
+@pytest.mark.parametrize(("field_width", "page_width", "size"), [("60", "100", (595, 842)),
+                                                                 ("150", "190", (842, 595))])
+def test_combined_pdf_uses_a4_and_preserves_layout(qapp, tmp_path, field_width, page_width, size):
+    pdf = tmp_path / "targets.pdf"
+    svg = tmp_path / "targets.svg"
+    options = ["--with-checkerboard", "--field-width", field_width, "--page-width", page_width]
+    generate_chart(build_parser().parse_args(["--output", str(pdf), *options]))
+    data = pdf.read_bytes()
+    assert data.startswith(b"%PDF-")
+    dimensions = re.search(rb"/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]", data)
+    assert dimensions and tuple(map(float, dimensions.groups())) == pytest.approx(size, abs=1)
+    layout = load_chart(tmp_path / "targets_layout.json")
+    generate_chart(build_parser().parse_args(["--output", str(svg), *options]))
+    assert layout == load_chart(tmp_path / "targets_layout.json")
+
+
+def test_a4_export_refuses_to_shrink_an_oversized_target(tmp_path):
+    pdf = tmp_path / "too_large.pdf"
+    args = build_parser().parse_args(["--output", str(pdf), "--with-checkerboard",
+                                     "--field-width", "300", "--page-width", "340"])
+    with pytest.raises(ValueError, match="too large for one A4 page at actual size"):
+        generate_chart(args)
+    assert not pdf.exists() and not (tmp_path / "too_large_layout.json").exists()
 
 
 def test_rendered_supplied_svg_has_four_correct_markers(qapp):

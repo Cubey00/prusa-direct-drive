@@ -9,6 +9,7 @@ Requires: pip install opencv-contrib-python numpy
 
 Outputs:
     focus_chart.svg        True vector artwork, sized in millimetres.
+    focus_chart.pdf        A4 vector artwork at actual size when the output ends in .pdf.
     focus_chart_layout.json  Positions/IDs for subsequent automatic analysis.
 
 Important: --field-width and --field-height are the physical *visible area*
@@ -40,6 +41,67 @@ def add_text(parent, x, y, value, **attrs):
     element = svg_element(parent, "text", x=f"{x:.3f}", y=f"{y:.3f}", **attrs)
     element.text = value
     return element
+
+
+def add_focus_aid(svg, x, y, radius, focus_distance_mm):
+    """An alternating radial pattern for comparing the blurred center while focusing."""
+    star = svg_element(svg, "g", id="lens-focus-star")
+    for sector in range(0, 48, 2):
+        a, b = math.tau * sector / 48, math.tau * (sector + 1) / 48
+        ax, ay = x + radius * math.cos(a), y + radius * math.sin(a)
+        bx, by = x + radius * math.cos(b), y + radius * math.sin(b)
+        path = f"M {x:.4f},{y:.4f} L {ax:.4f},{ay:.4f} A {radius:g},{radius:g} 0 0 1 {bx:.4f},{by:.4f} Z"
+        # Set an explicit negligible width for Qt SVG/PDF, which can otherwise stroke paths.
+        svg_element(star, "path", d=path, fill="black", stroke="none", stroke_width="0.0001")
+    text_x = x + radius + 7
+    font = {"font_family": "Arial, sans-serif", "font_size": "2.5"}
+    add_text(svg, text_x, y - 5, "LENS FOCUS  |  SIEMENS STAR", **font)
+    distance = (f"Set the working distance to {focus_distance_mm:g} mm." if focus_distance_mm is not None
+                else "Set the planned working distance.")
+    add_text(svg, text_x, y, distance, **font)
+    add_text(svg, text_x, y + 5, "Adjust focus until the blurred center is smallest. Lock the lens.", **font)
+
+
+def save_a4_pdf(svg, out):
+    from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QMarginsF, QRectF
+    from PySide6.QtGui import QColor, QGuiApplication, QPageLayout, QPageSize, QPainter, QPdfWriter
+    from PySide6.QtSvg import QSvgRenderer
+
+    _, _, width, height = map(float, svg.attrib["viewBox"].split())
+    margin = 5
+    paper = QPageSize(QPageSize.PageSizeId.A4)
+    size = paper.size(QPageSize.Unit.Millimeter)
+    paper_width, paper_height = size.width(), size.height()
+    orientation = QPageLayout.Orientation.Portrait
+    if width + 2*margin > paper_width or height + 2*margin > paper_height:
+        orientation = QPageLayout.Orientation.Landscape
+        paper_width, paper_height = paper_height, paper_width
+    if width + 2*margin > paper_width or height + 2*margin > paper_height:
+        raise ValueError("The sheet is too large for one A4 page at actual size. Save the SVG for larger paper.")
+
+    # Keep the application alive during vector export when invoked from the CLI.
+    _app = QGuiApplication.instance() or QGuiApplication(["focusfield-chart", "-platform", "offscreen"])
+    renderer = QSvgRenderer(QByteArray(ET.tostring(svg, encoding="utf-8")))
+    if not renderer.isValid():
+        raise ValueError("The target sheet could not be rendered")
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    writer = QPdfWriter(buffer)
+    writer.setTitle("Focus-Field MTF target sheet")
+    writer.setResolution(720)
+    writer.setPageLayout(QPageLayout(paper, orientation, QMarginsF(), QPageLayout.Unit.Millimeter))
+    units_per_mm = writer.resolution() / 25.4
+    rect = QRectF((paper_width - width) / 2 * units_per_mm, (paper_height - height) / 2 * units_per_mm,
+                  width * units_per_mm, height * units_per_mm)
+    painter = QPainter()
+    if not painter.begin(writer):
+        raise OSError("Could not start the A4 PDF export")
+    try:
+        painter.fillRect(QRectF(0, 0, paper_width*units_per_mm, paper_height*units_per_mm), QColor("white"))
+        renderer.render(painter, rect)
+    finally:
+        painter.end()
+    out.write_bytes(bytes(buffer.data()))
 
 
 def add_aruco(parent, dictionary, marker_id, x, y, side_mm, quiet_mm):
@@ -80,6 +142,9 @@ def add_aruco(parent, dictionary, marker_id, x, y, side_mm, quiet_mm):
 
 
 def generate_chart(args):
+    focus_distance = getattr(args, "focus_distance_mm", None)
+    if focus_distance is not None and (not math.isfinite(focus_distance) or focus_distance <= 0):
+        raise ValueError("The focus working distance must be a positive number")
     if args.rows < 3 or args.cols < 3:
         raise ValueError("Use at least 3 rows and 3 columns.")
     if not (2.5 <= abs(args.angle) <= 7.0):
@@ -207,8 +272,12 @@ def generate_chart(args):
         board_width, board_height = cols * square_mm, rows * square_mm
         panel_width = max(board_width + 24, 62)
         sheet_width = args.page_width + panel_width
+        star_radius = min(12, min(args.field_width, args.field_height) / 5)
+        focus_height = 20 + 2*star_radius
+        sheet_height = args.page_height + focus_height
         svg.set("width", f"{sheet_width:g}mm")
-        svg.set("viewBox", f"0 0 {sheet_width:g} {args.page_height:g}")
+        svg.set("height", f"{sheet_height:g}mm")
+        svg.set("viewBox", f"0 0 {sheet_width:g} {sheet_height:g}")
         svg_element(svg, "rect", x=f"{args.page_width:g}", y="0", width=f"{panel_width:g}",
                     height=f"{args.page_height:g}", fill="white")
         x, y = args.page_width + (panel_width - board_width) / 2, (args.page_height - board_height) / 2
@@ -221,10 +290,17 @@ def generate_chart(args):
                     svg_element(group, "rect", x=f"{x+col*square_mm:.4f}", y=f"{y+row*square_mm:.4f}",
                                 width=f"{square_mm:g}", height=f"{square_mm:g}", fill="black")
         checkerboard = {"inner_corners": [cols - 1, rows - 1], "square_mm": square_mm}
+        svg_element(svg, "rect", x="0", y=f"{args.page_height:g}", width=f"{sheet_width:g}",
+                    height=f"{focus_height:g}", fill="white")
+        add_focus_aid(svg, 10 + star_radius, args.page_height + focus_height / 2,
+                      star_radius, focus_distance)
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
-    ET.ElementTree(svg).write(out, encoding="utf-8", xml_declaration=True)
+    if out.suffix.lower() == ".pdf":
+        save_a4_pdf(svg, out)
+    else:
+        ET.ElementTree(svg).write(out, encoding="utf-8", xml_declaration=True)
     layout = {
         "description": "Focus-field test chart physical design (not an MTF measurement).",
         "units": "mm", "page_width": args.page_width, "page_height": args.page_height,
@@ -252,7 +328,7 @@ def generate_chart(args):
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", default="focus_field_chart.svg", help="Output SVG filename")
+    parser.add_argument("--output", default="focus_field_chart.svg", help="Output SVG or A4 PDF filename")
     parser.add_argument("--field-width", type=float, default=60.0,
                         help="Expected visible target width at working distance, in mm")
     parser.add_argument("--field-height", type=float, default=45.0,
@@ -274,7 +350,9 @@ def build_parser():
     parser.add_argument("--edge-color", default="#404040",
                         help="Slanted square color, in SVG hex RGB; marker remains black")
     parser.add_argument("--with-checkerboard", action="store_true",
-                        help="Print a lens calibration checkerboard beside the MTF target")
+                        help="Add a lens checkerboard and a manual focus star to the sheet")
+    parser.add_argument("--focus-distance-mm", type=float, default=None,
+                        help="Working distance to print beside the focus star")
     return parser
 
 
