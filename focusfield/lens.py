@@ -65,6 +65,20 @@ class LensCalibration:
         matrix[:2] /= pitch
         return matrix
 
+    def field_of_view_mm(self, wd_mm):
+        """Width and height (mm) the full frame sees on a plane `wd_mm` in front of the lens,
+        measured through the principal point along the image's centre row and column."""
+        cx, cy = self.camera_matrix[0][2], self.camera_matrix[1][2]
+        width, height = self.image_size_px
+        pts = np.array([[0, cy], [width, cy], [cx, 0], [cx, height]], dtype=np.float64).reshape(-1, 1, 2)
+        matrix, coeffs = np.asarray(self.camera_matrix), np.asarray(self.dist_coeffs)
+        if self.model == "fisheye":
+            rays = cv2.fisheye.undistortPoints(pts, matrix, coeffs).reshape(-1, 2)
+        else:
+            criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-8)
+            rays = cv2.undistortPointsIter(pts, matrix, coeffs, None, None, criteria).reshape(-1, 2)
+        return (float(rays[1, 0] - rays[0, 0]) * wd_mm, float(rays[3, 1] - rays[2, 1]) * wd_mm)
+
     def undistort(self, points, matrix):
         pts = np.asarray(points, dtype=np.float64).reshape(-1, 1, 2)
         coeffs = np.asarray(self.dist_coeffs)
@@ -72,6 +86,22 @@ class LensCalibration:
         if self.model == "fisheye":
             return cv2.fisheye.undistortPoints(pts, matrix, coeffs, P=matrix).reshape(-1, 2)
         return cv2.undistortPointsIter(pts, matrix, coeffs, None, matrix, criteria).reshape(-1, 2)
+
+
+def nominal_field_of_view_mm(wd_mm, focal_mm, pixel_um, size_px):
+    """Datasheet estimate of the field (mm) a lens of `focal_mm` sees at `wd_mm` on a sensor of
+    `size_px` pixels of `pixel_um`, along the centre row and column. Uses the equidistant fisheye
+    projection r = f * theta (the Lensation B10M3218S123C: f 3.2 mm, H 117 deg / V 86 deg on 1/2.3";
+    this model gives 112 / 84 deg on the IMX412). Ignores the principal plane offset."""
+    if focal_mm <= 0 or pixel_um <= 0 or wd_mm <= 0:
+        raise ValueError("Focal length, pixel size and working distance must be positive")
+    field = []
+    for n in size_px:
+        theta = n * pixel_um / 1000 / 2 / focal_mm
+        if theta >= np.radians(85):
+            raise ValueError("half angle of view reaches 85°, the field on a flat chart is unbounded")
+        field.append(2 * wd_mm * float(np.tan(theta)))
+    return tuple(field)
 
 
 def distort_points(points, ideal_matrix, raw_matrix, coeffs, *, model="pinhole"):

@@ -35,7 +35,8 @@ enabled. Turn off simulation when you're ready to use the real camera and printe
 4. Review the range, positions, frame count and disk space. **Run scan** starts a
    simulated scan. **Review scan…** on real hardware asks for approval after the
    physical fixture and safety checks. A completed analysis is available under
-   **Results**. **STOP** stays available while the worker is active.
+   **Results**. **STOP** stays available while the worker is active. On real hardware the
+   **Physical fixture and safety checks** are always shown; tick them before every run.
 
 Use **Other run options** to select **Quick check**, run a motion-only dry run,
 or load a scan recipe. Centering and scouting are under **Optional centering and scouting**.
@@ -79,9 +80,13 @@ options use the CLI, then **Use existing layout…**. The default is 31 slanted 
 (5 × 7 grid with empty corners) and four unique `DICT_4X4_50` markers, IDs 0/1/2/3.
 These are optical markers, separate from tactile plate cones F1–F3 and slicing manifests.
 
-Print at 100%, measure the 10 mm scale bar and target flatness, and measure field of view
-at the actual working distance. The provisional 60 × 45 mm field is not a camera
-calibration. Marker visibility, local edge size, printing quality and distortion must be
+The visible width and height follow from the lens and the working distance. With a
+loaded `lens.json` they come from its measured intrinsics; otherwise from the nominal focal
+length and pixel size (equidistant fisheye estimate, defaults: the 3.2 mm Lensation
+B10M3218S123C on the IMX412 in `machine_settings.toml` `[focusfield]
+lens_focal_mm` / `pixel_size_um`, editable in the panel). **Enter the visible field by hand**
+overrides both. Print at 100%, measure the 10 mm scale bar and target flatness, and measure
+field of view at the actual working distance. The nominal field is not a camera calibration. Marker visibility, local edge size, printing quality and distortion must be
 checked across the complete scan. For a distorted lens, use a measured lens profile.
 
 ### Calibrate and measure on the combined sheet
@@ -91,7 +96,7 @@ checked across the complete scan. For a distorted lens, use a measured lens prof
    blurred center is smallest in the camera image, then lock the focus.
    Complete the physical fixture and dry-run checks, including a
    verified XY clearance envelope across the entire sheet and selected Z range.
-2. In **Optional centering and scouting**, load the measured optical XY mapping. Use
+2. In **Prepare the target sheet**, load the measured optical XY mapping. Use
    the printer controls and camera preview to center the checkerboard once, then select
    **Record checkerboard XY**. For automatic transfer after calibration, also center
    the MTF panel and select **Record MTF chart XY**.

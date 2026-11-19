@@ -95,7 +95,8 @@ def test_combined_chart_is_selected_and_validated_lens_opens_scan_review(qtbot, 
     panel.generate_chart()
     assert chart.is_file()
     assert panel.chart.text() == str(tmp_path / "targets_layout.json")
-    assert panel.checkerboard == {"inner_corners": [7, 5], "square_mm": 3.7}
+    # 60 x 36 mm field (3.2 mm lens at 20 mm): squares = floor(10 * 36.2 / 12) / 10
+    assert panel.checkerboard == {"inner_corners": [7, 5], "square_mm": 3.0}
     panel.simulate.setChecked(False)
     panel.format.setCurrentText("Mono16")
     assert not panel.start_btn.isEnabled()
@@ -348,3 +349,37 @@ def test_physical_preview_cancel_disconnect_and_close_release_camera_in_worker(w
     assert ('FAILED' if finish == 'disconnect' else 'ABORTED') in p.status.toPlainText()
     with DeviceLease('camera'):
         pass
+
+
+def test_visible_field_follows_lens_and_working_distance(window):
+    from focusfield.lens import LensCalibration
+
+    panel = window.focusfield
+    assert panel.field_width.value() == pytest.approx(59.9, abs=0.1)
+    assert panel.field_height.value() == pytest.approx(36.2, abs=0.1)
+    assert not panel.field_width.isEnabled() and "3.2 mm lens" in panel.field_note.text()
+    panel.fields["nominal_wd_mm"].setValue(10)
+    assert panel.field_width.value() == pytest.approx(30.0, abs=0.1)
+    panel.lens_focal.setValue(6.4)
+    assert panel.field_width.value() < 15
+    f = 3.2 / 0.00155
+    panel.set_lens_calibration(LensCalibration("CAL", (4056, 3040), ((f, 0, 2028), (0, f, 1520), (0, 0, 1)),
+                                               (0, 0, 0, 0), model="fisheye"))
+    assert panel.field_width.value() == pytest.approx(30.0, abs=0.1)
+    assert "CAL" in panel.field_note.text() and not panel.lens_focal.isEnabled()
+    panel.manual_field.setChecked(True)
+    panel.field_width.setValue(42)
+    panel.fields["nominal_wd_mm"].setValue(20)
+    assert panel.field_width.isEnabled() and panel.field_width.value() == 42
+
+
+def test_xy_mapping_and_safety_checks_are_not_folded_away(window):
+    from PySide6.QtWidgets import QGroupBox
+
+    panel = window.focusfield
+    assert panel.chart_group.isAncestorOf(panel.xy_btn)
+    assert not panel.alignment_box.isAncestorOf(panel.xy_btn)
+    assert isinstance(panel.check_group, QGroupBox) and panel.check_group.isHidden()   # simulation
+    panel.simulate.setChecked(False)
+    assert not panel.check_group.isHidden() and not panel.xy_controls.isHidden()
+    assert all(panel.check_group.isAncestorOf(box) for box in panel.checks.values())

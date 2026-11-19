@@ -165,3 +165,29 @@ def test_calibration_command_fits_and_validates_separate_checkerboard_images(tmp
     recipe = tmp_path / "recipe.toml"
     recipe.write_text('lens_calibration = "profile.json"\n')
     assert load_recipe(recipe).lens_calibration == result
+
+
+def test_nominal_field_follows_the_fisheye_datasheet_lens():
+    import math
+    from focusfield.lens import nominal_field_of_view_mm
+
+    width, height = nominal_field_of_view_mm(20, 3.2, 1.55, (4056, 3040))
+    assert width == pytest.approx(59.94, abs=0.01) and height == pytest.approx(36.25, abs=0.01)
+    assert nominal_field_of_view_mm(40, 3.2, 1.55, (4056, 3040))[0] == pytest.approx(2 * width)
+    # Equidistant projection matches the datasheet's 117° / 86° within a few degrees
+    assert math.degrees(2 * math.atan(width / 40)) == pytest.approx(117, abs=6)
+    with pytest.raises(ValueError):
+        nominal_field_of_view_mm(20, 0.5, 1.55, (4056, 3040))
+
+
+def test_calibrated_field_of_view_matches_its_model():
+    import math
+    from focusfield.lens import LensCalibration
+
+    f = 3.2 / 0.00155
+    fisheye = LensCalibration("TEST", (4056, 3040), ((f, 0, 2028), (0, f, 1520), (0, 0, 1)),
+                              (0, 0, 0, 0), model="fisheye")
+    assert fisheye.field_of_view_mm(20) == pytest.approx((59.94, 36.25), abs=0.05)
+    pinhole = LensCalibration("TEST", (4000, 3000), ((2000, 0, 2000), (0, 2000, 1500), (0, 0, 1)),
+                              (0, 0, 0, 0, 0))
+    assert pinhole.field_of_view_mm(10) == pytest.approx((20, 15))

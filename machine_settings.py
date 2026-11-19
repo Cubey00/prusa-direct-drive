@@ -158,6 +158,8 @@ class FocusFixture:
     wd_reference_record: str = ""
     sfr_reference_verified: bool = False
     sfr_validation_id: str = ""
+    lens_focal_mm: float = 3.2
+    pixel_size_um: float = 1.55
 
     def validate_motion_safety(self):
         if not (self.enabled and self.measured and self.motion_safety_verified):
@@ -317,6 +319,9 @@ def _check(s, where):
             and op.wd_uncertainty_mm >= 0 and 0 < op.position_tolerance_mm <= 0.1
             and 0 < op.z_speed_mm_s <= 10):
         fail("[focusfield] invalid clearance, uncertainty, tolerance or speed")
+    if not (math.isfinite(op.lens_focal_mm) and op.lens_focal_mm > 0
+            and math.isfinite(op.pixel_size_um) and op.pixel_size_um > 0):
+        fail("[focusfield] lens_focal_mm and pixel_size_um must be positive")
     if op.enabled and (not op.measured or op.safe_z_min_mm == op.safe_z_max_mm
                        or not op.camera_serial.strip() or not op.firmware_id.strip()
                        or op.fixture_id == "unconfigured" or op.calibration_id == "unconfigured"

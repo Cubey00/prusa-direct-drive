@@ -20,7 +20,7 @@ from focusfield.config import (DEFAULT_RECIPE, centered_scan_bounds, load_recipe
                                simulation_fixture)
 from focusfield.data import storage_required
 from focusfield.calibration import XYCalibration, save_reference
-from focusfield.lens import LensCalibration
+from focusfield.lens import LensCalibration, nominal_field_of_view_mm
 from focusfield.flat_calibration import FlatCalibrationController
 from focusfield.controller import OperatorChecks, RunResult, ScanController
 from focusfield.hardware import SimCamera, SimStage, ZStage
@@ -142,15 +142,33 @@ class FocusFieldPanel(QWidget):
 
         self.chart_group = QGroupBox("2. Prepare the target sheet")
         chart_form = QFormLayout(self.chart_group)
+        chart_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.chart_help = QLabel()
         self.chart_help.setWordWrap(True)
         chart_form.addRow(self.chart_help)
+        self.lens_focal, self.pixel_size = QDoubleSpinBox(), QDoubleSpinBox()
+        for widget, value, lo, hi, decimals, step in (
+                (self.lens_focal, self.fixture_profile.lens_focal_mm, 0.1, 500, 2, 0.1),
+                (self.pixel_size, self.fixture_profile.pixel_size_um, 0.1, 50, 3, 0.01)):
+            widget.setRange(lo, hi)
+            widget.setDecimals(decimals)
+            widget.setSingleStep(step)
+            widget.setValue(value)
+        self.lens_form_rows = (self.lens_focal, self.pixel_size)
+        chart_form.addRow("Lens focal length (mm)", self.lens_focal)
+        chart_form.addRow("Sensor pixel size (µm)", self.pixel_size)
+        self.manual_field = QCheckBox("Enter the visible field by hand")
+        chart_form.addRow(self.manual_field)
         self.field_width, self.field_height = QDoubleSpinBox(), QDoubleSpinBox()
         for widget, value in ((self.field_width, 60), (self.field_height, 45)):
-            widget.setRange(20, 300)
+            widget.setRange(1, 500)
+            widget.setDecimals(1)
             widget.setValue(value)
         chart_form.addRow("Visible width (mm)", self.field_width)
         chart_form.addRow("Visible height (mm)", self.field_height)
+        self.field_note = QLabel()
+        self.field_note.setWordWrap(True)
+        chart_form.addRow(self.field_note)
         chart_buttons = QHBoxLayout()
         generate = QPushButton("Generate both charts…")
         generate.clicked.connect(self.generate_chart)
@@ -171,6 +189,16 @@ class FocusFieldPanel(QWidget):
         self.flat_note = QLabel()
         self.flat_note.setWordWrap(True)
         flat_layout.addWidget(self.flat_note)
+        xy_row = QHBoxLayout()
+        self.xy_btn = QPushButton("Load measured optical XY mapping…")
+        self.xy_btn.clicked.connect(self.load_xy_calibration)
+        self.xy_label = QLabel("No optical XY mapping selected")
+        self.xy_label.setWordWrap(True)
+        xy_row.addWidget(self.xy_btn)
+        xy_row.addWidget(self.xy_label, 1)
+        self.xy_controls = QWidget()
+        self.xy_controls.setLayout(xy_row)
+        xy_row.setContentsMargins(0, 0, 0, 0)
         panel_buttons = QHBoxLayout()
         self.record_checkerboard = QPushButton("Record checkerboard XY")
         self.record_mtf = QPushButton("Record MTF chart XY")
@@ -182,11 +210,13 @@ class FocusFieldPanel(QWidget):
         self.calibrate_btn = QPushButton("Calibrate lens…")
         self.calibrate_btn.clicked.connect(self.start_flat_calibration)
         flat_layout.addWidget(self.calibrate_btn)
+        chart_form.addRow(self.xy_controls)
         chart_form.addRow(self.flat_controls)
         setup_layout.addWidget(self.chart_group)
 
         checks = QWidget()
         check_layout = QVBoxLayout(checks)
+        check_layout.setContentsMargins(0, 0, 0, 0)
         self.fixture_help = QLabel()
         self.fixture_help.setWordWrap(True)
         check_layout.addWidget(self.fixture_help)
@@ -203,25 +233,26 @@ class FocusFieldPanel(QWidget):
             checkbox = QCheckBox(text)
             self.checks[key] = checkbox
             check_layout.addWidget(checkbox)
-        self.check_group = CollapsibleBox("Physical fixture and safety checks", checks)
+        self.check_group = QGroupBox("Physical fixture and safety checks")
+        group_layout = QVBoxLayout(self.check_group)
+        group_layout.setContentsMargins(6, 6, 6, 6)
+        group_layout.addWidget(checks)
         setup_layout.addWidget(self.check_group)
 
         alignment = QWidget()
         alignment_layout = QVBoxLayout(alignment)
         alignment_help = QLabel("Run Check chart first. Scouting estimates a sweep range. "
-                                "Automatic centering uses a measured XY mapping.")
+                                "Automatic centering uses the optical XY mapping loaded under "
+                                "Prepare the target sheet.")
         alignment_help.setWordWrap(True)
         alignment_layout.addWidget(alignment_help)
-        self.xy_btn = QPushButton("Load measured optical XY mapping…")
-        self.xy_btn.clicked.connect(self.load_xy_calibration)
-        self.xy_label = QLabel("No optical XY mapping selected")
         self.center_btn = QPushButton("Center chart… (bounded XY motion)")
         self.center_btn.setEnabled(False)
         self.center_btn.clicked.connect(lambda: self.start_setup('center'))
         self.scout_btn = QPushButton("Scout focus interval… (bounded Z motion)")
         self.scout_btn.setEnabled(False)
         self.scout_btn.clicked.connect(lambda: self.start_setup('scout'))
-        for widget in (self.xy_btn, self.xy_label, self.center_btn, self.scout_btn):
+        for widget in (self.center_btn, self.scout_btn):
             alignment_layout.addWidget(widget)
         self.scout_note = QLabel()
         self.scout_note.setWordWrap(True)
@@ -243,7 +274,8 @@ class FocusFieldPanel(QWidget):
         self.chart_check_note = QLabel()
         self.chart_check_note.setWordWrap(True)
         self.preview_btn = QPushButton("Check chart")
-        chart_check_layout.addRow(self.preview_btn, self.chart_check_note)
+        chart_check_layout.addRow(self.preview_btn)
+        chart_check_layout.addRow(self.chart_check_note)
         lens_controls = QWidget()
         lens_layout = QVBoxLayout(lens_controls)
         lens_layout.setContentsMargins(0, 0, 0, 0)
@@ -319,6 +351,9 @@ class FocusFieldPanel(QWidget):
         self.manual_bounds.toggled.connect(self.range_changed)
         self.half_span.valueChanged.connect(self.range_changed)
         self.reverse.toggled.connect(self.update_controls)
+        self.manual_field.toggled.connect(self.update_controls)
+        self.lens_focal.valueChanged.connect(self.update_controls)
+        self.pixel_size.valueChanged.connect(self.update_controls)
         for key, widget in self.fields.items():
             if key in {"exposure_us", "gain", "nominal_wd_mm"}:
                 widget.valueChanged.connect(self.invalidate_preview)
@@ -427,7 +462,7 @@ class FocusFieldPanel(QWidget):
         self.chart_help.setText(
             "Simulation uses the active layout below. You can also generate or select a different chart."
             if simulated else
-            "Enter the visible field at the working distance and generate both patterns. "
+            "The visible field follows from the lens and the working distance. Generate both patterns. "
             "Print at actual size, verify the 10 mm scale, and tape the sheet flat to the bed. "
             "Use the star to set focus."
         )
@@ -451,11 +486,13 @@ class FocusFieldPanel(QWidget):
             if simulated:
                 instructions = "Turn off simulation to let the printer capture the checkerboard photos."
             elif not can_record:
-                instructions = "Load the measured optical XY mapping under Optional centering and scouting."
+                instructions = "Load the measured optical XY mapping first."
             else:
                 instructions = ("Center the checkerboard once and record its XY. The app captures the photos "
                                 "and saves and loads lens.json. Record the MTF chart XY for automatic transfer afterward.")
             self.flat_note.setText(instructions + ("\n" + positions if positions else ""))
+        self.xy_controls.setVisible(not simulated)
+        self.update_visible_field()
         self.alignment_box.setVisible(not dry_run or self.scout_proposal is not None)
         self.start_btn.setText("Run dry run…" if dry_run else "Run scan" if simulated else "Review scan…")
         self.preview_btn.setEnabled(idle and not dry_run)
@@ -546,6 +583,38 @@ class FocusFieldPanel(QWidget):
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 self.scout_note.setText(str(exc))
                 self.review_scout.setEnabled(False)
+
+    def update_visible_field(self):
+        """Visible chart field at the working distance: from the loaded lens calibration, else
+        from the nominal focal length and pixel size (unless entered by hand)."""
+        manual = self.manual_field.isChecked()
+        lens = self.recipe.lens_calibration
+        self.field_width.setEnabled(manual)
+        self.field_height.setEnabled(manual)
+        for widget in self.lens_form_rows:
+            widget.setEnabled(not manual and lens is None)
+        if manual:
+            self.field_note.setText("Measure the field of view at the working distance.")
+            return
+        wd = self.fields["nominal_wd_mm"].value()
+        try:
+            if lens is not None:
+                width, height = lens.field_of_view_mm(wd)
+                source = f"the loaded lens calibration ({lens.camera_serial})"
+            else:
+                size = self.recipe.expected_width_px, self.recipe.expected_height_px
+                width, height = nominal_field_of_view_mm(wd, self.lens_focal.value(), self.pixel_size.value(), size)
+                source = (f"a {self.lens_focal.value():g} mm lens on {size[0]} × {size[1]} px of "
+                          f"{self.pixel_size.value():g} µm (fisheye datasheet estimate)")
+            if not (np.isfinite(width) and np.isfinite(height) and width > 0 and height > 0):
+                raise ValueError("lens model gives no usable field at this distance")
+        except (ValueError, ArithmeticError) as exc:
+            self.field_note.setText(f"Cannot compute the visible field: {exc}. Enter it by hand.")
+            return
+        for widget, value in ((self.field_width, width), (self.field_height, height)):
+            with QSignalBlocker(widget):
+                widget.setValue(value)
+        self.field_note.setText(f"Field at {wd:g} mm from {source}. Measure it before trusting the scale.")
 
     def update_lens_label(self):
         lens = self.recipe.lens_calibration

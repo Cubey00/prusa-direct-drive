@@ -144,3 +144,8 @@ frame_timing_verified = false
 wd_reference_record = ""
 sfr_reference_verified = false
 sfr_validation_id = ""
+# Nominal lens for the Focus-Field visible field (chart size) until a lens.json is loaded.
+# Lensation B10M3218S123C (S-mount, f 3.2 mm, H 117 / V 86 deg) on an IDS U3-38L1XLS-C
+# (Sony IMX412, 4056 x 3040 px of 1.55 um). Fisheye: field = 2 x WD x tan(half sensor / f).
+lens_focal_mm = 3.2
+pixel_size_um = 1.55
