@@ -21,6 +21,7 @@ def test_page_preserves_existing_workflows(window):
     assert window.plates is not None and window.printer is not None
     assert window.left.calib_btn is not None and window.run.execute_btn is not None
     assert window.focusfield.simulate.isChecked()
+    assert window.focusfield.preset.currentText() == "Measurement"
 
 
 def test_simulated_preview_runs_in_worker_without_devices(window, qtbot):
@@ -31,6 +32,9 @@ def test_simulated_preview_runs_in_worker_without_devices(window, qtbot):
     assert not p.preview.pixmap().isNull()
     assert not p.hardware_active
     assert "1600 × 1280 px · RGB8" in p.status.toPlainText()
+    assert "Review the sweep" in p.chart_check_note.text()
+    p.fields["nominal_wd_mm"].setValue(20.1)
+    assert "Check the simulated chart" in p.chart_check_note.text()
 
 
 def test_preview_keeps_frame_edges_visible_when_panel_shrinks(window, qtbot):
@@ -65,14 +69,53 @@ def test_loading_and_clearing_lens_profile_invalidates_preview(window, tmp_path,
     path.write_text(json.dumps(asdict(lens)))
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (str(path), ""))
     panel = window.focusfield
+    assert "checkerboard calibration test" in panel.lens_label.text()
     panel.last_preview = {"previous": True}
     panel.load_lens_calibration()
     assert panel.last_preview is None and "TEST" in panel.lens_label.text()
     assert panel.current_recipe().lens_calibration is None
     panel.simulate.setChecked(False)
     assert panel.current_recipe().lens_calibration == lens
+    assert "checkerboard calibration test" not in panel.lens_label.text()
     panel.clear_lens.click()
     assert panel.current_recipe().lens_calibration is None
+    assert "checkerboard calibration test" in panel.lens_label.text()
+
+
+def test_combined_chart_is_selected_and_validated_lens_opens_scan_review(qtbot, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+    from focusfield.controller import RunResult
+    from focusfield.lens import LensCalibration
+    from pathprogrammer.ui.focusfield_panel import FocusFieldPanel
+
+    panel = FocusFieldPanel(None)
+    qtbot.addWidget(panel)
+    chart = tmp_path / "targets.svg"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (str(chart), ""))
+    panel.generate_chart()
+    assert chart.is_file()
+    assert panel.chart.text() == str(tmp_path / "targets_layout.json")
+    assert panel.checkerboard == {"inner_corners": [7, 5], "square_mm": 3.7}
+    panel.simulate.setChecked(False)
+    panel.format.setCurrentText("Mono16")
+    assert not panel.start_btn.isEnabled()
+
+    lens = LensCalibration("TEST", (160, 120), ((90, 0, 80), (0, 90, 60), (0, 0, 1)),
+                           (-0.09, 0.04, 0, 0), model="fisheye")
+    reviews = []
+    monkeypatch.setattr(panel, "start_scan", lambda: reviews.append(panel.current_recipe()))
+    details = {
+        "lens_calibration": lens,
+        "lens_path": str(tmp_path / "lens.json"),
+        "preview_registration": {"full_field_visible": True},
+        "pixel_format": "Mono16",
+        "image_size_px": lens.image_size_px,
+    }
+    panel._start_task(lambda: RunResult("COMPLETED", "", "Validated", details=details))
+    panel.thread.start()
+    qtbot.waitUntil(lambda: bool(reviews))
+    assert reviews[0].lens_calibration == lens
+    assert reviews[0].chart_path == panel.chart.text()
 
 
 def test_hardware_activity_blocks_touch_calibration_and_printer_actions(window, monkeypatch):
@@ -155,6 +198,8 @@ def test_quick_and_measurement_presets_derive_a_grid_and_count(window, monkeypat
     from pathprogrammer.ui import focusfield_panel
 
     panel = window.focusfield
+    assert "126 frames" in panel.plan_note.text()
+    panel.preset.setCurrentText("Quick check")
     assert "21 frames" in panel.plan_note.text()
     assert panel.current_recipe().expected_width_px == 1600
     panel.fields["nominal_wd_mm"].setValue(20.013)
@@ -168,13 +213,17 @@ def test_quick_and_measurement_presets_derive_a_grid_and_count(window, monkeypat
     profile = replace(SETTINGS.focusfield, camera_pipeline_verified=True, verified_pixel_format="Mono16")
     monkeypatch.setattr(focusfield_panel, "load_settings", lambda: replace(SETTINGS, focusfield=profile))
     panel.simulate.setChecked(False)
-    assert panel.preset.currentText() == "Measurement"
+    assert panel.preset.currentText() == "Quick check"
+    panel.preset.setCurrentText("Measurement")
     assert panel.current_recipe().pixel_format == "Mono16" and not panel.format.isEnabled()
     assert "54 frames" in panel.plan_note.text()
     panel.fields["repetitions"].setValue(1)
     assert panel.reverse.isHidden() and "27 frames" in panel.plan_note.text()
     panel.dry_run.setChecked(True)
     assert "0 frames" in panel.plan_note.text() and panel.start_btn.text().startswith("Run dry run")
+    assert panel.chart_group.isHidden() and panel.chart_check_group.isHidden()
+    panel.dry_run.setChecked(False)
+    assert not panel.chart_group.isHidden() and not panel.chart_check_group.isHidden()
 
 
 def test_preview_and_report_survive_unrelated_settings(window, qtbot, tmp_path):
@@ -210,7 +259,7 @@ def test_scout_draft_reuses_capture_settings_without_overwriting_manual_range(wi
     assert draft.distances() == [19.975, 20, 20.025, 20.05, 20.075, 20.1, 20.125]
     assert draft.frames_per_position == original.frames_per_position and draft.nominal_wd_mm == original.nominal_wd_mm
     assert panel.current_recipe() == original
-    assert "7 positions" in panel.scout_note.text()
+    assert "14 positions (7 per sweep)" in panel.scout_note.text()
 
 
 @pytest.mark.parametrize('approved', [False, True])

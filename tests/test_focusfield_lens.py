@@ -70,8 +70,8 @@ def test_rectification_fallback_still_requires_all_four_tags(distorted_chart, mo
     calls = []
 
     class RetryDetector:
-        def __init__(self, dictionary):
-            self.detector = original(dictionary)
+        def __init__(self, *args):
+            self.detector = original(*args)
 
         def detectMarkers(self, image):
             calls.append(image.shape)

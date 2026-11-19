@@ -1,4 +1,4 @@
-"""Measured OpenCV pinhole intrinsics in native capture pixel coordinates."""
+"""Measured OpenCV lens intrinsics in native capture pixel coordinates."""
 from dataclasses import dataclass
 from functools import lru_cache
 import json
@@ -16,6 +16,7 @@ class LensCalibration:
     dist_coeffs: tuple
     calibration_rms_px: float | None = None
     validation_rms_px: tuple = ()
+    model: str = "pinhole"
 
     def __post_init__(self):
         matrix = np.asarray(self.camera_matrix, dtype=float)
@@ -32,8 +33,11 @@ class LensCalibration:
                 or not np.array_equal(matrix[2], [0, 0, 1])
                 or not 0 <= matrix[0, 2] < size[0] or not 0 <= matrix[1, 2] < size[1]):
             raise ValueError("Invalid OpenCV lens camera matrix")
-        if coeffs.shape not in {(4,), (5,)} or not np.isfinite(coeffs).all():
-            raise ValueError("Lens calibration requires 4 or 5 finite OpenCV pinhole coefficients")
+        if self.model not in {"pinhole", "fisheye"}:
+            raise ValueError("Unsupported lens calibration model")
+        lengths = {(4,)} if self.model == "fisheye" else {(4,), (5,)}
+        if coeffs.shape not in lengths or not np.isfinite(coeffs).all():
+            raise ValueError(f"Invalid OpenCV {self.model} distortion coefficients")
         all_errors = errors if self.calibration_rms_px is None else (*errors, self.calibration_rms_px)
         for error in all_errors:
             if not np.isfinite(error) or error < 0:
@@ -61,9 +65,19 @@ class LensCalibration:
         matrix[:2] /= pitch
         return matrix
 
+    def undistort(self, points, matrix):
+        pts = np.asarray(points, dtype=np.float64).reshape(-1, 1, 2)
+        coeffs = np.asarray(self.dist_coeffs)
+        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-8)
+        if self.model == "fisheye":
+            return cv2.fisheye.undistortPoints(pts, matrix, coeffs, P=matrix).reshape(-1, 2)
+        return cv2.undistortPointsIter(pts, matrix, coeffs, None, matrix, criteria).reshape(-1, 2)
 
-def distort_points(points, ideal_matrix, raw_matrix, coeffs):
+
+def distort_points(points, ideal_matrix, raw_matrix, coeffs, *, model="pinhole"):
     rays = (points - ideal_matrix[:2, 2]) / ideal_matrix.diagonal()[:2]
+    if model == "fisheye":
+        return cv2.fisheye.distortPoints(rays.reshape(-1, 1, 2), raw_matrix, coeffs).reshape(-1, 2)
     rays = np.column_stack((rays, np.ones(len(rays))))
     projected, _ = cv2.projectPoints(rays, np.zeros(3), np.zeros(3), raw_matrix, coeffs)
     return projected.reshape(-1, 2)
@@ -74,6 +88,11 @@ def rectification_maps(calibration, pitch, offset, size):
     """Lazily cache the maps for the marker-only fallback."""
     matrix = calibration.analysis_matrix(pitch, offset)
     coeffs = np.asarray(calibration.dist_coeffs)
+    if calibration.model == "fisheye":
+        rotation = np.eye(3)
+        ideal = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(matrix, coeffs, size, rotation, balance=1)
+        maps = cv2.fisheye.initUndistortRectifyMap(matrix, coeffs, rotation, ideal, size, cv2.CV_16SC2)
+        return ideal, maps
     ideal, _ = cv2.getOptimalNewCameraMatrix(matrix, coeffs, size, 1, size)
     maps = cv2.initUndistortRectifyMap(matrix, coeffs, None, ideal, size, cv2.CV_16SC2)
     return ideal, maps

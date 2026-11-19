@@ -20,17 +20,25 @@ python -m pip install -r requirements.txt
 python -m pathprogrammer
 ```
 
-Select **Focus-Field MTF**. **Simulation** starts with the **Quick check** preset.
-**Check chart** renders a synthetic chart, checks all four markers and displays the image.
-**Run scan** captures the planned frames and generates a report under **Results**.
-**STOP** stays available while the worker is active.
+Select **Focus-Field MTF**. The page opens in **Measurement** with **Use simulation**
+enabled. Turn off simulation when you're ready to use the real camera and printer.
 
-Start with a nominal working distance, a half-span and a step. The app fits whole
-steps on both sides of the nominal plane, within the requested span. To enter
-independent endpoints, choose **Use manual scan bounds** under **Advanced scan settings**.
-A manual grid that misses the requested plane displays a separate measurement warning.
-The scan summary shows the actual range, positions, frames and estimated free disk
-space needed. **Setup** holds the chart, calibration and recipe controls.
+1. Set the working distance, sweep half-span and step. The app fits whole steps on both
+   sides of the working distance, within the requested span. For independent endpoints,
+   use **Advanced scan settings → Use manual scan bounds**. The page warns if the
+   selected grid misses the working distance.
+2. For real hardware, generate both targets for the visible field or select the
+   layout that matches your existing print. Simulation can use the bundled layout.
+3. Use **Check chart** to capture a frame and check that the chart field and all four
+   markers fit. The same step shows the loaded lens calibration or suggests the
+   checkerboard test and provides instructions.
+4. Review the range, positions, frame count and disk space. **Run scan** starts a
+   simulated scan. **Review scan…** on real hardware asks for approval after the
+   physical fixture and safety checks. A completed analysis is available under
+   **Results**. **STOP** stays available while the worker is active.
+
+Use **Other run options** to select **Quick check**, run a motion-only dry run,
+or load a scan recipe. Centering and scouting are under **Optional centering and scouting**.
 
 The same analysis is available without Qt or a camera SDK:
 
@@ -61,8 +69,10 @@ python -m focusfield chart --output charts/my_chart.svg --rows 5 --cols 7 --angl
 ```
 
 Each command writes the SVG and `<stem>_layout.json` together. The UI generator exposes
-visible field dimensions and selects its new JSON for the next run. For other generator
-options use the CLI, then **Select chart layout**. The default is 31 slanted squares
+visible field dimensions and selects its new JSON for the next run. **Generate both charts…**
+prints the MTF target and a smaller lens checkerboard side by side, equivalent to adding
+`--with-checkerboard` to the CLI command. For other generator
+options use the CLI, then **Use existing layout…**. The default is 31 slanted squares
 (5 × 7 grid with empty corners) and four unique `DICT_4X4_50` markers, IDs 0/1/2/3.
 These are optical markers, separate from tactile plate cones F1–F3 and slicing manifests.
 
@@ -71,7 +81,26 @@ at the actual working distance. The provisional 60 × 45 mm field is not a camer
 calibration. Marker visibility, local edge size, printing quality and distortion must be
 checked across the complete scan. For a distorted lens, use a measured lens profile.
 
-### Calibrate the lens from checkerboard images
+### Calibrate and measure on the combined sheet
+
+1. Print the SVG at 100%, verify the 10 mm scale bar, and tape the sheet flat to the bed.
+   Lock the lens focus. Complete the physical fixture and dry-run checks, including a
+   verified XY clearance envelope across the entire sheet and selected Z range.
+2. In **Optional centering and scouting**, load the measured optical XY mapping. Use
+   the printer controls and camera preview to center the checkerboard once, then select
+   **Record checkerboard XY**. For automatic transfer after calibration, also center
+   the MTF panel and select **Record MTF chart XY**.
+3. Choose **Calibrate lens…** or **Calibrate lens and review scan…** and approve the printer motion. The app
+   samples multiple XY positions and uses the near, middle and far depths of the
+   selected sweep, with the lens focus fixed. It fits a fisheye model using the
+   printed square spacing and measured changes in Z.
+4. When the held-out views pass the 3-pixel limit, the app saves and loads
+   `lens.json` in a new lens folder under the Focus-Field runs folder. If you recorded
+   the MTF position, it moves there and checks the chart with the correction applied.
+   A passing check opens the usual scan review for approval. Otherwise, center the MTF
+   panel and select **Check chart** when ready. STOP cancels the active operation.
+
+### Calibrate the lens from saved checkerboard images
 
 Use a flat, rigid checkerboard with known square spacing. Lock the lens and use the
 same focus, camera, resolution, crop, orientation and binning as the MTF capture.
@@ -91,7 +120,10 @@ python -m focusfield calibrate-lens --camera-serial CAMERA_SERIAL --corners 7 5 
 The command reads saved images and reports the fit RMS and each validation view's
 RMS. It uses the standard OpenCV pinhole model with radial and tangential distortion.
 The command requires each validation view to fit within 3 native sensor pixels RMS.
-Use **Load lens calibration…** under **Setup**, then run **Check chart** on the flat MTF target. The app checks the camera serial and native image size.
+**Lens calibration help…** in **Check the chart** explains automatic calibration and gives the manual command for the current
+platform, including PowerShell on Windows. Use **Load lens calibration…** in the
+same step, then run **Check chart** on the flat MTF target. The app checks the
+camera serial and native image size.
 If using a recipe file, put `lens_calibration = "lens.json"` in its top-level settings,
 with the path relative to the recipe. The run snapshots the profile for offline analysis.
 

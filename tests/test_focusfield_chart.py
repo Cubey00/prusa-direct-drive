@@ -23,6 +23,21 @@ def test_supplied_chart_and_generated_chart_match(tmp_path):
     assert svg.attrib["width"] == "100mm" and svg.attrib["height"] == "80mm"
 
 
+def test_combined_print_keeps_mtf_coordinates_and_describes_the_checkerboard(tmp_path):
+    output = tmp_path / "combined.svg"
+    generate_chart(build_parser().parse_args(["--output", str(output), "--with-checkerboard"]))
+    layout = load_chart(tmp_path / "combined_layout.json")
+    board = layout.pop("checkerboard")
+    assert layout == load_chart(DEFAULT_CHART)
+    assert board == {"inner_corners": [7, 5], "square_mm": 3.7}
+    svg = ET.parse(output).getroot()
+    namespace = {"svg": "http://www.w3.org/2000/svg"}
+    squares = svg.findall(".//svg:g[@id='lens-checkerboard']/svg:rect", namespace)
+    assert len(squares) == 24
+    assert min(float(rect.attrib["x"]) for rect in squares) > layout["page_width"]
+    assert all(float(rect.attrib["width"]) == board["square_mm"] for rect in squares)
+
+
 def test_rendered_supplied_svg_has_four_correct_markers(qapp):
     from PySide6.QtCore import QRectF
     from PySide6.QtGui import QImage, QPainter
@@ -59,6 +74,37 @@ def test_marker_identity_partial_coverage_and_local_edges():
         detect_chart(gray, chart)
     with pytest.raises(ValueError, match=r"Detected IDs none, missing IDs \[0, 1, 2, 3\]"):
         detect_chart(np.full_like(gray, 0.8), chart)
+
+
+def test_threshold_retry_recovers_markers_and_still_checks_geometry(monkeypatch):
+    chart = load_chart(DEFAULT_CHART)
+    camera = SimCamera(SimStage(simulation_fixture()), Recipe(), chart)
+    gray = camera.capture().pixels[..., 1] / 255
+    detector = cv2.aruco.ArucoDetector
+    thresholds = []
+
+    class MissingOnFirstPass:
+        def __init__(self, dictionary, params=None):
+            self.retry = params is not None
+            params = params if self.retry else cv2.aruco.DetectorParameters()
+            thresholds.append(params.adaptiveThreshConstant)
+            self.detector = detector(dictionary, params)
+
+        def detectMarkers(self, image):
+            corners, ids, rejected = self.detector.detectMarkers(image)
+            if self.retry:
+                return corners, ids, rejected
+            keep = np.flatnonzero(ids.ravel() != 0)
+            return tuple(corners[i] for i in keep), ids[keep], rejected
+
+    monkeypatch.setattr(cv2.aruco, "ArucoDetector", MissingOnFirstPass)
+    _, error = detect_chart(gray, chart)
+    assert error < 1
+    assert len(thresholds) == 2 and thresholds[1] > thresholds[0]
+
+    chart["fiducials"][0]["top_left_mm"][0] += 3
+    with pytest.raises(ValueError, match=r"All four ArUco markers decoded.*exceeds the 3 sensor-pixel limit"):
+        detect_chart(gray, chart)
 
 
 @pytest.mark.parametrize("args", [["--rows", "2"], ["--angle", "0"], ["--field-width", "-5"],

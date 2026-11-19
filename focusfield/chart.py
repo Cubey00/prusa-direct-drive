@@ -30,7 +30,18 @@ def load_chart(path):
     if (not np.isfinite([chart["page_width"], chart["page_height"], *field.values()]).all()
             or min(chart["page_width"], chart["page_height"], field["width"], field["height"]) <= 0):
         raise ValueError("Invalid page / visible field dimensions")
+    if "checkerboard" in chart:
+        board = chart["checkerboard"]
+        cols, rows = board["inner_corners"]
+        if (any(type(n) is not int or not 3 <= n <= 30 for n in (cols, rows))
+                or not np.isfinite(board["square_mm"]) or board["square_mm"] <= 0):
+            raise ValueError("Invalid checkerboard spacing or inner corner counts")
     return chart
+
+
+def _missing_markers(detected_ids, expected_ids):
+    unique_ids = set(detected_ids)
+    return len(unique_ids) == len(detected_ids) < len(expected_ids) and unique_ids.issubset(expected_ids)
 
 
 def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0,
@@ -42,13 +53,22 @@ def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0,
     expected_ids = [0, 1, 2, 3]
     detected_ids = ids.ravel().tolist() if ids is not None else []
     rectified_matrix = None
-    clean_subset = len(set(detected_ids)) == len(detected_ids) and set(detected_ids).issubset(expected_ids)
-    if lens_calibration is not None and clean_subset and len(detected_ids) < len(expected_ids):
+    detection_image = image
+    if lens_calibration is not None and _missing_markers(detected_ids, expected_ids):
         rectified_matrix, maps = rectification_maps(
             lens_calibration, sensor_pitch, sensor_offset, (image.shape[1], image.shape[0]))
-        rectified = cv2.remap(image, *maps, cv2.INTER_LINEAR)
-        corners, ids, _ = detector.detectMarkers(rectified)
+        detection_image = cv2.remap(image, *maps, cv2.INTER_LINEAR)
+        corners, ids, _ = detector.detectMarkers(detection_image)
         detected_ids = ids.ravel().tolist() if ids is not None else []
+    if _missing_markers(detected_ids, expected_ids):
+        # Uneven light can break a marker contour at the default threshold.
+        params = cv2.aruco.DetectorParameters()
+        params.adaptiveThreshConstant += 2
+        retry = cv2.aruco.ArucoDetector(dictionary, params)
+        retry_corners, ids, _ = retry.detectMarkers(detection_image)
+        retry_ids = ids.ravel().tolist() if ids is not None else []
+        if sorted(retry_ids) == expected_ids:
+            corners, detected_ids = retry_corners, retry_ids
     if sorted(detected_ids) != expected_ids:
         missing_ids = sorted(set(expected_ids).difference(detected_ids))
         raise ValueError(
@@ -70,14 +90,12 @@ def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0,
         coeffs = np.asarray(lens_calibration.dist_coeffs)
         ideal_matrix = raw_matrix if rectified_matrix is None else rectified_matrix
         if rectified_matrix is None:
-            criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-8)
-            ideal = cv2.undistortPointsIter(observed.reshape(-1, 1, 2), raw_matrix, coeffs,
-                                           None, ideal_matrix, criteria).reshape(-1, 2)
-            round_trip = distort_points(ideal, ideal_matrix, raw_matrix, coeffs)
+            ideal = lens_calibration.undistort(observed, raw_matrix)
+            round_trip = distort_points(ideal, ideal_matrix, raw_matrix, coeffs, model=lens_calibration.model)
             if not np.isfinite(round_trip).all() or np.max(np.linalg.norm(round_trip - observed, axis=1)) * sensor_pitch > 0.5:
                 raise ValueError("Lens calibration could not invert observed marker coordinates")
         else:
-            observed = distort_points(ideal, ideal_matrix, raw_matrix, coeffs)
+            observed = distort_points(ideal, ideal_matrix, raw_matrix, coeffs, model=lens_calibration.model)
     h, _ = cv2.findHomography(np.asarray(source, dtype=float), ideal, 0)
     if h is None:
         raise ValueError("Degenerate chart localization")
@@ -85,7 +103,7 @@ def register_chart(gray, chart, *, optical_center_px=None, sensor_pitch=1.0,
     def project_chart(points):
         mapped = project(h, points)
         if lens_calibration is not None:
-            mapped = distort_points(mapped, ideal_matrix, raw_matrix, coeffs)
+            mapped = distort_points(mapped, ideal_matrix, raw_matrix, coeffs, model=lens_calibration.model)
         if not np.isfinite(mapped).all():
             raise ValueError("Chart projection produced nonfinite coordinates")
         return mapped
