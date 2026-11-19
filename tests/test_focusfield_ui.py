@@ -30,6 +30,27 @@ def test_simulated_preview_runs_in_worker_without_devices(window, qtbot):
     assert "All four chart markers detected; 124 local edges" in p.status.toPlainText()
     assert not p.preview.pixmap().isNull()
     assert not p.hardware_active
+    assert "1600 × 1280 px · RGB8" in p.status.toPlainText()
+
+
+def test_preview_keeps_frame_edges_visible_when_panel_shrinks(window, qtbot):
+    import numpy as np
+
+    panel = window.focusfield
+    window.centralWidget().setCurrentWidget(panel)
+    window.show()
+    panel.preview.setFixedSize(640, 480)
+    frame = np.full((600, 800, 3), 25, dtype=np.uint8)
+    frame[:, :80] = [255, 0, 0]
+    frame[:, -80:] = [0, 255, 0]
+    panel.on_event("frame", ({"bit_depth": 8}, frame))
+    assert panel.preview.pixmap().width() == 640
+    panel.preview.setFixedSize(340, 240)
+    qtbot.waitUntil(lambda: panel.preview.pixmap().width() <= 340)
+    visible = panel.preview.grab().toImage()
+    assert panel.preview.pixmap().size().toTuple() == (320, 240)
+    assert visible.pixelColor(14, 120).getRgb()[:3] == (255, 0, 0)
+    assert visible.pixelColor(326, 120).getRgb()[:3] == (0, 255, 0)
 
 
 def test_loading_and_clearing_lens_profile_invalidates_preview(window, tmp_path, monkeypatch):

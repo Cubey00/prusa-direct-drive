@@ -7,7 +7,7 @@ import threading
 
 import numpy as np
 from PySide6.QtCore import QObject, QSignalBlocker, QThread, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices, QImage, QPixmap
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                                QProgressBar, QPushButton, QScrollArea, QSpinBox,
@@ -26,6 +26,7 @@ from focusfield.hardware import SimCamera, SimStage, ZStage
 from focusfield.reports import analyze_run
 from focusfield.setup import CenteringLimits, SetupController, simulation_xy_calibration
 from .collapsible import CollapsibleBox
+from .photo_panel import LiveView, to_qimage
 from .printer_box import link_from_settings
 from .optical_setup_dialogs import measured_wd_dialog, scout_recipe_dialog
 
@@ -200,8 +201,8 @@ class FocusFieldPanel(QWidget):
         split.addWidget(scroll)
         right = QWidget()
         layout = QVBoxLayout(right)
-        self.preview = QLabel("Captured frame preview\nSimulation is enabled by default")
-        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview = LiveView()
+        self.preview.setText("Captured frame preview\nSimulation is enabled by default")
         self.preview.setMinimumSize(320, 240)
         layout.addWidget(self.preview, 1)
         self.status = QTextEdit()
@@ -681,12 +682,13 @@ class FocusFieldPanel(QWidget):
                     capture = camera.capture().validate()
                     check_cancel(cancel)
                     self.worker.event.emit("frame", (capture.metadata, capture.pixels))
+                    height, width = capture.pixels.shape[:2]
+                    frame_info = (f"Camera {capture.metadata['camera_serial']} · {width} × {height} px · "
+                                  f"{capture.metadata['pixel_format']}")
                     try:
                         registration, gray, _ = register_capture(capture, chart, recipe, optical_center_px=calibrated_center)
                     except ValueError as exc:
-                        height, width = capture.pixels.shape[:2]
-                        serial = capture.metadata["camera_serial"]
-                        raise ValueError(f"Camera {serial} · {width} × {height} px. {exc}") from exc
+                        raise ValueError(f"{frame_info}. {exc}") from exc
                     h, error = registration.pop('homography'), registration['reprojection_rms_px']
                     project_chart = registration.pop("project_chart")
                     local_count = 0
@@ -699,7 +701,7 @@ class FocusFieldPanel(QWidget):
                     message = (f"All four chart markers detected; {local_count} local edges. "
                                f"Marker reprojection RMS {error:.2f} sensor pixels. "
                                f"Lens correction {'on' if registration['lens_corrected'] else 'off'}. "
-                               f"Camera {capture.metadata['camera_serial']}; {capture.metadata['pixel_format']}. "
+                               f"{frame_info}. "
                                f"Chart-center error {registration['center_error_px']} sensor pixels "
                                f"relative to {'calibrated optical center' if calibrated_center else 'image midpoint (diagnostic only)'}. "
                                "Registration does not authorize XY motion or establish absolute WD.")
@@ -751,11 +753,9 @@ class FocusFieldPanel(QWidget):
             self.progress.setValue(args[0])
         elif kind == "frame":
             record, array = args
-            if array.ndim == 2:
-                array = np.repeat(array[..., None], 3, axis=2)
-            array = np.ascontiguousarray(array / (2**record["bit_depth"]-1) * 255, dtype=np.uint8)
-            image = QImage(array.data, array.shape[1], array.shape[0], array.strides[0], QImage.Format_RGB888).copy()
-            self.preview.setPixmap(QPixmap.fromImage(image).scaled(640, 480, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            if array.dtype != np.uint8:
+                array = np.ascontiguousarray(array / (2**record["bit_depth"]-1) * 255, dtype=np.uint8)
+            self.preview.set_image(to_qimage(np.ascontiguousarray(array)))
 
     @Slot(object)
     def finished(self, result):
