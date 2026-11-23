@@ -2,7 +2,7 @@
 from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
                                QLabel, QLineEdit, QMessageBox)
 
-from focusfield.calibration import WDReference
+from focusfield.calibration import WDReference, XYClearance
 from focusfield.setup import ScoutRecipe, suggest_scout
 
 
@@ -42,6 +42,71 @@ def measured_wd_dialog(parent, fixture):
         except ValueError as exc:
             QMessageBox.warning(dialog, "WD reference", str(exc))
     buttons.accepted.connect(save)
+    buttons.rejected.connect(dialog.reject)
+    dialog.exec()
+    return result[0] if result else None
+
+
+def xy_mapping_dialog(parent, fixture, nominal_wd_mm, previous=None):
+    dialog = QDialog(parent)
+    dialog.setWindowTitle("Measure optical XY mapping")
+    form = QFormLayout(dialog)
+    notice = QLabel(f"Center the checkerboard at {nominal_wd_mm:g} mm working distance with focus locked. "
+                    "The printer will sample both sides of the starting X and Y at 1 mm/s, holding Z fixed. "
+                    "Enter a measured clearance rectangle in machine coordinates.")
+    notice.setWordWrap(True)
+    form.addRow(notice)
+    clearance = previous.clearance() if previous else None
+    limits = {}
+    for axis in "xyz":
+        key = f"safe_{axis}_mm"
+        initial = getattr(clearance, key) if clearance else (
+            (fixture.safe_z_min_mm, fixture.safe_z_max_mm) if axis == "z" else ("", ""))
+        widgets = []
+        for label, value in zip(("minimum", "maximum"), initial):
+            widget = QLineEdit(str(value))
+            form.addRow(f"Safe {axis.upper()} {label} (mm)", widget)
+            widgets.append(widget)
+        limits[key] = widgets
+    dimensions = {}
+    for key, label in (("housing_radius_mm", "Housing radius"), ("housing_below_nozzle_mm", "Housing below nozzle"),
+                       ("target_height_mm", "Target height"), ("clearance_margin_mm", "Clearance margin")):
+        widget = QLineEdit(str(getattr(clearance, key)) if clearance else "")
+        dimensions[key] = widget
+        form.addRow(f"{label} (mm)", widget)
+    operator = QLineEdit(previous.operator if previous else "")
+    form.addRow("Operator", operator)
+    step = QDoubleSpinBox()
+    step.setRange(.25, 1.)
+    step.setDecimals(3)
+    step.setValue(.5)
+    form.addRow("Test displacement per axis (mm)", step)
+    checked = QCheckBox("I verified clearance across the full XY envelope and Z interval")
+    form.addRow(checked)
+    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    approve = buttons.button(QDialogButtonBox.Ok)
+    approve.setText("Approve fixed-Z XY moves")
+    approve.setAutoDefault(False)
+    approve.setEnabled(False)
+    buttons.button(QDialogButtonBox.Cancel).setDefault(True)
+    checked.toggled.connect(approve.setEnabled)
+    form.addRow(buttons)
+    result = []
+
+    def accept():
+        try:
+            bounds = {key: tuple(float(widget.text()) for widget in pair) for key, pair in limits.items()}
+            sizes = {key: float(widget.text()) for key, widget in dimensions.items()}
+            envelope = XYClearance(**bounds, **sizes, clearance_verified=checked.isChecked()).validate()
+            if not operator.text().strip():
+                raise ValueError("Enter the operator's name")
+        except ValueError as exc:
+            QMessageBox.warning(dialog, "XY calibration", str(exc))
+            return
+        result.append((envelope, operator.text().strip(), step.value()))
+        dialog.accept()
+
+    buttons.accepted.connect(accept)
     buttons.rejected.connect(dialog.reject)
     dialog.exec()
     return result[0] if result else None

@@ -14,8 +14,16 @@ from .chart import edge_rois, load_chart, register_capture
 from .config import Recipe
 from .data import atomic_json
 from .focus_fit import apparent_plane, fit_peak
+from .optical_distance import verify_working_distance
 from .sfr import slanted_edge
 from .quality import assess_field, required_regions, usable_edges
+
+
+DISTANCE_FIELDS = ["printer_working_distance_mm", "optical_working_distance_mm", "working_distance_difference_mm",
+                   "optical_distance_uncertainty_mm", "optical_pose_reprojection_rms_px", "optical_pose_tilt_deg",
+                   "camera_center_axial_distance_mm", "camera_center_perpendicular_distance_mm",
+                   "optical_discrepancy_threshold_mm", "optical_distance_valid", "optical_distance_status",
+                   "optical_distance_reason"]
 
 
 def _csv(path, rows, fields):
@@ -95,7 +103,7 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
     recipe = Recipe(**json.loads((path / "config.json").read_text(encoding="utf-8")))
     chart = load_chart(path / "chart_layout.json")
     validate_run(path, manifest, recipe, allow_partial=allow_partial, acquisition_complete=acquisition_complete)
-    results, detection = [], []
+    results, detection, distances = [], [], []
     for index, frame in enumerate(manifest["frames"]):
         if should_abort():
             raise InterruptedError("Analysis stopped")
@@ -105,12 +113,28 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
                     wd_mm=frame["nominal_working_distance_mm"],
                     commanded_wd_mm=(manifest['wd_calibration']['reference_wd_mm']
                         + frame['printer_z_command_mm'] - manifest['wd_calibration']['reference_z_mm']))
+        verification = frame.get("optical_distance") if recipe.measure_optical_distance else None
+        registration, failure = None, ""
         try:
-            registration, gray, pitch = register_capture(capture, chart, recipe)
+            registration, gray, pitch = register_capture(
+                capture, chart, recipe, refine_optical_corners=(
+                    recipe.measure_optical_distance and verification is None and recipe.optical_refine_corners))
             h, error = registration['homography'], registration['reprojection_rms_px']
             detection.append(dict(**base, valid=True, reason="", marker_error_px=error))
         except ValueError as exc:
-            detection.append(dict(**base, valid=False, reason=str(exc)))
+            failure = str(exc)
+            detection.append(dict(**base, valid=False, reason=failure))
+        if recipe.measure_optical_distance:
+            if verification is None:
+                verification = verify_working_distance(chart, recipe, registration, printer_wd=base["wd_mm"],
+                    printer_reference=manifest.get("wd_reference"), simulated=manifest["simulated"],
+                    registration_failure=failure)
+                frame["optical_distance"] = verification
+            pose = verification.get("optical_pose") or {}
+            distances.append(dict(image_id=frame["image_id"], **verification,
+                camera_center_axial_distance_mm=pose.get("camera_center_axial_distance_mm"),
+                camera_center_perpendicular_distance_mm=pose.get("camera_center_perpendicular_distance_mm")))
+        if registration is None:
             continue
         offset_x = 1 if registration["lens_corrected"] and pitch == 2 else 0
         for square in chart["slanted_squares"]:
@@ -169,6 +193,8 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
                            apparent_plane_residual_mm=float(delta))
     _csv(path / "chart_detection.csv", detection,
          ["image_id", "repetition", "wd_mm", "commanded_wd_mm", "valid", "reason", "marker_error_px"])
+    if recipe.measure_optical_distance:
+        _csv(path / "working_distance.csv", distances, ["image_id", *DISTANCE_FIELDS])
     _csv(path / "sfr_results.csv", results,
          ["image_id", "repetition", "wd_mm", "commanded_wd_mm", "region", "edge", "x_mm", "y_mm", "x_px", "y_px",
           "valid", "reason", "mtf50_cpp", "fixed_mtf", "angle_deg", "contrast"])
@@ -207,6 +233,9 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
     if good_frames / max(1, len(manifest["frames"])) < recipe.quality.min_valid_frame_fraction:
         qa_reasons.append("Insufficient frames with usable center/peripheral edges (blur, clipping or edge-fit failure)")
     reasons = list(qa_reasons)
+    warnings = sum(d["optical_distance_status"] == "Warning" for d in distances)
+    if warnings:
+        reasons.append(f"Distance discrepancy on {warnings} frame(s); scan potentially invalid")
     if allow_partial:
         reasons.append("Partial acquisition")
     if manifest["simulated"]:
@@ -229,6 +258,12 @@ def analyze_run(path, *, allow_partial=False, should_abort=lambda: False, acquis
                    qa_passed=not qa_reasons, qa_rejection_reasons=qa_reasons,
                    measurement_valid=not reasons, measurement_validated=not reasons,
                    measurement_rejection_reasons=reasons, usable_field_frames=good_frames)
+    if recipe.measure_optical_distance:
+        summary["working_distance_verification"] = dict(
+            validated_frames=sum(d["optical_distance_valid"] for d in distances),
+            compared_frames=sum(d["working_distance_difference_mm"] is not None for d in distances),
+            warning_frames=warnings, total_frames=len(distances), potentially_invalid=bool(warnings))
+        manifest["optical_distance_potentially_invalid"] = bool(warnings)
     if should_abort():
         raise InterruptedError("Analysis stopped")
     _plots(path, fits, results, recipe.nominal_wd_mm)
@@ -294,6 +329,15 @@ def _html(path, summary, recipe, fits):
                      ("best_mtf_map.png", "Best attainable fitted regional metric"),
                      ("apparent_tilt_residual_map.png", "Residual after separately fitted apparent plane"),
                      ("through_focus_curves.png", "Through-focus curves; orientations and repeats preserved in CSV")))
+    distance_summary = ""
+    if verification := summary.get("working_distance_verification"):
+        distance_summary = (
+            "<h2>Working-distance verification</h2>"
+            f"<p>{verification['validated_frames']} / {verification['total_frames']} frames have validated optical WD. "
+            f"{verification['compared_frames']} frames have a comparable printer WD; "
+            f"{verification['warning_frames']} exceed the discrepancy threshold.</p>"
+            '<p>Focus curves use printer-derived WD. See <a href="working_distance.csv">per-frame printer WD, '
+            'optical WD, difference and pose quality</a>.</p>')
     report = f'''<!doctype html><html lang="en"><meta charset="utf-8"><title>Focus-Field results</title>
 <style>body{{font:16px system-ui;max-width:1100px;margin:40px auto}}td,th{{padding:6px;border:1px solid #ccc}}
 table{{border-collapse:collapse}}img{{max-width:100%}}.notice{{background:#fff1c2;padding:16px}}</style>
@@ -314,7 +358,7 @@ Fit uncertainty is statistical only; WD calibration uncertainty and repeatabilit
 Command precision and reported position do not establish physical stage accuracy.</p>
 <p><a href="frames.csv">Frames</a> · <a href="chart_detection.csv">Chart detections</a> ·
 <a href="sfr_results.csv">Per-edge SFR</a> · <a href="focus_results.csv">Focus fits</a> ·
-<a href="manifest.json">Manifest</a></p>{plots}<table><tr>
+<a href="manifest.json">Manifest</a></p>{distance_summary}{plots}<table><tr>
 <th>Region</th><th>Edge</th><th>Repeat</th><th>Valid</th><th>Best WD (mm)</th><th>Fit uncertainty (mm)</th><th>Reason</th>
 </tr>{rows}</table></html>'''
     (path / "report.html").write_text(report, encoding="utf-8")

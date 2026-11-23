@@ -37,6 +37,12 @@ def checkerboard_corners(capture, board):
     return points
 
 
+def checkerboard_center(points, board):
+    cols, rows = board["inner_corners"]
+    grid = points.reshape(rows, cols, 2)
+    return grid[(rows-1)//2:rows//2+1, (cols-1)//2:cols//2+1].mean(axis=(0, 1))
+
+
 def fit_flat_lens(groups, board, image_size, serial, nominal_wd_mm, max_rms_px, *, check_abort=lambda: None):
     """Each group has a fixed XY placement and near, middle and far (Z, corners) observations."""
     if len(groups) != PLACEMENTS or any(len(group) != 3 for group in groups):
@@ -122,18 +128,52 @@ def fit_flat_lens(groups, board, image_size, serial, nominal_wd_mm, max_rms_px, 
     return lens
 
 
-class FlatCalibrationController(ScanController):
+class StationaryCalibrationController(ScanController):
+    """Capture fresh frames with checked XY/Z readback during calibration."""
+    def _position(self):
+        xyz = self.stage.position_xyz()
+        self.stage.check_xy(*xyz)
+        return np.asarray(xyz)
+
+    def _capture_at_position(self):
+        self._check_abort()
+        self._printer_guard()
+        before = self._position()
+        if self.cancel.wait(0 if self.simulated else self.recipe.settle_s):
+            self._check_abort()
+        settled = time.monotonic_ns()
+        self.camera.fresh()
+        self._check_abort()
+        capture = self.camera.capture()
+        self._capture_check(capture, settled)
+        reported = self._position()
+        if np.max(np.abs(reported-before)) > self.fixture.position_tolerance_mm:
+            raise RuntimeError("Printer position drifted during the calibration capture")
+        self.on_event("frame", capture.metadata, capture.pixels)
+        return capture, reported
+
+    def _close_devices(self, outcome, message):
+        if outcome != "COMPLETED":
+            self.stop()
+        if self._stop_thread:
+            self._stop_thread.join()
+        for device in (self.camera, self.stage):
+            try:
+                device.close()
+            except Exception as exc:
+                outcome, message = "FAILED", f"{message}. Device close failed: {exc}"
+        if self._stop_error:
+            outcome, message = "FAILED", f"{message}. STOP failed: {self._stop_error}"
+        return outcome, message
+
+
+class FlatCalibrationController(StationaryCalibrationController):
     """Capture and validate a flat checkerboard, then position and check the MTF target."""
 
     def __init__(self, *args, panel_positions, xy_calibration, **kwargs):
         super().__init__(*args, **kwargs)
         self.panel_positions = panel_positions
         self.xy_calibration = xy_calibration
-
-    def _position(self):
-        xyz = self.stage.position_xyz()
-        self.stage.check_xy(*xyz)
-        return np.asarray(xyz)
 
     def _move(self, x, y, z):
         self._check_abort()
@@ -154,30 +194,13 @@ class FlatCalibrationController(ScanController):
         if np.max(np.abs(self._position() - [x, y, z])) > tolerance:
             raise RuntimeError("Calibration XY/Z disagrees with the commanded position")
 
-    def _capture_at_position(self):
-        self._check_abort()
-        self._printer_guard()
-        before = self._position()
-        if self.cancel.wait(0 if self.simulated else self.recipe.settle_s):
-            self._check_abort()
-        settled = time.monotonic_ns()
-        self.camera.fresh()
-        self._check_abort()
-        capture = self.camera.capture()
-        self._capture_check(capture, settled)
-        reported = self._position()
-        if np.max(np.abs(reported-before)) > self.fixture.position_tolerance_mm:
-            raise RuntimeError("Printer position drifted during the calibration capture")
-        self.on_event("frame", capture.metadata, capture.pixels)
-        return capture, float(reported[2])
-
     def _sample(self, board, direction):
-        capture, z = self._capture_at_position()
+        capture, xyz = self._capture_at_position()
         points = checkerboard_corners(capture, board)
         # The detector may reverse the order on a symmetric board between frames.
         if (points[-1] - points[0]) @ direction < 0:
             points = points[::-1].copy()
-        return z, points
+        return float(xyz[2]), points
 
     def _calibrate(self, chart):
         board = chart["checkerboard"]
@@ -194,7 +217,7 @@ class FlatCalibrationController(ScanController):
             for z in (near, mid, far):
                 self.stage.check_xy(*center, z)
         self._move(*checker, mid)
-        frame, z = self._capture_at_position()
+        frame, xyz = self._capture_at_position()
         corners = checkerboard_corners(frame, board)
         direction = corners[-1] - corners[0]
         size = (frame.pixels.shape[1], frame.pixels.shape[0])
@@ -212,7 +235,7 @@ class FlatCalibrationController(ScanController):
         for index, (x, y) in enumerate(positions):
             self._state("CALIBRATING", f"Checkerboard position {index+1} of {PLACEMENTS}")
             self._move(x, y, mid)
-            at_mid = self._sample(board, direction) if index else (z, corners)
+            at_mid = self._sample(board, direction) if index else (float(xyz[2]), corners)
             self._move(x, y, near)
             at_near = self._sample(board, direction)
             self._move(x, y, far)
@@ -273,16 +296,6 @@ class FlatCalibrationController(ScanController):
         except Exception as exc:
             outcome, message = "FAILED", str(exc)
         finally:
-            if outcome != "COMPLETED":
-                self.stop()
-            if self._stop_thread:
-                self._stop_thread.join()
-            for device in (self.camera, self.stage):
-                try:
-                    device.close()
-                except Exception as exc:
-                    outcome, message = "FAILED", f"{message}. Device close failed: {exc}"
-            if self._stop_error:
-                outcome, message = "FAILED", f"{message}. STOP failed: {self._stop_error}"
+            outcome, message = self._close_devices(outcome, message)
             self._state(outcome, message)
         return RunResult(outcome, "", message, details=details)

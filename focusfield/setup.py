@@ -203,10 +203,15 @@ class SetupController(ScanController):
         self.settled_at_ns = time.monotonic_ns()
 
     def _center(self, chart):
-        c, limits = self.xy_calibration, self.centering_limits.validate()
+        c, limits = self.xy_calibration.for_centering(self.recipe.lens_calibration), self.centering_limits.validate()
+        if c is None:
+            raise ValueError("Centering requires a measured XY mapping covering the optical center")
         c.validate(self.fixture)
         guard = ZStage(self.fixture, self.settings.printer.z_max, c, self.settings.printer.travel)
-        guard.check_xy(*self.stage.position_xyz())
+        initial_xyz = self.stage.position_xyz()
+        guard.check_xy(*initial_xyz)
+        if c.sample_z_mm is not None and abs(initial_xyz[2] - c.sample_z_mm) > self.fixture.position_tolerance_mm:
+            raise ValueError("Set Z to the position used to measure the XY mapping before centering")
         sample, capture = self._capture(chart, optical_center_px=c.optical_center_px)
         if tuple(c.image_size_px) != (capture.pixels.shape[1], capture.pixels.shape[0]):
             raise ValueError("Camera image dimensions differ from XY calibration")

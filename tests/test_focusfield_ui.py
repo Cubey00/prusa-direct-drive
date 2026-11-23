@@ -101,6 +101,7 @@ def test_combined_chart_is_selected_and_validated_lens_opens_scan_review(qtbot, 
     panel.simulate.setChecked(False)
     panel.format.setCurrentText("Mono16")
     assert not panel.start_btn.isEnabled()
+    assert panel.measure_xy_btn.isEnabled()
 
     lens = LensCalibration("TEST", (160, 120), ((90, 0, 80), (0, 90, 60), (0, 0, 1)),
                            (-0.09, 0.04, 0, 0), model="fisheye")
@@ -118,6 +119,50 @@ def test_combined_chart_is_selected_and_validated_lens_opens_scan_review(qtbot, 
     qtbot.waitUntil(lambda: bool(reviews))
     assert reviews[0].lens_calibration == lens
     assert reviews[0].chart_path == panel.chart.text()
+
+
+def test_uncalibrated_checkerboard_preview_can_bootstrap_xy_without_enabling_scan(
+        window, qtbot, tmp_path, monkeypatch):
+    import numpy as np
+    from PySide6.QtWidgets import QFileDialog
+    from focusfield.acquisition import Capture, capture_metadata
+    from pathprogrammer.ui import focusfield_panel
+
+    camera_calls = []
+    image = np.full((480, 640, 3), 225, dtype=np.uint8)
+    for y in range(6):
+        for x in range(8):
+            if (x + y) % 2 == 0:
+                image[132+y*36:132+(y+1)*36, 176+x*36:176+(x+1)*36] = 25
+
+    class Camera:
+        def __init__(self, recipe):
+            assert recipe.lens_calibration is None
+
+        def open(self):
+            camera_calls.append("open")
+
+        def fresh(self):
+            pass
+
+        def capture(self):
+            return Capture(image, capture_metadata("RGB8", "TEST", 10000, 1))
+
+        def close(self):
+            camera_calls.append("close")
+
+    monkeypatch.setattr(focusfield_panel, "CameraAdapter", Camera)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (str(tmp_path / "sheet.svg"), ""))
+    panel = window.focusfield
+    panel.simulate.setChecked(False)
+    panel.generate_chart()
+    panel.check_preview()
+    qtbot.waitUntil(lambda: panel.thread is None, timeout=10000)
+    assert "Detected 35 checkerboard corners" in panel.status.toPlainText()
+    assert "Setup preview" in panel.chart_check_note.text()
+    assert panel.last_preview is None and not panel.start_btn.isEnabled()
+    assert not panel.center_btn.isEnabled() and panel.measure_xy_btn.isEnabled()
+    assert camera_calls == ["open", "close"]
 
 
 def test_hardware_activity_blocks_touch_calibration_and_printer_actions(window, monkeypatch):
