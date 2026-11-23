@@ -96,10 +96,16 @@ checked across the complete scan. For a distorted lens, use a measured lens prof
    blurred center is smallest in the camera image, then lock the focus.
    Complete the physical fixture and dry-run checks, including a
    verified XY clearance envelope across the entire sheet and selected Z range.
-2. In **Prepare the target sheet**, load the measured optical XY mapping. Use
-   the printer controls and camera preview to center the checkerboard once, then select
-   **Record checkerboard XY**. For automatic transfer after calibration, also center
-   the MTF panel and select **Record MTF chart XY**.
+2. Use the printer controls and camera preview to center the **checkerboard
+   panel** at the requested working distance. **Check chart** can confirm
+   checkerboard corners before a lens profile is available. In **Prepare the
+   target sheet**, choose **Measure optical XY mapping…**, enter the verified
+   mechanical envelope, and approve the fixed-Z moves. The app saves and loads
+   the mapping and records the checkerboard position when the measurements pass.
+   With an existing mapping, use **Load measured optical XY mapping…** and then
+   **Record checkerboard XY** instead. For automatic transfer after calibration,
+   frame the MTF panel and select **Record MTF chart XY**. That button saves
+   printer coordinates and works before the MTF markers pass calibrated detection.
 3. Choose **Calibrate lens…** or **Calibrate lens and review scan…** and approve the printer motion. The app
    samples multiple XY positions and uses the near, middle and far depths of the
    selected sweep, with the lens focus fixed. It fits a fisheye model using the
@@ -347,6 +353,9 @@ If marker detection fails, the preview lists decoded and missing IDs. Frame each
 black marker border with its light margin. If all four IDs decode but reprojection exceeds
 the displayed limit, check that the printed chart matches the loaded layout and lies flat.
 Curved rows or columns on a flat chart indicate distortion that a homography cannot model.
+Before lens calibration, the setup preview can show checkerboard corners or
+try approximate lens correction and local contrast enhancement to decode MTF
+markers for framing. The measured lens profile is used for the full MTF check.
 Without an optical XY profile, error is relative to the image midpoint and is diagnostic only.
 Centering can be selected when the preview shows an alignment error and a valid XY mapping is loaded.
 
@@ -354,9 +363,15 @@ An optical XY profile is a separate JSON measurement, loaded with **Load measure
 XY mapping…**. It must map small **printer XY changes to image-center changes**, including
 axis reversals/nonorthogonal axes, at the actual working Z and image configuration. The
 correction solves `J * delta_machine = -error_image`. Never copy tactile `mm_per_px`.
-Calibrate from supervised small known displacements; fit/validate the local mapping and
-its residual/uncertainty over a limited image radius. A wide-angle/global image scale is
-insufficient. No mapping-calibration movement is performed by this software.
+**Measure optical XY mapping…** uses supervised small displacements at fixed Z.
+It fits from four axis moves, checks two diagonal positions, and measures
+image repeatability on two returns to the starting position. It uses the
+checkerboard's central corners in native sensor coordinates, so the first
+mapping can be measured before the MTF marker check or lens calibration.
+The mapping is saved as `optical_xy_mapping.json` in its own Focusfield runs
+subfolder. The measured map provides starting positions for lens calibration.
+For later automatic chart centering, use it at the same Z with a measured
+lens profile whose optical centre lies within the sampled image region.
 
 Measure the XY Jacobian separately from the lens profile. Both measurements should use
 the actual lens and imaging configuration. The XY mapping still uses chart-center errors

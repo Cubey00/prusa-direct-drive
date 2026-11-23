@@ -2,7 +2,7 @@
 
 Nothing in this module connects to or moves hardware.
 """
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -80,6 +80,32 @@ def save_reference(record, output, settings_path):
 
 
 @dataclass(frozen=True)
+class XYClearance:
+    """Operator-verified mechanical envelope, independent of camera measurements."""
+    safe_x_mm: tuple
+    safe_y_mm: tuple
+    safe_z_mm: tuple
+    housing_radius_mm: float
+    housing_below_nozzle_mm: float
+    target_height_mm: float
+    clearance_margin_mm: float
+    clearance_verified: bool
+
+    def validate(self):
+        if self.clearance_verified is not True:
+            raise ValueError("Verify the mechanical clearance before authorizing XY motion")
+        for pair in (self.safe_x_mm, self.safe_y_mm, self.safe_z_mm):
+            if len(pair) != 2 or not np.isfinite(pair).all() or pair[0] >= pair[1]:
+                raise ValueError("XY clearance requires explicit finite machine-coordinate safety bounds")
+        scalars = [self.housing_radius_mm, self.housing_below_nozzle_mm,
+                   self.target_height_mm, self.clearance_margin_mm]
+        if (not np.isfinite(scalars).all() or min(scalars) < 0
+                or self.housing_radius_mm <= 0 or self.clearance_margin_mm <= 0):
+            raise ValueError("Enter measured housing and target dimensions and a positive clearance margin")
+        return self
+
+
+@dataclass(frozen=True)
 class XYCalibration:
     calibration_id: str
     fixture_id: str
@@ -103,6 +129,13 @@ class XYCalibration:
     method: str
     operator: str
     measured_at: str
+    sample_center_px: tuple | None = None
+    sample_z_mm: float | None = None
+
+    def clearance(self):
+        return XYClearance(self.safe_x_mm, self.safe_y_mm, self.safe_z_mm, self.housing_radius_mm,
+                           self.housing_below_nozzle_mm, self.target_height_mm, self.clearance_margin_mm,
+                           self.clearance_verified)
 
     def validate(self, fixture):
         j = np.asarray(self.jacobian_px_per_mm, dtype=float)
@@ -114,20 +147,35 @@ class XYCalibration:
             raise ValueError("XY centering requires a measured mapping, matching fixture/camera and verified clearance")
         if datetime.fromisoformat(self.measured_at.replace("Z", "+00:00")).tzinfo is None:
             raise ValueError("XY calibration date must include a timezone")
-        for pair in (self.safe_x_mm, self.safe_y_mm, self.safe_z_mm):
-            if len(pair) != 2 or not np.isfinite(pair).all() or pair[0] >= pair[1]:
-                raise ValueError("XY calibration requires explicit finite machine-coordinate safety bounds")
-        scalars = [self.valid_radius_px, self.uncertainty_px, self.residual_px, self.max_residual_px,
-                   self.housing_radius_mm, self.housing_below_nozzle_mm, self.target_height_mm, self.clearance_margin_mm]
+        self.clearance().validate()
+        scalars = [self.valid_radius_px, self.uncertainty_px, self.residual_px, self.max_residual_px]
         if (not np.isfinite(scalars).all() or min(scalars) < 0 or self.valid_radius_px <= 0
-                or self.max_residual_px <= 0 or self.residual_px + self.uncertainty_px > self.max_residual_px
-                or self.housing_radius_mm <= 0 or self.clearance_margin_mm <= 0):
-            raise ValueError("XY mapping uncertainty/residual or housing/target clearance is invalid")
+                or self.max_residual_px <= 0 or self.residual_px + self.uncertainty_px > self.max_residual_px):
+            raise ValueError("XY mapping uncertainty or residual is invalid")
         if (len(self.optical_center_px) != 2 or len(self.image_size_px) != 2
                 or not np.isfinite([*self.optical_center_px, *self.image_size_px]).all()
                 or any(not 0 <= p < n for p, n in zip(self.optical_center_px, self.image_size_px))):
             raise ValueError("Invalid calibrated image dimensions or optical center")
+        if self.sample_center_px is not None and (
+                len(self.sample_center_px) != 2 or not np.isfinite(self.sample_center_px).all()
+                or any(not 0 <= p < n for p, n in zip(self.sample_center_px, self.image_size_px))
+                or self.sample_z_mm is None or not np.isfinite(self.sample_z_mm)
+                or not self.safe_z_mm[0] <= self.sample_z_mm <= self.safe_z_mm[1]):
+            raise ValueError("Invalid XY calibration sampling position")
         return self
+
+    def for_centering(self, lens):
+        """Use the calibrated principal point within the sampled image region."""
+        if self.sample_center_px is None:
+            return self
+        if (lens is None or lens.camera_serial != self.camera_serial
+                or lens.image_size_px != tuple(self.image_size_px)):
+            return None
+        center = (lens.camera_matrix[0][2], lens.camera_matrix[1][2])
+        radius = self.valid_radius_px - np.linalg.norm(np.subtract(center, self.sample_center_px))
+        if radius <= 0:
+            return None
+        return replace(self, optical_center_px=center, valid_radius_px=float(radius))
 
     @classmethod
     def load(cls, path):

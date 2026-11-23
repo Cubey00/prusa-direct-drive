@@ -21,16 +21,17 @@ from focusfield.config import (DEFAULT_RECIPE, centered_scan_bounds, load_recipe
 from focusfield.data import storage_required
 from focusfield.calibration import XYCalibration, save_reference, validate_reference
 from focusfield.lens import LensCalibration, nominal_field_of_view_mm
-from focusfield.flat_calibration import FlatCalibrationController
+from focusfield.flat_calibration import FlatCalibrationController, checkerboard_corners
 from focusfield.controller import OperatorChecks, RunResult, ScanController
 from focusfield.hardware import SimCamera, SimStage, ZStage
 from focusfield.optical_distance import verify_working_distance
 from focusfield.reports import analyze_run
 from focusfield.setup import CenteringLimits, SetupController, simulation_xy_calibration
+from focusfield.xy_calibration import XYMappingController
 from .collapsible import CollapsibleBox
 from .photo_panel import LiveView, to_qimage
 from .printer_box import link_from_settings
-from .optical_setup_dialogs import measured_wd_dialog, scout_recipe_dialog
+from .optical_setup_dialogs import measured_wd_dialog, scout_recipe_dialog, xy_mapping_dialog
 from .style import ACCENT, ACCENT_DARK, STOP, STOP_DARK, action_button
 
 
@@ -230,6 +231,9 @@ class FocusFieldPanel(QWidget):
         self.flat_note = QLabel()
         self.flat_note.setWordWrap(True)
         flat_layout.addWidget(self.flat_note)
+        self.measure_xy_btn = QPushButton("Measure optical XY mapping…")
+        self.measure_xy_btn.clicked.connect(self.start_xy_calibration)
+        flat_layout.addWidget(self.measure_xy_btn)
         xy_row = QHBoxLayout()
         self.xy_btn = QPushButton("Load measured optical XY mapping…")
         self.xy_btn.clicked.connect(self.load_xy_calibration)
@@ -513,6 +517,7 @@ class FocusFieldPanel(QWidget):
         self.chart_check_group.setVisible(not dry_run)
         self.chart_check_group.setEnabled(idle)
         self.flat_controls.setVisible(self.checkerboard is not None)
+        self.measure_xy_btn.setEnabled(idle and not simulated and not dry_run)
         if self.checkerboard is not None:
             can_record = not simulated and self.xy_calibration is not None
             self.record_checkerboard.setEnabled(can_record)
@@ -527,7 +532,8 @@ class FocusFieldPanel(QWidget):
             if simulated:
                 instructions = "Turn off simulation to let the printer capture the checkerboard photos."
             elif not can_record:
-                instructions = "Load the measured optical XY mapping first."
+                instructions = ("Center the checkerboard and measure the XY mapping, or load an existing mapping. "
+                                "Measuring it also records the checkerboard's XY position.")
             else:
                 instructions = ("Center the checkerboard once and record its XY. The app captures the photos "
                                 "and saves and loads lens.json. Record the MTF chart XY for automatic transfer afterward.")
@@ -571,13 +577,17 @@ class FocusFieldPanel(QWidget):
             self.chart_check_note.setText("Capturing and checking one frame…")
         elif self._chart_check_state == "failed":
             self.chart_check_note.setText("Chart check failed. See the details below the image, adjust the setup, and try again.")
+        elif self._chart_check_state == "setup":
+            self.chart_check_note.setText(
+                "Setup preview. Use the checkerboard to measure XY and calibrate the lens, then recheck the MTF panel."
+                if self.checkerboard else "Setup preview. Recheck the MTF panel with a measured lens profile.")
         elif valid_preview:
             self.chart_check_note.setText("All four markers and the chart field fit. Review the sweep below.")
         else:
             self.chart_check_note.setText("Check the simulated chart before the sweep." if simulated else
                                           "Set the chart at the working distance. Check that all four corner markers fit.")
         center_error = self.last_preview["preview_registration"].get("center_error_px") if valid_preview else None
-        can_center = bool(valid_preview and (simulated or self.xy_calibration is not None) and center_error is not None
+        can_center = bool(valid_preview and (simulated or self._xy_for_centering() is not None) and center_error is not None
                           and np.linalg.norm(center_error) > CenteringLimits().tolerance_px)
         self.center_btn.setVisible(not dry_run and can_center)
         self.scout_btn.setVisible(not dry_run and valid_preview)
@@ -681,11 +691,11 @@ class FocusFieldPanel(QWidget):
         guide.setTextFormat(Qt.PlainText)
         guide.setText("Automatic lens calibration")
         guide.setInformativeText(
-            "Generate both charts and tape the sheet flat. Turn off simulation, load the measured optical XY "
-            "mapping, and center the checkerboard once with the printer controls. Select Record checkerboard XY, "
-            "then Calibrate lens. The printer moves in XY and Z with the lens focus fixed. The app takes the "
-            "photos, validates the fit, and saves and loads lens.json. Record the MTF chart XY before calibration "
-            "if you want the printer to move there and open scan review afterward.\n\n"
+            "Generate both charts and tape the sheet flat. Turn off simulation and center the checkerboard with "
+            "the printer controls. Measure optical XY mapping saves the mapping and records the checkerboard XY. "
+            "If you load an existing mapping, select Record checkerboard XY yourself. Then choose Calibrate lens. "
+            "The printer moves in XY and Z with focus locked. The app validates the fit and loads lens.json. "
+            "Record the MTF chart XY before calibration to return to that panel and run the corrected chart check.\n\n"
             "Manual calibration from saved photos\n\n"
             "1. Use a flat black-and-white checkerboard with a white margin. "
             "An 8 × 6 board has 7 × 5 inner corners. Measure the width of a square in millimeters.\n\n"
@@ -760,13 +770,55 @@ class FocusFieldPanel(QWidget):
         if path:
             try:
                 c = XYCalibration.load(path)
-                c.validate(load_settings().focusfield)
-                self.xy_calibration = c
-                self.panel_positions.clear()
-                self.xy_label.setText(f"XY calibration: {c.calibration_id}")
-                self.invalidate_preview()
+                self.set_xy_calibration(c.validate(load_settings().focusfield))
             except Exception as exc:
                 QMessageBox.warning(self, "Optical XY mapping", str(exc))
+
+    def set_xy_calibration(self, calibration):
+        self.xy_calibration = calibration
+        self.panel_positions.clear()
+        self.xy_label.setText(f"XY calibration: {calibration.calibration_id}")
+        self.invalidate_preview()
+
+    def _xy_for_centering(self):
+        return self.xy_calibration.for_centering(self.recipe.lens_calibration) if self.xy_calibration else None
+
+    def start_xy_calibration(self):
+        if self.thread or self.simulate.isChecked() or self.dry_run.isChecked():
+            return
+        if self.main.thread is not None or self.main.server.is_running() or self.main.printer._busy:
+            QMessageBox.warning(self, "Printer in use", "Finish other printer operations before measuring XY.")
+            return
+        try:
+            settings = load_settings()
+            fixture = settings.focusfield
+            fixture.validate_physical()
+            checks = OperatorChecks(**{key: box.isChecked() for key, box in self.checks.items()})
+            checks.validate()
+            if self.checkerboard is None:
+                raise ValueError("Select the combined target layout with a checkerboard first")
+            recipe = self.current_recipe(fixture=fixture)
+            previous = self.xy_calibration
+            if previous and (previous.fixture_id != fixture.fixture_id or previous.camera_serial != fixture.camera_serial):
+                previous = None
+            plan = xy_mapping_dialog(self, fixture, recipe.nominal_wd_mm, previous)
+            if plan is None:
+                return
+            clearance, operator, step = plan
+            stage = ZStage(fixture, settings.printer.z_max, printer_travel=settings.printer.travel,
+                           xy_clearance=clearance)
+            camera = CameraAdapter(recipe)
+            link = link_from_settings(self.main.settings) if self.main.printer.configured() else None
+            self.controller = XYMappingController(
+                recipe, settings, fixture, stage, camera, Path(self.main.runs_folder()) / "focusfield",
+                clearance=clearance, operator=operator, step_mm=step, checks=checks, operator_confirmed=True,
+                printer_state=(lambda: link.status().state) if link else (lambda: None))
+            self._start_task(self.controller.run, physical=True, borrow_camera=True)
+            self.controller.on_event = lambda kind, *args: self.worker.event.emit(kind, args)
+            self.invalidate_preview()
+            self.thread.start()
+        except Exception as exc:
+            QMessageBox.warning(self, "Cannot measure optical XY mapping", str(exc))
 
     def start_setup(self, operation):
         if self.thread is not None:
@@ -802,8 +854,8 @@ class FocusFieldPanel(QWidget):
             limits = CenteringLimits()
             scout = None
             if operation == 'center':
-                if xy is None:
-                    raise ValueError("Load a measured optical XY mapping; ArUco registration alone cannot authorize motion")
+                if xy is None or (not simulated and self._xy_for_centering() is None):
+                    raise ValueError("Centering requires a measured XY mapping covering the optical center")
                 xy.validate(fixture)
                 description = (f"Center using mapping {xy.calibration_id}: at most {limits.max_iterations} XY steps, "
                     f"{limits.max_step_mm:g} mm per step, {limits.max_total_mm:g} mm total, "
@@ -1040,9 +1092,10 @@ class FocusFieldPanel(QWidget):
             cancel = threading.Event()
             if hasattr(camera, 'cancel'):
                 camera.cancel = cancel
-            calibrated_center = self.xy_calibration.optical_center_px if self.xy_calibration and not simulated else None
+            xy = self._xy_for_centering() if not simulated else None
+            calibrated_center = xy.optical_center_px if xy else None
             def preview():
-                from focusfield.chart import register_capture, edge_rois
+                from focusfield.chart import register_capture, edge_rois, preview_marker_corners
                 try:
                     check_cancel(cancel)
                     camera.open()
@@ -1065,6 +1118,34 @@ class FocusFieldPanel(QWidget):
                                                                 refine_optical_corners=recipe.optical_refine_corners)
                     except ValueError as exc:
                         verification = verify_working_distance(chart, recipe, None, registration_failure=str(exc), **comparison)
+                        if not simulated and recipe.lens_calibration is None:
+                            messages = [frame_info]
+                            evidence = {}
+                            if "checkerboard" in chart:
+                                try:
+                                    corners = checkerboard_corners(capture, chart["checkerboard"])
+                                except ValueError:
+                                    messages.append("Checkerboard not in view. Center the checkerboard panel for XY mapping.")
+                                else:
+                                    evidence["checkerboard_corners_px"] = corners.tolist()
+                                    messages.append(f"Detected {len(corners)} checkerboard corners. "
+                                                    "Center the checkerboard at the nominal working distance to measure XY.")
+                            check_cancel(cancel)
+                            if not evidence:
+                                markers = preview_marker_corners(capture, chart, fixture.lens_focal_mm,
+                                                                 fixture.pixel_size_um, check_abort=lambda: check_cancel(cancel))
+                                if markers:
+                                    ids = ", ".join(map(str, sorted(markers)))
+                                    messages.append(f"MTF markers visible in the uncalibrated preview: {ids}.")
+                                if sorted(markers) == chart["aruco_ids"]:
+                                    evidence["marker_corners_px"] = markers
+                            if evidence:
+                                messages.append("Setup preview only. Recheck the MTF panel with a measured lens profile.")
+                                return RunResult("COMPLETED", "", "\n".join([*messages, _working_distance_message(verification)]),
+                                                 details=dict(setup_preview=evidence))
+                            if len(messages) > 1:
+                                return RunResult("FAILED", "", f"{frame_info}. {exc}\n" +
+                                                 "\n".join(messages[1:]) + "\n" + _working_distance_message(verification))
                         return RunResult("FAILED", "", f"{frame_info}. {exc}\n{_working_distance_message(verification)}")
                     verification = verify_working_distance(chart, recipe, registration, **comparison)
                     h, error = registration.pop('homography'), registration['reprojection_rms_px']
@@ -1166,6 +1247,8 @@ class FocusFieldPanel(QWidget):
                 self.results.set_expanded(True)
         path_message = f"\nRun folder {result.path}" if result.path else ""
         self.status.append(f"{result.state} · {result.message}{path_message}")
+        if result.state == "COMPLETED" and "xy_calibration" in result.details:
+            self.set_xy_calibration(result.details["xy_calibration"])
         if result.state == "COMPLETED" and "panel_position" in result.details:
             panel, xy = result.details["panel_position"]
             self.panel_positions[panel] = xy
@@ -1176,7 +1259,8 @@ class FocusFieldPanel(QWidget):
         if result.state == 'COMPLETED' and 'preview_registration' in result.details:
             self.last_preview = result.details
         if self._chart_check_state == "running":
-            self._chart_check_state = "failed" if result.state == "FAILED" else None
+            self._chart_check_state = ("setup" if "setup_preview" in result.details else
+                                       "failed" if result.state == "FAILED" else None)
         if result.path and (Path(result.path) / 'setup_result.json').is_file() and result.state == 'COMPLETED':
             manifest = json.loads((Path(result.path) / 'manifest.json').read_text(encoding='utf-8'))
             details = manifest['setup_result']

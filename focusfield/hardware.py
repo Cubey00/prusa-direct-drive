@@ -11,13 +11,14 @@ from .acquisition import Capture, capture_metadata
 class ZStage:
     simulated = False
 
-    def __init__(self, fixture, printer_z_max, xy_calibration=None, printer_travel=None):
+    def __init__(self, fixture, printer_z_max, xy_calibration=None, printer_travel=None, *, xy_clearance=None):
         self.fixture = fixture
         self.printer_z_max = printer_z_max
         self.opened = False
         self.cancelled = threading.Event()
         self.xy_calibration = xy_calibration
         self.printer_travel = printer_travel
+        self.xy_clearance = xy_clearance
 
     def check(self, z):
         f = self.fixture
@@ -46,10 +47,12 @@ class ZStage:
         return gc.read_position(cancel=self.cancelled)
 
     def check_xy(self, x, y, z):
-        c = self.xy_calibration
+        c = self.xy_clearance
+        if c is None and self.xy_calibration is not None:
+            c = self.xy_calibration.validate(self.fixture).clearance()
         if c is None or self.printer_travel is None:
-            raise ValueError("XY motion requires a local measured mapping and printer travel limits")
-        c.validate(self.fixture)
+            raise ValueError("XY motion requires verified mechanical clearance and printer travel limits")
+        c.validate()
         self.check(z)
         r = c.housing_radius_mm
         if (not np.isfinite([x, y, z]).all()
