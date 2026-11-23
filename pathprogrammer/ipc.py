@@ -19,6 +19,8 @@ Message contract (dicts, all with "v": 1):
      "z_final": float | None}
         move the head to this absolute position: Z first (bed down to the travel height), then
         (home_xy) G28 X Y, then X/Y, then (z_final) Z to that height
+    {"v": 1, "type": "home", "z": float, "label": str}
+        bed down to Z (travel height) first, then G28 X Y only; answered with "goto_done" (label)
     {"v": 1, "type": "jog", "dx": float, "dy": float, "dz": float, "feed": float}
         small relative move (mm, feed in mm/min) for fine-tuning onto a cone
     {"v": 1, "type": "request_position", "point": "F1" | "F2" | "F3"}
@@ -50,6 +52,10 @@ KEY_ENV = "PRINTERPROJECT_LINK_KEY"
 def goto_msg(x, y, z, label="", home_xy=False, z_final=None):
     return {"v": VERSION, "type": "goto", "x": float(x), "y": float(y), "z": float(z), "label": str(label),
             "home_xy": bool(home_xy), "z_final": None if z_final is None else float(z_final)}
+
+
+def home_msg(z, label="home"):
+    return {"v": VERSION, "type": "home", "z": float(z), "label": str(label)}
 
 
 def jog_msg(dx, dy, dz, feed):
@@ -135,6 +141,9 @@ class CalibratorServer:
 
     def goto(self, x, y, z, label="", home_xy=False, z_final=None):
         return self.send(goto_msg(x, y, z, label, home_xy, z_final))
+
+    def home(self, z, label="home"):
+        return self.send(home_msg(z, label))
 
     def jog(self, dx, dy, dz, feed):
         return self.send(jog_msg(dx, dy, dz, feed))

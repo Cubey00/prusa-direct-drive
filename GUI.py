@@ -287,6 +287,9 @@ class App:
         if kind == "jog":
             self.link_jog(msg)
             return
+        if kind == "home":
+            self.link_home(msg)
+            return
         if kind == "request_position":
             from pathprogrammer.calibration import POINTS
             if msg.get("point") in POINTS:
@@ -338,6 +341,41 @@ class App:
             except Exception as e:
                 ok, text = False, f"Going to {label} failed: {e}"
             self.motion.halt()                                         # next jog starts from the real position
+            self.link.send_goto_done(label, ok, text)
+            self.root.after(0, lambda: (self.progress_label.config(text=text),
+                                        self.update_position_labels()))
+        threading.Thread(target=work, daemon=True).start()
+
+    def link_home(self, msg):
+        """Wizard "Alleen X en Y homen": bed down to the travel height, then G28 X Y (never Z)."""
+        label = msg.get("label", "home")
+        try:
+            z = float(msg["z"])
+        except (KeyError, TypeError, ValueError):
+            return
+        if not 0 <= z <= SETTINGS.printer.z_max:
+            text = f"Refused to home: Z{z:.1f} outside the travel limits"
+            self.progress_label.config(text=text)
+            self.link.send_goto_done(label, False, text)
+            return
+        if not gantry_lock.acquire(blocking=False):
+            text = ("Cannot home X/Y: the printer is still busy with an earlier command. Check the "
+                    "printer's screen for a question and try again.")
+            self.progress_label.config(text=text)
+            self.link.send_goto_done(label, False, text)
+            return
+        gantry_lock.release()
+        self.motion.halt()
+        self.progress_label.config(text=f"Homing X/Y: Z{z:.1f} first (bed down) ...")
+
+        def work():
+            try:
+                move_absolute(z=z)                 # sensor clear of the plate before the head moves
+                home_xy()                          # Z is kept (its motors stay on)
+                ok, text = True, "X and Y homed."
+            except Exception as e:
+                ok, text = False, f"Homing X/Y failed: {e}"
+            self.motion.halt()
             self.link.send_goto_done(label, ok, text)
             self.root.after(0, lambda: (self.progress_label.config(text=text),
                                         self.update_position_labels()))

@@ -15,6 +15,7 @@ class FakeServer:
 
     def __init__(self):
         self.gotos, self.homes, self.finals, self.jogs, self.requests = [], [], [], [], []
+        self.home_only = []
 
     def quit_calibrator(self):
         pass
@@ -26,6 +27,10 @@ class FakeServer:
         self.gotos.append((label, round(x, 3), round(y, 3), round(z, 3)))
         self.homes.append(home_xy)
         self.finals.append(None if z_final is None else round(z_final, 3))
+        return True
+
+    def home(self, z, label="home"):
+        self.home_only.append((label, round(z, 3)))
         return True
 
     def jog(self, dx, dy, dz, feed):
@@ -277,3 +282,56 @@ def test_cone_2_with_a_big_x_offset_saves_and_meten_works(win, plate):
     part = manifest["parts"][0]
     assert t.source == "opgeslagen positie van kegel 2"
     assert (t.x, t.y) == pytest.approx((part["x"] - 13.61, part["y"] + 37.89))
+
+
+def test_home_only_needs_a_saved_calibration(win, plate):
+    win.open_model(plate)
+    win.start_calibration()
+    wiz = win.wizard
+    wiz.mode_home.setChecked(True)
+    assert wiz.go_btn.text() == "Home X en Y" and not wiz.go_btn.isEnabled()
+    assert "Dit kan nog niet" in wiz.text_label.text()
+    wiz.go_btn.click()
+    assert win.server.home_only == []
+
+
+def test_home_only_then_go_to_point_1(win, plate):
+    """Calibration known to be right: home X/Y only, then straight on to Meten's point 1."""
+    fids = fiducials(plate)
+    machine_settings.save_values("calibration", {"cone_F2": [fids["F2"]["x"] - 0.6, fids["F2"]["y"] + 39.2, 85.2]})
+    machine_settings.save_values("sensor", {"offset_x": 0.6, "offset_y": -39.2,
+                                            "offset_z": round(fids["F2"]["z"] - 85.2, 2), "measured": True})
+    win.open_model(plate)
+    win.start_calibration()
+    wiz = win.wizard
+    wiz.mode_home.setChecked(True)
+    assert wiz.go_btn.isEnabled() and not wiz.jogger.isVisible()
+    wiz.go_btn.click()
+    assert win.server.home_only == [("home", round(wiz.travel_z(), 3))] and win.server.gotos == []
+    assert not wiz.go_btn.isEnabled()
+    msg(win, "goto_done", label="home", ok=True, message="X and Y homed.")
+    assert wiz.state == "done" and wiz.point1_btn.isVisible() and not wiz.finish_btn.isVisible()
+    assert "X en Y gehomed" in wiz.text_label.text()
+    assert not win._needs_home
+    wiz.point1_btn.click()
+    assert not wiz.isVisible()
+    label, x, y, _ = win.server.gotos[-1]
+    part = json.loads(plate.with_suffix(".json").read_text())["parts"][0]
+    assert label == "punt 1" and win.server.homes[-1] is False       # already homed
+    assert (x, y) == pytest.approx((part["x"] - 0.6, part["y"] + 39.2), abs=1e-3)
+    # remembered per laptop
+    win.wizard = None
+    win.start_calibration()
+    assert win.wizard.mode_home.isChecked()
+
+
+def test_home_only_failure_is_shown(win, plate):
+    fids = fiducials(plate)
+    machine_settings.save_values("calibration", {"cone_F2": [fids["F2"]["x"] - 0.6, fids["F2"]["y"] + 39.2, 85.2]})
+    win.open_model(plate)
+    win.start_calibration()
+    wiz = win.wizard
+    wiz.mode_home.setChecked(True)
+    wiz.go_btn.click()
+    msg(win, "goto_done", label="home", ok=False, message="Homing X/Y failed: boom")
+    assert wiz.state == "goto" and "boom" in wiz.link_label.text() and win._needs_home

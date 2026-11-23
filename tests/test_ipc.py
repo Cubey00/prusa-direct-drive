@@ -69,3 +69,17 @@ def test_jog_and_position_request_reach_the_calibrator():
         cli.close()
     finally:
         srv.close()
+
+
+def test_home_reaches_the_calibrator():
+    to_programmer, to_calibrator = queue.Queue(), queue.Queue()
+    srv = CalibratorServer(to_programmer.put)
+    try:
+        cli = CalibratorClient(srv.port, srv.key, on_message=to_calibrator.put)
+        assert to_programmer.get(timeout=5)["type"] == "hello"
+        assert srv.home(95.0, "home")
+        m = to_calibrator.get(timeout=5)
+        assert (m["type"], m["z"], m["label"]) == ("home", 95.0, "home")
+        cli.close()
+    finally:
+        srv.close()

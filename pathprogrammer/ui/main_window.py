@@ -24,7 +24,7 @@ from ..ipc import CalibratorServer
 from ..model_io import Orientation, face_size, load_model, oriented_mesh
 from ..program import Program, RunSettings, TouchMode
 from .face_view import FaceView
-from .calibration_wizard import CalibrationWizard
+from .calibration_wizard import HOME_LABEL, CalibrationWizard
 from .left_panel import LeftPanel
 from .plates_panel import PlatesPanel
 from .printer_box import PrinterBox
@@ -591,7 +591,7 @@ class MainWindow(QMainWindow):
     def on_calibrator_message(self, msg):
         self._measure_message(msg)
         first = self.wizard.sequence()[0] if self.wizard is not None else calibration.POINTS[0]
-        if msg.get("type") == "goto_done" and msg.get("ok") and msg.get("label") == first:
+        if msg.get("type") == "goto_done" and msg.get("ok") and msg.get("label") in (first, HOME_LABEL):
             self._needs_home = False          # the wizard homed X/Y on its way to its first cone
         kind = msg.get("type")
         if kind == "force":

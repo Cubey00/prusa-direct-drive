@@ -13,6 +13,10 @@ the head position on each cone (machine_settings.toml [calibration] cone_F1..3) 
 offset measured from them; the next calibration drives straight to the saved spots, hover_clearance
 (1 cm) higher, so only a short way down is left to jog.
 
+"Alleen X en Y homen" (third choice, for when the calibration is known to be right): no cone is
+measured; the bed goes to the travel height, X/Y are homed and the saved cone positions are used.
+"Ga naar punt 1" then hands over to Meten, the calibrator stays open (X/Y stay homed).
+
 "Alleen kegel 2" (choice at the start): only F2 is measured. That gives the plate's shift but no
 rotation or scale: F1 and F3 are filled in as F2 + their bed distance from F2 (the plate assumed
 square on the bed, machine steps exact), so everything after it (fit, Meten, saving) works as usual.
@@ -22,7 +26,7 @@ from PySide6.QtWidgets import (QButtonGroup, QDialog, QGridLayout, QHBoxLayout, 
                                QPushButton, QRadioButton, QVBoxLayout, QWidget)
 
 import machine_settings
-from .. import calibration
+from .. import calibration, measure
 
 PLACE = {"F1": "linksvoor", "F2": "rechtsvoor", "F3": "linksachter"}
 GOTO_ANSWER_MS = 20000      # no reply from the calibrator within this time: tell the user why
@@ -32,7 +36,8 @@ JOG_FEED = 120.0                        # mm/min = 2 mm/s: slow, for fine-tuning
 OK_COLOR, WARN_COLOR, ERR_COLOR = "#1b7a1b", "#b36b00", "#c00000"
 BIG = "font-size: 16px; padding: 10px;"
 
-MODE_ALL, MODE_F2 = "all", "F2"
+MODE_ALL, MODE_F2, MODE_HOME = "all", "F2", "home"
+HOME_LABEL = "home"                      # goto_done label of "Alleen X en Y homen"
 SINGLE_POINT = "F2"
 MODE_KEY = "calibration/mode"            # QSettings: last choice, per laptop
 
@@ -51,7 +56,8 @@ class CalibrationWizard(QDialog):
         self.state = NO_PLATE
         self.success = False
         self.sent = {}                 # fiducial -> (x, y, z) head position the calibrator sent
-        self.mode = MODE_F2 if str(self._qsettings().value(MODE_KEY, MODE_ALL)) == MODE_F2 else MODE_ALL
+        stored = str(self._qsettings().value(MODE_KEY, MODE_ALL))
+        self.mode = stored if stored in (MODE_ALL, MODE_F2, MODE_HOME) else MODE_ALL
 
         self.step_label = QLabel("")
         self.step_label.setStyleSheet("font-size: 18px; font-weight: bold;")
@@ -68,10 +74,12 @@ class CalibrationWizard(QDialog):
         self.mode_all = QRadioButton("Alle 3 kegels (nauwkeurigst: verschuiving, draaiing en schaal)")
         self.mode_f2 = QRadioButton("Alleen kegel 2, rechtsvoor (sneller: alleen verschuiving, de plaat "
                                     "ligt recht)")
-        for i, rb in enumerate((self.mode_all, self.mode_f2)):
+        self.mode_home = QRadioButton("Alleen X en Y homen (de kalibratie zit al goed: de opgeslagen "
+                                      "kegelpositie wordt gebruikt)")
+        for i, rb in enumerate((self.mode_all, self.mode_f2, self.mode_home)):
             self.mode_group.addButton(rb, i)
             ml.addWidget(rb)
-        (self.mode_f2 if self.mode == MODE_F2 else self.mode_all).setChecked(True)
+        {MODE_F2: self.mode_f2, MODE_HOME: self.mode_home}.get(self.mode, self.mode_all).setChecked(True)
         self.mode_group.idToggled.connect(self._mode_toggled)
 
         self.go_btn = QPushButton("")
@@ -122,6 +130,9 @@ class CalibrationWizard(QDialog):
         self.finish_btn = QPushButton("Afsluiten: positie bekend")
         self.finish_btn.setStyleSheet(BIG)
         self.finish_btn.clicked.connect(self.accept)
+        self.point1_btn = QPushButton("Ga naar punt 1")
+        self.point1_btn.setStyleSheet(BIG)
+        self.point1_btn.clicked.connect(self.go_to_point1)
 
         self.restart_btn = QPushButton("Opnieuw beginnen")
         self.restart_btn.clicked.connect(self.restart)
@@ -139,6 +150,7 @@ class CalibrationWizard(QDialog):
         lay.addWidget(self.go_btn)
         lay.addWidget(self.jogger)
         lay.addWidget(self.finish_btn)
+        lay.addWidget(self.point1_btn)
         lay.addWidget(self.link_label)
         lay.addStretch()
         lay.addLayout(bottom)
@@ -159,9 +171,19 @@ class CalibrationWizard(QDialog):
     def _mode_toggled(self, button_id, checked):
         if not checked or self.index > 0 or self.state not in (GOTO, NO_PLATE):
             return
-        self.mode = MODE_F2 if button_id == 1 else MODE_ALL
+        self.mode = (MODE_ALL, MODE_F2, MODE_HOME)[button_id] if 0 <= button_id <= 2 else MODE_ALL
         self._qsettings().setValue(MODE_KEY, self.mode)
         self.refresh()
+
+    def saved_calibration(self):
+        """(ok, reason): is there a saved calibration Meten can use without measuring a cone?"""
+        if not self.settings.sensor.measured and not any(self.saved(p) for p in calibration.POINTS):
+            return False, "er is nog geen geslaagde kalibratie opgeslagen"
+        points, reason = measure.machine_points(None, self.settings, self.manifest())
+        return points is not None, reason
+
+    def home_only(self):
+        return self.mode == MODE_HOME
 
     def sequence(self):
         """The cones to measure, in order."""
@@ -215,6 +237,10 @@ class CalibrationWizard(QDialog):
         n = self.cone_number(p)
         step, total = self.index + 1, len(self.sequence())
         self.mode_box.setVisible(self.state == GOTO and self.index == 0)
+        self.point1_btn.setVisible(self.state == DONE and self.success and self.home_only())
+        if self.home_only() and self.state != NO_PLATE:
+            self._refresh_home()
+            return
         self.go_btn.setVisible(self.state in (GOTO, MOVING))
         self.jogger.setVisible(self.state in (JOG, SENDING))
         self.finish_btn.setVisible(self.state == DONE and self.success)
@@ -270,6 +296,42 @@ class CalibrationWizard(QDialog):
         elif self.state == DONE:
             self.step_label.setText("Kalibratie klaar" if self.success else "Kalibratie niet gelukt")
 
+    def _refresh_home(self):
+        """The view for "Alleen X en Y homen"."""
+        self.go_btn.setVisible(self.state in (GOTO, MOVING))
+        self.jogger.setVisible(False)
+        self.finish_btn.setVisible(False)
+        self.restart_btn.setVisible(self.state == DONE)
+        self.go_btn.setText("Home X en Y")
+        ok, reason = self.saved_calibration()
+        self.go_btn.setEnabled(self.state == GOTO and ok)
+        if self.state in (GOTO, MOVING):
+            self.step_label.setText("Alleen X en Y homen")
+        if self.state == GOTO and not ok:
+            self.text_label.setText(f"<span style='color:{ERR_COLOR}'>Dit kan nog niet: {reason}. Kies "
+                                    "<i>Alle 3 kegels</i> of <i>Alleen kegel 2</i>.</span>")
+        elif self.state == GOTO:
+            self.text_label.setText(
+                "Gebruik dit alleen als de kalibratie al goed zit: de plaat ligt nog op dezelfde plek "
+                "en de printer is niet uit geweest (dan blijft Z bekend).<br><br>Klik op de knop: het bed "
+                "zakt eerst naar een veilige hoogte, dan zoekt de kop X en Y opnieuw op (homen, de kop "
+                "gaat naar rechtsvoor). Z wordt niet gehomed. Daarna gebruikt Meten de opgeslagen "
+                "kegelpositie.")
+        elif self.state == MOVING:
+            self.text_label.setText(f"Bed naar Z{self.travel_z():.1f}, dan X en Y homen ...")
+        elif self.state == DONE and self.success:
+            self.step_label.setText("X en Y gehomed")
+            self.text_label.setText(
+                f"<span style='color:{OK_COLOR}; font-size: 16px;'><b>X en Y gehomed.</b></span> De "
+                "opgeslagen kalibratie wordt gebruikt. Klik op <b>Ga naar punt 1</b>: de sensor gaat 1 cm "
+                "boven het eerste onderdeel hangen.")
+
+    def go_to_point1(self):
+        """After "Alleen X en Y homen": close this window, keep the calibrator (X/Y stay homed) and
+        let Meten drive to point 1."""
+        self.hide()                       # not close(): that would quit the calibrator
+        self.main.hover_above_point(0)
+
     def homes(self):
         """The first cone starts from a fresh X/Y home: the head may have been moved by hand."""
         return self.index == 0
@@ -290,6 +352,9 @@ class CalibrationWizard(QDialog):
     def go(self):
         if self.state != GOTO or not self.ensure_calibrator():
             return
+        if self.home_only():
+            self.go_home()
+            return
         p = self.point()
         x, y, z, z_final, _ = self.target(p)
         if not self.main.server.goto(x, y, z, p, home_xy=self.homes(), z_final=z_final):
@@ -300,6 +365,24 @@ class CalibrationWizard(QDialog):
         # tied to this window: the timer dies with it instead of firing into a deleted object
         wait = HOME_ANSWER_MS if self.homes() else GOTO_ANSWER_MS
         QTimer.singleShot(wait, self, lambda: self.goto_timed_out(p, wait))
+
+    def go_home(self):
+        if not self.saved_calibration()[0]:
+            return
+        if not self.main.server.home(self.travel_z(), HOME_LABEL):
+            self.link_label.setText("De calibrator is nog niet verbonden. Wacht even en probeer opnieuw.")
+            return
+        self.link_label.setText("")
+        self.set_state(MOVING)
+        QTimer.singleShot(HOME_ANSWER_MS, self, self.home_timed_out)
+
+    def home_timed_out(self):
+        if self.state != MOVING or not self.home_only():
+            return
+        self.link_label.setText(
+            f"<span style='color:{ERR_COLOR}'>De calibrator meldt na {HOME_ANSWER_MS // 1000} s nog niets. "
+            "Kijk of er op het scherm van de printer een vraag openstaat; klik daarna opnieuw.</span>")
+        self.set_state(GOTO)
 
     def goto_timed_out(self, name, wait):
         if self.state != MOVING or self.point() != name:
@@ -335,6 +418,14 @@ class CalibrationWizard(QDialog):
         elif kind == "bye":
             self.link_label.setText(f"<span style='color:{ERR_COLOR}'>De calibrator is gesloten.</span>")
             if self.state in (MOVING, JOG, SENDING):
+                self.set_state(GOTO)
+        elif kind == "goto_done" and self.state == MOVING and self.home_only() and msg.get("label") == HOME_LABEL:
+            if msg.get("ok"):
+                self.link_label.setText("")
+                self.success = True
+                self.set_state(DONE)
+            else:
+                self.link_label.setText(f"<span style='color:{ERR_COLOR}'>{msg.get('message', '')}</span>")
                 self.set_state(GOTO)
         elif kind == "goto_done" and self.state == MOVING and msg.get("label") == self.point():
             if msg.get("ok"):
@@ -471,6 +562,9 @@ class CalibrationWizard(QDialog):
                     != QMessageBox.Yes:
                 e.ignore()
                 return
+        if self.home_only() and self.state == DONE and self.success:
+            super().closeEvent(e)                # X/Y just homed: keep the calibrator for Meten
+            return
         self.main.server.quit_calibrator()     # it runs without a window: close it with the wizard
         super().closeEvent(e)
 
