@@ -58,6 +58,57 @@ def test_preview_keeps_frame_edges_visible_when_panel_shrinks(window, qtbot):
     assert visible.pixelColor(round(326 * ratio), round(120 * ratio)).getRgb()[:3] == (0, 255, 0)
 
 
+def test_checkerboard_setup_rows_keep_full_height_when_shown(qapp, qtbot, tmp_path):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QScrollArea, QSplitter
+    from focusfield.config import DEFAULT_CHART
+    from focusfield.generate_chart import build_parser, generate_chart
+    from pathprogrammer.ui.focusfield_panel import FocusFieldPanel
+    from pathprogrammer.ui.style import APP_STYLESHEET
+
+    chart = tmp_path / "combined.svg"
+    generate_chart(build_parser().parse_args(["--output", str(chart), "--with-checkerboard"]))
+    old_style = qapp.style().objectName()
+    old_stylesheet = qapp.styleSheet()
+    qapp.setStyle("Fusion")
+    qapp.setStyleSheet(APP_STYLESHEET + " QWidget { font-size: 14px; }")
+    panel = FocusFieldPanel(None)
+    qtbot.addWidget(panel)
+    panel.show()
+
+    def settle_layout():
+        for _ in range(4):
+            qapp.processEvents()
+
+    try:
+        settle_layout()
+        split = panel.findChild(QSplitter)
+        scroll = panel.findChild(QScrollArea)
+        buttons = (panel.measure_xy_btn, panel.record_checkerboard, panel.record_mtf, panel.calibrate_btn)
+        for pane_width in (395, 455, 530):
+            panel.resize(pane_width + 480, 480)
+            split.setSizes([pane_width, 480])
+            settle_layout()
+            for simulated in (True, False):
+                panel.chart.setText(str(DEFAULT_CHART))
+                panel.simulate.setChecked(simulated)
+                settle_layout()
+                panel.chart.setText(str(tmp_path / "combined_layout.json"))
+                settle_layout()
+                for button in buttons:
+                    assert button.isVisible() and button.height() >= button.sizeHint().height(), button.text()
+                    assert button.width() >= button.sizeHint().width(), button.text()
+                assert panel.flat_note.height() >= panel.flat_note.heightForWidth(panel.flat_note.width())
+        scroll.ensureWidgetVisible(panel.calibrate_btn)
+        settle_layout()
+        bottom = panel.calibrate_btn.mapTo(scroll.viewport(), QPoint(0, panel.calibrate_btn.height() - 1))
+        assert 0 <= bottom.y() < scroll.viewport().height()
+    finally:
+        panel.close()
+        qapp.setStyle(old_style)
+        qapp.setStyleSheet(old_stylesheet)
+
+
 def test_loading_and_clearing_lens_profile_invalidates_preview(window, tmp_path, monkeypatch):
     from dataclasses import asdict
     import json
