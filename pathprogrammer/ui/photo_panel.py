@@ -195,6 +195,7 @@ class PhotoPanel(QGroupBox):
 
     def _log(self, path, tag):
         log = Path(path).parent / LOG_NAME
+        log.parent.mkdir(parents=True, exist_ok=True)    # the saver thread may not have made it yet
         new = not log.exists()
         with open(log, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f, delimiter=";")

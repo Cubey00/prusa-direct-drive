@@ -2,6 +2,7 @@
 from PySide6.QtWidgets import (QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
                                QSpinBox, QVBoxLayout)
 
+from .. import measure
 from ..measure import HOVER_TEXT
 from .style import action_button
 
@@ -45,6 +46,34 @@ class MeasureBox(QGroupBox):
         proc_row = QHBoxLayout()
         proc_row.addWidget(self.proc_btn, 1)
         proc_row.addLayout(form)
+
+        # --- how the sensor approaches a part (also for the buttons below) ---
+        def spin(lo, hi, value, decimals, step, suffix, tip):
+            w = QDoubleSpinBox()
+            w.setRange(lo, hi)
+            w.setDecimals(decimals)
+            w.setSingleStep(step)
+            w.setSuffix(suffix)
+            w.setValue(value)
+            w.setToolTip(tip)
+            return w
+        self.hover_mm = spin(1.0, 20.0, measure.HOVER_MM, 1, 0.5, " mm",
+                             "How far above the top of a part the sensor stops before touching it. Less "
+                             "is faster; leave room in case the part is a little higher than expected.")
+        self.fast_speed = spin(0.2, 5.0, measure.FAST_SPEED, 1, 0.5, " mm/s",
+                               "Speed of the first part of the approach, where nothing can be in the way "
+                               "(it only stops at 100 g there)")
+        self.slow_zone = spin(0.5, 10.0, measure.CREEP_SAFE_MM, 1, 0.5, " mm",
+                              "The last part of the approach, gone slowly with the sensitive contact "
+                              "detection (the part may lie this much higher than expected)")
+        self.slow_speed = spin(0.02, 0.5, measure.SLOW_SPEED, 2, 0.05, " mm/s",
+                               "Speed of that last part: slower stops sooner after the contact")
+        approach = QFormLayout()
+        approach.setContentsMargins(0, 0, 0, 0)
+        approach.addRow("Hover height", self.hover_mm)
+        approach.addRow("Fast approach", self.fast_speed)
+        approach.addRow("Slow last part", self.slow_zone)
+        approach.addRow("Slow speed", self.slow_speed)
         self.hover_btn = QPushButton(f"Hover {HOVER_TEXT} above point 1")
         self.hover_btn.setToolTip("The bed lowers to a safe height, the head drives to the first part of the "
                                   f"plate and the sensor stops {HOVER_TEXT} above its top")
@@ -70,12 +99,22 @@ class MeasureBox(QGroupBox):
         self.status.setStyleSheet("color: #64748b; font-weight: normal;")
         lay = QVBoxLayout(self)
         lay.addLayout(proc_row)
+        lay.addLayout(approach)
         lay.addWidget(self.hover_btn)
         lay.addWidget(self.next_btn)
         lay.addWidget(self.touch_btn)
         lay.addWidget(self.step_btn)
         lay.addWidget(self.depth_label)
         lay.addWidget(self.status)
+
+    def set_hover_text(self, mm):
+        """The buttons name the hover height that is set."""
+        t = f"{mm:g} mm"
+        self.hover_btn.setText(f"Hover {t} above point 1")
+        self.hover_btn.setToolTip("The bed lowers to a safe height, the head drives to the first part of the "
+                                  f"plate and the sensor stops {t} above its top")
+        self.next_btn.setToolTip("The bed first lowers to a safe height (the sensor goes up, clear of all "
+                                 f"parts), the head drives to the next part and the sensor stops {t} above its top")
 
     def set_status(self, text, level="info"):
         color = {"info": "#64748b", "ok": "#16a34a", "busy": "#2563eb", "error": "#c00000"}[level]

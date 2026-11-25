@@ -18,7 +18,7 @@ def run(win, plate, tmp_path, qtbot):
     win.PROC_SETTLE_MS = 0
     s = win.server
     s.creeps, s.steps, s.halts = [], [], 0
-    s.creep = lambda fast, mx: s.creeps.append((fast, mx)) or True
+    s.creep = lambda fast, mx, *speeds: s.creeps.append((fast, mx)) or True
     s.step = lambda mm, g: s.steps.append((round(mm, 3), g)) or True
     s.halt = lambda: setattr(s, "halts", s.halts + 1) or True
     shots = []

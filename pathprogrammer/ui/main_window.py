@@ -181,8 +181,10 @@ class MainWindow(QMainWindow):
         self.measure.proc_btn.clicked.connect(self.start_procedure)
         self.photo.photoSaved.connect(self._on_procedure_photo)
         self._load_procedure_settings()
-        for w in (self.measure.max_force, self.measure.step_mm, self.measure.n_steps):
+        for w in (self.measure.max_force, self.measure.step_mm, self.measure.n_steps, self.measure.hover_mm,
+                  self.measure.fast_speed, self.measure.slow_zone, self.measure.slow_speed):
             w.valueChanged.connect(self._save_procedure_settings)
+        self.measure.set_hover_text(self._hover_mm())
         self.photo.tag_provider = self._photo_tag
         self.left.calibrationChanged.connect(self.refit)
         self.left.faceSizeChanged.connect(self.refit)
@@ -419,7 +421,8 @@ class MainWindow(QMainWindow):
         manifest = calibration.manifest_for(self.model_path) if self.model_path else None
         try:
             settings = machine_settings.load()
-            t = measure.hover_target(manifest, settings, self.left.cal_points(), part_index=index)
+            t = measure.hover_target(manifest, settings, self.left.cal_points(), part_index=index,
+                                     hover=self._hover_mm())
         except (measure.MeasureError, machine_settings.SettingsError) as e:
             self.measure.set_status(str(e), "error")
             return
@@ -441,8 +444,7 @@ class MainWindow(QMainWindow):
             self.open_calibrator()
         self.measure.set_status(f"Starting the printer connection; then the head goes to {where}.", "busy")
 
-    CREEP_MAX_MM = measure.HOVER_MM + 5.0  # never more than this far up (the hover gap + 5 mm)
-    CREEP_FREE_MM = measure.CREEP_FREE_MM  # of the hover gap: known free, a bit faster
+    CREEP_BEYOND_MM = 5.0                 # never further up than the hover gap + this
     CREEP_ANSWER_MS = 240000
 
     def creep_to_object(self):
@@ -451,12 +453,14 @@ class MainWindow(QMainWindow):
         if self.focusfield.hardware_active or self.thread is not None or self._measuring:
             return
         if not self.server.is_running():
-            self.measure.set_status(f"Hover {measure.HOVER_TEXT} above point 1 first: there is no connection to "
+            self.measure.set_status(f"Hover {self._hover_text()} above point 1 first: there is no connection to "
                                     "the printer yet.",
                                     "error")
             return
-        fast = self.CREEP_FREE_MM if self._hovering else 0.0
-        if not self.server.creep(fast, self.CREEP_MAX_MM):
+        m = self.measure
+        fast = max(0.0, self._hover_mm() - m.slow_zone.value()) if self._hovering else 0.0
+        if not self.server.creep(fast, self._hover_mm() + self.CREEP_BEYOND_MM, m.fast_speed.value(),
+                                 m.slow_speed.value()):
             self.measure.set_status("The printer connection does not respond; try again.", "error")
             return
         self._measuring = "touch"
@@ -497,7 +501,10 @@ class MainWindow(QMainWindow):
     PROC_SETTLE_MS = 500                  # after a move: let the bed stand still before the photo
     PHOTO_ANSWER_MS = 20000
     PROC_KEYS = (("measure/max_force_g", "max_force", 300.0), ("measure/step_mm", "step_mm", 0.1),
-                 ("measure/steps", "n_steps", 10))
+                 ("measure/steps", "n_steps", 10), ("measure/hover_mm", "hover_mm", measure.HOVER_MM),
+                 ("measure/fast_speed", "fast_speed", measure.FAST_SPEED),
+                 ("measure/slow_zone_mm", "slow_zone", measure.CREEP_SAFE_MM),
+                 ("measure/slow_speed", "slow_speed", measure.SLOW_SPEED))
 
     def _load_procedure_settings(self):
         for key, attr, default in self.PROC_KEYS:
@@ -510,6 +517,13 @@ class MainWindow(QMainWindow):
     def _save_procedure_settings(self, *_):
         for key, attr, _default in self.PROC_KEYS:
             self.settings.setValue(key, getattr(self.measure, attr).value())
+        self.measure.set_hover_text(self._hover_mm())
+
+    def _hover_mm(self):
+        return float(self.measure.hover_mm.value())
+
+    def _hover_text(self):
+        return f"{self._hover_mm():g} mm"
 
     def start_procedure(self):
         """'Do whole measuring procedure': home X/Y (the saved calibration is used), then for EVERY
@@ -527,7 +541,8 @@ class MainWindow(QMainWindow):
         manifest = calibration.manifest_for(self.model_path) if self.model_path else None
         try:
             settings = machine_settings.load()
-            t = measure.hover_target(manifest, settings, self.left.cal_points(), part_index=0)
+            t = measure.hover_target(manifest, settings, self.left.cal_points(), part_index=0,
+                                     hover=self._hover_mm())
         except measure.MeasureError as e:
             if not (manifest and manifest.get("parts")) or "out of reach" not in str(e):
                 self.measure.set_status(str(e), "error")
@@ -540,7 +555,8 @@ class MainWindow(QMainWindow):
         points, skipped = [], []
         for i, part in enumerate(manifest["parts"]):
             try:
-                ti = measure.hover_target(manifest, settings, self.left.cal_points(), part_index=i)
+                ti = measure.hover_target(manifest, settings, self.left.cal_points(), part_index=i,
+                                          hover=self._hover_mm())
                 points.append(i)
                 t = t or ti
             except measure.MeasureError as e:
@@ -598,7 +614,7 @@ class MainWindow(QMainWindow):
         if self._measuring is None:
             self._procedure_finish(f"Could not go to point {p['point'] + 1}.", "error", retract=False)
         else:
-            self.measure.set_status(f"{self._procedure_where()}: to {measure.HOVER_TEXT} above it...", "busy")
+            self.measure.set_status(f"{self._procedure_where()}: to {self._hover_text()} above it...", "busy")
 
     def _procedure_point_done(self, result):
         p = self._proc
@@ -718,7 +734,7 @@ class MainWindow(QMainWindow):
             self._write_procedure_log(p, result)
             self.hover_above_point(p["point"])
             if self._measuring is not None:
-                self.measure.set_status(f"{result} Lifting the sensor back to {measure.HOVER_TEXT} above the part...", "busy")
+                self.measure.set_status(f"{result} Lifting the sensor back to {self._hover_text()} above the part...", "busy")
                 return
         self._proc = None
         self._set_measure_buttons(self._measuring is None)
@@ -840,7 +856,7 @@ class MainWindow(QMainWindow):
                 t = self._hover_target
                 self._point_index = self._target_index
                 label = self._measuring
-                self._measure_done(f"The sensor hovers {measure.HOVER_TEXT} above {label} ({t.part_id}). Head X{t.x:.2f} Y{t.y:.2f} "
+                self._measure_done(f"The sensor hovers {self._hover_text()} above {label} ({t.part_id}). Head X{t.x:.2f} Y{t.y:.2f} "
                                    f"Z{t.z:.2f} (from the {t.source}).", "ok")
             else:
                 self._measure_done(f"Failed: {msg.get('message', '')}", "error")
@@ -874,6 +890,8 @@ class MainWindow(QMainWindow):
                                    f"force {msg.get('force_g') or 0:.1f} g.", "ok")
             else:
                 self._measure_done(msg.get("message", "") or "Failed.", "error")
+        elif kind == "status" and msg.get("ok") and self._measuring:
+            self.measure.set_status(str(msg.get("message", "")), "busy")     # e.g. waiting for a busy printer
         elif kind == "status" and not msg.get("ok") and self._measuring:
             self._measure_done(msg.get("message", ""), "error")
         elif kind == "bye":

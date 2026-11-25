@@ -61,7 +61,7 @@ def test_button_without_plate_explains(win):
 def test_touch_button_creeps_after_hovering_and_reports(win, plate):
     win.server.creeps = []
     win.server.halts = 0
-    win.server.creep = lambda fast, mx: win.server.creeps.append((fast, mx)) or True
+    win.server.creep = lambda fast, mx, *speeds: win.server.creeps.append((fast, mx)) or True
     win.server.halt = lambda: setattr(win.server, "halts", win.server.halts + 1) or True
     calibrate(plate)
     win.open_model(plate)
@@ -88,7 +88,7 @@ def test_graph_shows_the_calibrators_force_stream(win):
 
 
 def test_step_needs_a_first_touch_then_counts_the_indentation(win, plate):
-    win.server.creep = lambda fast, mx: True
+    win.server.creep = lambda fast, mx, *speeds: True
     win.server.steps = []
     win.server.step = lambda mm, g: win.server.steps.append((mm, g)) or True
     win.measure.step_btn.click()
@@ -142,3 +142,34 @@ def test_next_point_lifts_and_goes_to_point_2(win, plate):
         assert not win.measure.next_btn.isEnabled() and "Last point" in win.measure.next_btn.text()
     win.measure.hover_btn.click()                                  # back to the start
     assert win.server.gotos[-1][0] == "point 1"
+
+
+def test_approach_settings_are_used_and_remembered(win, plate):
+    win.server.creeps = []
+    win.server.creep = lambda *a: win.server.creeps.append(a) or True
+    settings, manifest = calibrate(plate)
+    win.open_model(plate)
+    m = win.measure
+    m.hover_mm.setValue(5.0)
+    m.slow_zone.setValue(2.0)
+    m.fast_speed.setValue(3.0)
+    m.slow_speed.setValue(0.2)
+    assert m.hover_btn.text() == "Hover 5 mm above point 1"
+    m.hover_btn.click()
+    t = win._hover_target
+    assert t.z == pytest.approx(manifest["parts"][0]["size"][2] + 5.0 + 80.0)
+    msg(win, "goto_done", label="point 1", ok=True, message="")
+    assert "5 mm above point 1" in m.status.text()
+    m.touch_btn.click()
+    assert win.server.creeps == [(3.0, 10.0, 3.0, 0.2)]       # 5 - 2 mm fast, at most 5 + 5 mm
+    m.hover_mm.setValue(1.0)
+    win._load_procedure_settings()
+    assert m.hover_mm.value() == 1.0 and m.slow_speed.value() == 0.2
+
+
+def test_waiting_for_a_busy_printer_is_shown(win, plate):
+    calibrate(plate)
+    win.open_model(plate)
+    win.measure.hover_btn.click()
+    msg(win, "status", ok=True, message="Waiting to go to point 1: the printer is busy with homing X and Y")
+    assert "busy with homing" in win.measure.status.text()

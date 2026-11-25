@@ -25,7 +25,7 @@ Message contract (dicts, all with "v": 1):
         small relative move (mm, feed in mm/min) for fine-tuning onto a cone
     {"v": 1, "type": "request_position", "point": "F1" | "F2" | "F3"}
     {"v": 1, "type": "quit"}                                    close the calibrator (it runs hidden)
-    {"v": 1, "type": "creep", "fast_mm": float, "max_mm": float}
+    {"v": 1, "type": "creep", "fast_mm": float, "max_mm": float, ["fast_speed": mm/s, "speed": mm/s]}
         bed up very slowly until the load cell feels contact, then stay (touch.creep_to_contact);
         the first fast_mm (known free) a bit faster. Answered with "touch_done".
     {"v": 1, "type": "step", "mm": float, "stop_g": float}
@@ -70,8 +70,13 @@ def request_position_msg(point):
     return {"v": VERSION, "type": "request_position", "point": point}
 
 
-def creep_msg(fast_mm, max_mm):
-    return {"v": VERSION, "type": "creep", "fast_mm": float(fast_mm), "max_mm": float(max_mm)}
+def creep_msg(fast_mm, max_mm, fast_speed=None, speed=None):
+    msg = {"v": VERSION, "type": "creep", "fast_mm": float(fast_mm), "max_mm": float(max_mm)}
+    if fast_speed is not None:
+        msg["fast_speed"] = float(fast_speed)
+    if speed is not None:
+        msg["speed"] = float(speed)
+    return msg
 
 
 def step_msg(mm, stop_g):
@@ -161,8 +166,8 @@ class CalibratorServer:
         args = [sys.executable, str(script), "--link", str(self.port)] + (["--hidden"] if hidden else [])
         self.proc = subprocess.Popen(args, cwd=os.path.dirname(str(script)), env=env)
 
-    def creep(self, fast_mm, max_mm):
-        return self.send(creep_msg(fast_mm, max_mm))
+    def creep(self, fast_mm, max_mm, fast_speed=None, speed=None):
+        return self.send(creep_msg(fast_mm, max_mm, fast_speed, speed))
 
     def step(self, mm, stop_g):
         return self.send(step_msg(mm, stop_g))
@@ -192,10 +197,13 @@ class CalibratorServer:
                 self.proc.kill()
 
     def close(self):
-        try:
-            self.listener.close()
-        except Exception:
-            pass
+        conn, self.conn = self.conn, None
+        for c in (self.listener, conn):      # the connection too: a hidden calibrator then closes itself
+            try:
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
 
 
 class CalibratorClient:
@@ -207,6 +215,7 @@ class CalibratorClient:
         key = key if key is not None else bytes.fromhex(os.environ.get(KEY_ENV, ""))
         self.conn = None
         self.on_message = on_message
+        self.on_lost = None        # called (recv thread) when the path programmer goes away
         self._lock = threading.Lock()
         try:
             self.conn = Client(("127.0.0.1", int(port)), authkey=key)
@@ -225,6 +234,8 @@ class CalibratorClient:
             try:
                 msg = conn.recv()
             except (EOFError, OSError):
+                if self.conn is not None and self.on_lost is not None:   # not closed by us
+                    self.on_lost()
                 return
             if self.on_message is not None and isinstance(msg, dict) and msg.get("v") == VERSION:
                 self.on_message(msg)
