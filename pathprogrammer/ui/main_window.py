@@ -1,5 +1,6 @@
 """Main window: print plates, printer and calibration | Foto control + model preview + model control
 (folded) | points (folded), force graph and run controls."""
+import json
 import re
 from datetime import datetime
 from collections import deque
@@ -25,6 +26,7 @@ from ..model_io import Orientation, face_size, load_model, oriented_mesh
 from ..program import Program, RunSettings, TouchMode
 from .face_view import FaceView
 from .calibration_wizard import HOME_LABEL, CalibrationWizard
+from ..ipc import GUARD_STATUS
 from .left_panel import LeftPanel
 from .plates_panel import PlatesPanel
 from .printer_box import PrinterBox
@@ -51,7 +53,7 @@ class MainWindow(QMainWindow):
         self.renderer = ShadedTopRenderer()
         self._render_cache = {}
         self.thread = self.worker = None
-        self.wizard = None                # 'Start kalibratie' window, made on first use
+        self.wizard = None                # 'Start calibration' window, made on first use
         self.model_path = None            # file the current model was opened from
 
         self.points = PointTableModel(self.program.points)
@@ -67,12 +69,15 @@ class MainWindow(QMainWindow):
         self.graph.set_source(self._live_source)
         self.photo = PhotoPanel(self.settings)
         self.measure = MeasureBox()
-        self._pending_goto = None         # goto for Meten, sent once the calibrator says hello
-        self._measuring = None            # label of the Meten move under way
+        self._pending_goto = None         # goto for Measure, sent once the calibrator says hello
+        self._measuring = None            # label of the Measure move under way
         self._needs_home = True           # X/Y position unknown until the calibrator homed them
         self._hovering = False            # the sensor hangs 1 cm above point 1 (nothing moved since)
         self._contact = None              # first touch: {"object", "z0", "depth_mm", "force_g"}
-        self._point_index = None          # Meten: index of the part the sensor was last sent to (reached)
+        self._proc = None                 # 'Do whole measuring procedure' under way: its state (dict)
+        self._timeout_token = 0           # only the newest Measure timeout counts
+        self._last_touch_status = None    # status of the last touch_done (ok / limit / ...)
+        self._point_index = None          # Measure: index of the part the sensor was last sent to (reached)
         self._target_index = 0
         self._running_row = None
         self.view.set_selection_model(self.table.selection_model())
@@ -168,6 +173,11 @@ class MainWindow(QMainWindow):
         self.measure.touch_btn.clicked.connect(self.creep_to_object)
         self.measure.step_btn.clicked.connect(self.press_deeper)
         self.measure.next_btn.clicked.connect(self.next_point)
+        self.measure.proc_btn.clicked.connect(self.start_procedure)
+        self.photo.photoSaved.connect(self._on_procedure_photo)
+        self._load_procedure_settings()
+        for w in (self.measure.max_force, self.measure.step_mm, self.measure.n_steps):
+            w.valueChanged.connect(self._save_procedure_settings)
         self.photo.tag_provider = self._photo_tag
         self.left.calibrationChanged.connect(self.refit)
         self.left.faceSizeChanged.connect(self.refit)
@@ -285,8 +295,8 @@ class MainWindow(QMainWindow):
         cal = self.left.cal_points()
         cal.face.update(face)
         self.left.set_cal_points(cal)
-        self.left.link_label.setText(f"Plaat geladen ({Path(model_path).with_suffix('.json').name}); "
-                                     "klik Start kalibratie")
+        self.left.link_label.setText(f"Plate loaded ({Path(model_path).with_suffix('.json').name}); "
+                                     "click Start calibration")
         return True
 
     def update_face(self):
@@ -344,7 +354,7 @@ class MainWindow(QMainWindow):
         try:
             settings = machine_settings.load()
         except machine_settings.SettingsError as e:
-            QMessageBox.warning(self, "Sensorafstand", str(e))
+            QMessageBox.warning(self, "Sensor offset", str(e))
             return
         dlg = SensorOffsetDialog(settings, self)
         if dlg.exec() and dlg.saved is not None:
@@ -354,7 +364,7 @@ class MainWindow(QMainWindow):
                 self.wizard.refresh()
 
     def start_calibration(self):
-        """'Start kalibratie': the step-by-step window; it starts the calibrator when needed."""
+        """'Start calibration': the step-by-step window; it starts the calibrator when needed."""
         if self.focusfield.hardware_active:
             QMessageBox.warning(self, "Printer in use", "An optical scan owns the printer and camera.")
             return
@@ -388,15 +398,15 @@ class MainWindow(QMainWindow):
             return
         self.left.link_label.setText("Calibrator starting...")
 
-    # ---------------- Meten ----------------
+    # ---------------- Measure ----------------
     MEASURE_ANSWER_MS = 120000            # homing X/Y + the move
 
     @staticmethod
     def _point_label(index):
-        return f"punt {index + 1}"
+        return f"point {index + 1}"
 
     def hover_above_point(self, index=0):
-        """'Ga 1 cm boven punt 1 hangen' (index 0) / 'Ga naar volgend punt': sensor 1 cm above part
+        """'Hover 1 cm above point 1' (index 0) / 'Go to next point': sensor 1 cm above part
         `index` of the opened plate. The calibrator lifts to the travel height (clear of every
         part and cone) before it drives X/Y, then goes down to 1 cm above the part."""
         if self.focusfield.hardware_active or self.thread is not None or self._measuring:
@@ -416,37 +426,37 @@ class MainWindow(QMainWindow):
         self._set_measure_buttons(False)
         self._hovering = False
         self._set_contact(None)           # a new spot: the indentation starts again at the next touch
-        QTimer.singleShot(self.MEASURE_ANSWER_MS, self, self._measure_timed_out)
+        self._arm_measure_timeout(self.MEASURE_ANSWER_MS)
         where = f"{label} ({t.part_id}, bed X{t.bed_x:g} Y{t.bed_y:g})"
         if self.server.is_running() and self._send_measure_goto(args):
-            self.measure.set_status(f"Onderweg naar {where}...", "busy")
+            self.measure.set_status(f"On the way to {where}...", "busy")
             return
         self._pending_goto = args
         if not self.server.is_running():
             self.open_calibrator()
-        self.measure.set_status(f"De printerverbinding wordt gestart; daarna gaat de kop naar {where}.", "busy")
+        self.measure.set_status(f"Starting the printer connection; then the head goes to {where}.", "busy")
 
     CREEP_MAX_MM = 15.0                   # never more than this far up (1 cm gap + 5 mm)
-    CREEP_FREE_MM = 8.0                   # of the 1 cm gap after "boven punt 1": known free, a bit faster
+    CREEP_FREE_MM = 8.0                   # of the 1 cm gap after "above point 1": known free, a bit faster
     CREEP_ANSWER_MS = 240000
 
     def creep_to_object(self):
-        """'Beweeg heel langzaam tot de sensor het object raakt': the calibrator creeps the bed up
+        """'Move very slowly until the sensor touches the object': the calibrator creeps the bed up
         and stops on the load cell's first contact."""
         if self.focusfield.hardware_active or self.thread is not None or self._measuring:
             return
         if not self.server.is_running():
-            self.measure.set_status("Ga eerst 1 cm boven punt 1 hangen: er is nog geen verbinding met de printer.",
+            self.measure.set_status("Hover 1 cm above point 1 first: there is no connection to the printer yet.",
                                     "error")
             return
         fast = self.CREEP_FREE_MM if self._hovering else 0.0
         if not self.server.creep(fast, self.CREEP_MAX_MM):
-            self.measure.set_status("De printerverbinding reageert niet; probeer het opnieuw.", "error")
+            self.measure.set_status("The printer connection does not respond; try again.", "error")
             return
-        self._measuring = "aanraken"
+        self._measuring = "touch"
         self._set_measure_buttons(False)
-        QTimer.singleShot(self.CREEP_ANSWER_MS, self, self._measure_timed_out)
-        self.measure.set_status("Het bed gaat heel langzaam omhoog tot de sensor iets voelt... (STOP stopt het)",
+        self._arm_measure_timeout(self.CREEP_ANSWER_MS)
+        self.measure.set_status("The bed rises very slowly until the sensor feels something... (STOP stops it)",
                                 "busy")
 
     PRESS_STEP_MM = 0.1
@@ -454,24 +464,280 @@ class MainWindow(QMainWindow):
     STEP_ANSWER_MS = 30000
 
     def press_deeper(self):
-        """'Ga 0,1 mm naar beneden': the sensor presses 0.1 mm deeper, stopping above 300 g.
+        """'Go 0.1 mm down': the sensor presses 0.1 mm deeper, stopping above 300 g.
         Only after a first touch: the indentation counts from there (0 at the first contact)."""
         if self.focusfield.hardware_active or self.thread is not None or self._measuring:
             return
         if self._contact is None:
-            self.measure.set_status("Raak eerst het object aan met 'Beweeg heel langzaam tot de sensor het object "
-                                    "raakt': de indrukking telt vanaf die eerste aanraking (0 mm).", "error")
+            self.measure.set_status("Touch the object first with 'Move very slowly until the sensor touches the "
+                                    "object': the indentation counts from that first touch (0 mm).", "error")
             return
-        if not self.server.is_running() or not self.server.step(self.PRESS_STEP_MM, self.PRESS_STOP_G):
-            self.measure.set_status("De printerverbinding reageert niet; probeer het opnieuw.", "error")
-            return
-        self._measuring = "stap"
+        self._start_step(self.PRESS_STEP_MM, self.PRESS_STOP_G)
+
+    def _start_step(self, mm, stop_g):
+        if not self.server.is_running() or not self.server.step(mm, stop_g):
+            self.measure.set_status("The printer connection does not respond; try again.", "error")
+            if self._proc is not None:
+                self._procedure_finish("The printer connection does not respond.", "error")
+            return False
+        self._step_mm = mm
+        self._measuring = "step"
         self._set_measure_buttons(False)
-        QTimer.singleShot(self.STEP_ANSWER_MS, self, self._measure_timed_out)
-        self.measure.set_status(f"{self.PRESS_STEP_MM:g} mm dieper... (stopt boven {self.PRESS_STOP_G:g} g)", "busy")
+        self._arm_measure_timeout(self.STEP_ANSWER_MS)
+        self.measure.set_status(f"{mm:g} mm deeper... (stops above {stop_g:g} g)", "busy")
+        return True
+
+    # ---------------- whole measuring procedure ----------------
+    PROC_SETTLE_MS = 500                  # after a move: let the bed stand still before the photo
+    PHOTO_ANSWER_MS = 20000
+    PROC_KEYS = (("measure/max_force_g", "max_force", 300.0), ("measure/step_mm", "step_mm", 0.1),
+                 ("measure/steps", "n_steps", 10))
+
+    def _load_procedure_settings(self):
+        for key, attr, default in self.PROC_KEYS:
+            w = getattr(self.measure, attr)
+            try:
+                w.setValue(type(w.value())(self.settings.value(key, default)))
+            except (TypeError, ValueError):
+                w.setValue(default)
+
+    def _save_procedure_settings(self, *_):
+        for key, attr, _default in self.PROC_KEYS:
+            self.settings.setValue(key, getattr(self.measure, attr).value())
+
+    def start_procedure(self):
+        """'Do whole measuring procedure': home X/Y (the saved calibration is used), then for EVERY
+        part of the plate in manifest order: 1 cm above it, first touch (indentation 0, photo),
+        `steps` x `step_mm` deeper with a photo at each step, stopping early at the max force, then
+        up to the travel height and on to the next part. A part without contact or out of reach is
+        skipped (noted in procedure.json). At the end the sensor goes back to 1 cm above the last
+        part. All photos, measurements.csv and procedure.json go into one new folder
+        <photo folder>/<date_start time>."""
+        if self.focusfield.hardware_active or self.thread is not None or self._measuring or self._proc:
+            return
+        if not self.photo.feed.connected:
+            self.measure.set_status("No camera connected: the procedure takes a photo at every step.", "error")
+            return
+        manifest = calibration.manifest_for(self.model_path) if self.model_path else None
+        try:
+            settings = machine_settings.load()
+            t = measure.hover_target(manifest, settings, self.left.cal_points(), part_index=0)
+        except measure.MeasureError as e:
+            if not (manifest and manifest.get("parts")) or "out of reach" not in str(e):
+                self.measure.set_status(str(e), "error")
+                return
+            t = None
+        except machine_settings.SettingsError as e:
+            self.measure.set_status(str(e), "error")
+            return
+        # which parts can the sensor reach? the others are skipped
+        points, skipped = [], []
+        for i, part in enumerate(manifest["parts"]):
+            try:
+                ti = measure.hover_target(manifest, settings, self.left.cal_points(), part_index=i)
+                points.append(i)
+                t = t or ti
+            except measure.MeasureError as e:
+                skipped.append({"point": i + 1, "object": part["id"], "result": f"skipped: {e}"})
+        if not points:
+            self.measure.set_status("No part of this plate is within reach of the sensor.", "error")
+            return
+        stop_g = self.measure.max_force.value()
+        if stop_g >= settings.forces.max_force_g:
+            self.measure.set_status(f"Max force must stay below {settings.forces.max_force_g:g} g "
+                                    "([forces] max_force_g).", "error")
+            return
+        start = datetime.now()
+        self._proc = {"stage": "home", "start": start, "travel_z": t.travel_z, "source": t.source,
+                      "folder": self.photo.folder() / start.strftime("%Y-%m-%d_%H-%M-%S"),
+                      "stop_g": stop_g, "step_mm": self.measure.step_mm.value(),
+                      "steps": self.measure.n_steps.value(), "queue": points, "n_points": len(points),
+                      "point": None, "done": 0, "photos": [], "points": list(skipped),
+                      "photo_name": None, "last_depth": None, "at_limit": False, "wait_hello": False}
+        self._set_measure_buttons(False)
+        self._set_contact(None)
+        self._measuring = HOME_LABEL
+        self._arm_measure_timeout(self.MEASURE_ANSWER_MS)
+        if self.server.is_running():
+            self._procedure_send_home()
+        else:
+            self._proc["wait_hello"] = True
+            self.open_calibrator()
+            self.measure.set_status("Procedure: starting the printer connection...", "busy")
+
+    def _procedure_send_home(self):
+        p = self._proc
+        if self.server.home(p["travel_z"], HOME_LABEL):
+            self.measure.set_status("Procedure: bed to a safe height, then homing X and Y...", "busy")
+        else:
+            self._measure_done("The printer connection does not respond.", "error")
+
+    def _procedure_where(self):
+        p = self._proc
+        done = p["n_points"] - len(p["queue"])
+        obj = self._hover_target.part_id if getattr(self, "_hover_target", None) is not None else ""
+        return f"Part {done} of {p['n_points']} (point {p['point'] + 1}, {obj})"
+
+    def _procedure_next_point(self):
+        """On to the next part (the calibrator lifts to the travel height first), or the end."""
+        p = self._proc
+        if not p["queue"]:
+            self._procedure_finish("All parts measured.", "ok")
+            return
+        p["point"] = p["queue"].pop(0)
+        p.update(stage="hover", done=0, last_depth=None, at_limit=False)
+        p["points"].append({"point": p["point"] + 1, "object": None, "result": "started", "steps_done": 0,
+                            "photos": 0})
+        self.hover_above_point(p["point"])
+        if self._measuring is None:
+            self._procedure_finish(f"Could not go to point {p['point'] + 1}.", "error", retract=False)
+        else:
+            self.measure.set_status(f"{self._procedure_where()}: to 1 cm above it...", "busy")
+
+    def _procedure_point_done(self, result):
+        p = self._proc
+        rec = p["points"][-1]
+        rec.update(result=result, steps_done=p["done"])
+        self._write_procedure_log(p, "running")
+        self._procedure_next_point()
+
+    def _procedure_next(self, level, text):
+        """Called after every move of the procedure (and its result)."""
+        p = self._proc
+        if p is None:
+            return
+        stage = p["stage"]
+        if stage == "step" and level == "error" and self._last_touch_status == "limit":
+            p["at_limit"] = True                  # max force reached: photo of this spot (if it moved), next part
+            if self._contact is not None and p["last_depth"] is not None \
+                    and abs(self._contact["depth_mm"] - p["last_depth"]) < 1e-4:
+                self._procedure_point_done(f"max force {p['stop_g']:g} g reached")
+            else:
+                self._procedure_photo()
+            return
+        if stage == "touch" and level == "error" and self._last_touch_status == "no_contact":
+            self._procedure_point_done(f"skipped: {text}")     # e.g. a part that did not print
+            return
+        if level == "error":
+            self._procedure_finish(f"Stopped ({stage}): {text}", "error", retract=False)
+            return
+        if stage == "home":
+            self._procedure_next_point()
+        elif stage == "hover":
+            p["points"][-1]["object"] = self._hover_target.part_id
+            p["stage"] = "touch"
+            self.creep_to_object()
+            if self._measuring is None:
+                self._procedure_finish("Could not start the touch.", "error", retract=False)
+            else:
+                self.measure.set_status(f"{self._procedure_where()}: very slowly up until the sensor "
+                                        "touches it...", "busy")
+        elif stage == "touch":
+            if self._contact is None:
+                self._procedure_finish("No first touch.", "error", retract=False)
+                return
+            self._procedure_photo()
+        elif stage == "step":
+            p["done"] += 1
+            self._procedure_photo()
+        elif stage == "retract":
+            self._procedure_finish(p.get("result", "Done."), p.get("result_level", "ok"), retract=False)
+
+    def _procedure_photo(self):
+        self._proc["stage"] = "photo"
+        QTimer.singleShot(self.PROC_SETTLE_MS, self, self._procedure_snap)
+
+    def _procedure_snap(self):
+        p = self._proc
+        if p is None or p["stage"] != "photo":
+            return
+        tag = self._photo_tag()
+        name = self.photo.take_tagged(p["folder"], tag) if tag else None
+        if name is None:
+            self._procedure_finish("No camera connected: photo not taken.", "error")
+            return
+        p["photo_name"], p["last_depth"] = name, tag["depth_mm"]
+        c, t = self._contact or {}, self._hover_target
+        z0 = c.get("z0")
+        p["pending"] = {
+            "file": name, "time": datetime.now().isoformat(timespec="milliseconds"),
+            "point": p["point"] + 1, "object": tag["object"], "step": p["done"],
+            "indentation_mm": round(tag["depth_mm"], 4),
+            "force_g": round(tag["force_g"], 2), "force_settled_g": round(c.get("force_g", 0.0), 2),
+            "head_x": round(t.x, 3), "head_y": round(t.y, 3),
+            "head_z": None if z0 is None else round(z0 - tag["depth_mm"], 4),
+            "contact_z": None if z0 is None else round(z0, 4),
+            "bed_x": t.bed_x, "bed_y": t.bed_y, "part_top_z": t.top_z,
+            "at_max_force": bool(p["at_limit"])}
+        token = self._timeout_token = self._timeout_token + 1
+        QTimer.singleShot(self.PHOTO_ANSWER_MS, self, lambda: self._procedure_photo_timed_out(token))
+
+    def _procedure_photo_timed_out(self, token):
+        p = self._proc
+        if p is not None and p["stage"] == "photo" and token == self._timeout_token:
+            self._procedure_finish("The camera did not save the photo in time.", "error")
+
+    def _on_procedure_photo(self, path, error):
+        p = self._proc
+        if p is None or p["stage"] != "photo" or p["photo_name"] is None:
+            return
+        if error:
+            self._procedure_finish(f"Photo not saved: {error}", "error")
+            return
+        if Path(path).name != p["photo_name"]:
+            return
+        self._timeout_token += 1
+        p["photos"].append(dict(p.pop("pending", None) or {"file": p["photo_name"]}, path=str(path)))
+        p["photo_name"] = None
+        p["points"][-1]["photos"] += 1
+        self._write_procedure_log(p, "running")
+        if p["at_limit"]:
+            self._procedure_point_done(f"max force {p['stop_g']:g} g reached")
+        elif p["done"] >= p["steps"]:
+            self._procedure_point_done(f"all {p['steps']} steps done")
+        else:
+            p["stage"] = "step"
+            if self._start_step(p["step_mm"], p["stop_g"]):
+                self.measure.set_status(f"{self._procedure_where()}: step {p['done'] + 1} of {p['steps']} "
+                                        f"({len(p['photos'])} photos so far)...", "busy")
+
+    def _procedure_finish(self, result, level, retract=True):
+        """End of the procedure: write procedure.json, then (normally) lift the sensor back to 1 cm
+        above the last part; the result is shown once that move is done."""
+        p = self._proc
+        if p is None:
+            return
+        if retract and p["stage"] != "retract" and p["point"] is not None and self.server.is_running():
+            p["stage"], p["result"], p["result_level"] = "retract", result, level
+            self._write_procedure_log(p, result)
+            self.hover_above_point(p["point"])
+            if self._measuring is not None:
+                self.measure.set_status(f"{result} Lifting the sensor back to 1 cm above the part...", "busy")
+                return
+        self._proc = None
+        self._set_measure_buttons(self._measuring is None)
+        self._write_procedure_log(p, result)
+        skipped = sum(1 for r in p["points"] if str(r.get("result", "")).startswith("skipped"))
+        extra = f", {skipped} part(s) skipped" if skipped else ""
+        self.measure.set_status(f"Procedure: {result} {len(p['photos'])} photos{extra} in {p['folder']}", level)
+
+    def _write_procedure_log(self, p, result):
+        try:
+            p["folder"].mkdir(parents=True, exist_ok=True)
+            (p["folder"] / "procedure.json").write_text(json.dumps({
+                "start": p["start"].isoformat(timespec="seconds"),
+                "end": datetime.now().isoformat(timespec="seconds"),
+                "plate": str(self.model_path) if self.model_path else None,
+                "calibration": p["source"], "max_force_g": p["stop_g"], "step_mm": p["step_mm"],
+                "steps_per_part": p["steps"], "result": result,
+                "points": sorted(p["points"], key=lambda r: r["point"]),
+                "photos": p["photos"]}, indent=2), encoding="utf-8")
+        except OSError:
+            pass
 
     def _set_measure_buttons(self, on):
-        for b in (self.measure.hover_btn, self.measure.touch_btn, self.measure.step_btn):
+        on = on and self._proc is None
+        for b in (self.measure.hover_btn, self.measure.touch_btn, self.measure.step_btn, self.measure.proc_btn):
             b.setEnabled(on)
         self._update_next_button(on)
 
@@ -480,25 +746,25 @@ class MainWindow(QMainWindow):
         return len(manifest.get("parts", [])) if manifest else 0
 
     def _update_next_button(self, on=True):
-        """'Ga naar volgend punt' once a point has been visited; it names the point it goes to."""
+        """'Go to next point' once a point has been visited; it names the point it goes to."""
         i = self._point_index
         n = self._part_count()
         has_next = i is not None and i + 1 < n
         self.measure.next_btn.setEnabled(bool(on and has_next))
         if i is None:
-            self.measure.next_btn.setText("Ga naar volgend punt")
+            self.measure.next_btn.setText("Go to next point")
         elif has_next:
-            self.measure.next_btn.setText(f"Ga naar volgend punt (punt {i + 2} van {n})")
+            self.measure.next_btn.setText(f"Go to next point (point {i + 2} of {n})")
         else:
-            self.measure.next_btn.setText(f"Laatste punt bereikt (punt {i + 1} van {n})")
+            self.measure.next_btn.setText(f"Last point reached (point {i + 1} of {n})")
 
     def next_point(self):
-        """'Ga naar volgend punt': up to the travel height, over to the next part, 1 cm above it."""
+        """'Go to next point': up to the travel height, over to the next part, 1 cm above it."""
         if self._point_index is None:
-            self.measure.set_status("Ga eerst naar punt 1.", "error")
+            self.measure.set_status("Go to point 1 first.", "error")
             return
         if self._point_index + 1 >= self._part_count():
-            self.measure.set_status("Dit was het laatste punt van de plaat.", "info")
+            self.measure.set_status("This was the last point of the plate.", "info")
             return
         self.hover_above_point(self._point_index + 1)
 
@@ -507,11 +773,11 @@ class MainWindow(QMainWindow):
         if contact is None:
             self.measure.depth_label.setText("")
         else:
-            self.measure.depth_label.setText(f"{contact['object']}: indrukking {contact['depth_mm']:.3f} mm, "
-                                             f"kracht {contact['force_g']:.1f} g")
+            self.measure.depth_label.setText(f"{contact['object']}: indentation {contact['depth_mm']:.3f} mm, "
+                                             f"force {contact['force_g']:.1f} g")
 
     def _photo_tag(self):
-        """For 'Maak foto' while measuring: object, indentation from the first touch and the force now."""
+        """For 'Take photo' while measuring: object, indentation from the first touch and the force now."""
         if self._contact is None:
             return None
         force = self._live_force[-1] if self._live_force else self._contact["force_g"]
@@ -524,21 +790,43 @@ class MainWindow(QMainWindow):
     def _measure_done(self, text, level):
         self._measuring = None
         self._pending_goto = None
-        self._set_measure_buttons(True)
+        self._timeout_token += 1
         self.measure.set_status(text, level)
+        if self._proc is not None:            # the procedure decides what comes next
+            QTimer.singleShot(0, self, lambda: self._procedure_next(level, text))
+            return
+        self._set_measure_buttons(True)
 
-    def _measure_timed_out(self):
+    def _arm_measure_timeout(self, ms):
+        self._timeout_token += 1
+        token = self._timeout_token
+        QTimer.singleShot(ms, self, lambda: self._measure_timed_out(token))
+
+    def _measure_timed_out(self, token=None):
+        if token is not None and token != self._timeout_token:
+            return                            # a later move armed its own timeout
         if self._measuring:
-            self._measure_done("Geen antwoord van de printer. Staat hij aan en zit de USB-kabel erin?", "error")
+            self._measure_done("No answer from the printer. Is it switched on and is the USB cable plugged in?", "error")
 
     def _measure_message(self, msg):
         kind = msg.get("type")
-        if kind == "hello" and self._pending_goto is not None:
+        if kind == "touch_done":
+            self._last_touch_status = msg.get("status")
+        if kind == "hello" and self._proc is not None and self._proc.get("wait_hello"):
+            self._proc["wait_hello"] = False
+            self._procedure_send_home()
+        elif kind == "goto_done" and self._measuring == HOME_LABEL and msg.get("label") == HOME_LABEL:
+            if msg.get("ok"):
+                self._needs_home = False
+                self._measure_done("X and Y homed.", "ok")
+            else:
+                self._measure_done(f"Homing X and Y failed: {msg.get('message', '')}", "error")
+        elif kind == "hello" and self._pending_goto is not None:
             args, self._pending_goto = self._pending_goto, None
             if self._send_measure_goto(args):
-                self.measure.set_status(f"Onderweg naar {self._measuring}...", "busy")
+                self.measure.set_status(f"On the way to {self._measuring}...", "busy")
             else:
-                self._measure_done("De printerverbinding reageert niet; probeer het opnieuw.", "error")
+                self._measure_done("The printer connection does not respond; try again.", "error")
         elif kind == "goto_done" and msg.get("label") == self._measuring:
             if msg.get("ok"):
                 self._needs_home = False
@@ -546,11 +834,11 @@ class MainWindow(QMainWindow):
                 t = self._hover_target
                 self._point_index = self._target_index
                 label = self._measuring
-                self._measure_done(f"De sensor hangt 1 cm boven {label} ({t.part_id}). Kop X{t.x:.2f} Y{t.y:.2f} "
-                                   f"Z{t.z:.2f} (uit de {t.source}).", "ok")
+                self._measure_done(f"The sensor hovers 1 cm above {label} ({t.part_id}). Head X{t.x:.2f} Y{t.y:.2f} "
+                                   f"Z{t.z:.2f} (from the {t.source}).", "ok")
             else:
-                self._measure_done(f"Niet gelukt: {msg.get('message', '')}", "error")
-        elif kind == "touch_done" and self._measuring == "stap":
+                self._measure_done(f"Failed: {msg.get('message', '')}", "error")
+        elif kind == "touch_done" and self._measuring == "step":
             z, force = msg.get("z"), msg.get("force_g")
             c = self._contact
             if z is not None and c is not None:
@@ -558,15 +846,15 @@ class MainWindow(QMainWindow):
             if force is not None and c is not None:
                 c["force_g"] = float(force)
             self._set_contact(c)
-            depth = f"Indrukking {c['depth_mm']:.3f} mm, kracht {c['force_g']:.1f} g." if c else ""
+            depth = f"Indentation {c['depth_mm']:.3f} mm, force {c['force_g']:.1f} g." if c else ""
             status = msg.get("status")
             if status == "ok":
-                self._measure_done(f"{self.PRESS_STEP_MM:g} mm dieper. {depth}", "ok")
+                self._measure_done(f"{getattr(self, '_step_mm', self.PRESS_STEP_MM):g} mm deeper. {depth}", "ok")
             elif status == "limit":
                 self._measure_done(f"{msg.get('message', '')} {depth}", "error")
             else:
-                self._measure_done(f"{msg.get('message', '') or 'Niet gelukt.'} {depth}", "error")
-        elif kind == "touch_done" and self._measuring == "aanraken":
+                self._measure_done(f"{msg.get('message', '') or 'Failed.'} {depth}", "error")
+        elif kind == "touch_done" and self._measuring == "touch":
             self._hovering = False
             if msg.get("ok") and msg.get("z") is not None:
                 obj = getattr(self, "_hover_target", None)
@@ -576,17 +864,17 @@ class MainWindow(QMainWindow):
             else:
                 self._set_contact(None)
             if msg.get("ok"):
-                self._measure_done(f"{msg.get('message', '')} Kop Z{msg.get('z') or 0:.3f}, "
-                                   f"kracht {msg.get('force_g') or 0:.1f} g.", "ok")
+                self._measure_done(f"{msg.get('message', '')} Head Z{msg.get('z') or 0:.3f}, "
+                                   f"force {msg.get('force_g') or 0:.1f} g.", "ok")
             else:
-                self._measure_done(msg.get("message", "") or "Niet gelukt.", "error")
+                self._measure_done(msg.get("message", "") or "Failed.", "error")
         elif kind == "status" and not msg.get("ok") and self._measuring:
             self._measure_done(msg.get("message", ""), "error")
         elif kind == "bye":
             self._needs_home = True
             self._set_contact(None)
             if self._measuring:
-                self._measure_done("De printerverbinding is gesloten.", "error")
+                self._measure_done("The printer connection was closed.", "error")
 
     def on_calibrator_message(self, msg):
         self._measure_message(msg)
@@ -603,14 +891,14 @@ class MainWindow(QMainWindow):
         if kind == "bye":
             self._live_force.clear()
         if kind == "hello":
-            self.left.link_label.setText("Calibrator verbonden: volg de stappen in het kalibratievenster")
+            self.left.link_label.setText("Calibrator connected: follow the steps in the calibration window")
         elif kind == "bye":
-            self.left.link_label.setText("Calibrator gesloten")
+            self.left.link_label.setText("Calibrator closed")
         elif kind == "position" and msg.get("point") in calibration.POINTS:
             self.left.set_machine_point(msg["point"], msg["x"], msg["y"])
-            self.left.link_label.setText(f"{msg['point']} ontvangen: "
+            self.left.link_label.setText(f"{msg['point']} received: "
                                          f"X{msg['x']:.2f} Y{msg['y']:.2f} Z{msg['z']:.2f}")
-        elif kind == "status" and str(msg.get("message", "")).startswith("Krachtbeveiliging"):
+        elif kind == "status" and str(msg.get("message", "")).startswith(GUARD_STATUS):
             self.left.link_label.setText(msg["message"])          # the hidden calibrator dropped the bed
             self.measure.set_status(msg["message"], "error")
         if self.wizard is not None:
@@ -715,8 +1003,8 @@ class MainWindow(QMainWindow):
             return
         simulate = self.run.simulate.isChecked()
         if not simulate and self.server.is_running():
-            r = QMessageBox.question(self, "Kalibratie open",
-                                     "De kalibratie gebruikt de printerverbinding nog. Nu sluiten?")
+            r = QMessageBox.question(self, "Calibration open",
+                                     "The calibration is still using the printer connection. Close it now?")
             if r != QMessageBox.Yes:
                 return
             self.server.quit_calibrator()
@@ -794,9 +1082,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Run ended", f"{summary.outcome}: {summary.message}")
 
     def stop(self):
+        if self._proc is not None:
+            self._procedure_finish("Stopped with STOP. The sensor stays where it is.", "error", retract=False)
         if self._measuring and self.server.is_running():
-            self.server.halt()                 # Meten: stop the creep or move now
-            self.measure.set_status("STOP gestuurd.", "error")
+            self.server.halt()                 # Measure: stop the creep or move now
+            self.measure.set_status("STOP sent.", "error")
         if self.focusfield.thread is not None:
             self.focusfield.stop()
             if self.focusfield.hardware_active:

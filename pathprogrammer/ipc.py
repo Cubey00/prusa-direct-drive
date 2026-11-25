@@ -46,6 +46,7 @@ from multiprocessing.connection import Client, Listener
 from .calibration import POINTS   # pure module, no Qt
 
 VERSION = 1
+GUARD_STATUS = "Force guard"     # start of the "status" message when the force guard dropped the bed
 KEY_ENV = "PRINTERPROJECT_LINK_KEY"
 
 

@@ -80,6 +80,10 @@ def run(dataset, out_dir, pitch=cfg.CELL_PITCH, profile=cfg.SLICER_PROFILE, do_s
                 except SlicerError as e:
                     on_status(f"  {e}")
                     failed.append(m["model"])
+                    try:                             # keep the reason: the status line is gone later
+                        (out_dir / f"{model.stem}_slicer.log").write_text(f"FAILED\n{e}\n")
+                    except OSError:
+                        pass
                     continue
                 (out_dir / f"{model.stem}_slicer.log").write_text(log)
                 m.update(gcode=gcode.name, slicer="PrusaSlicer " + ".".join(map(str, version)),

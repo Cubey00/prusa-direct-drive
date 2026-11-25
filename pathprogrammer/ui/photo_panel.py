@@ -1,8 +1,8 @@
-"""Foto control: the live camera image, always on, and a button that saves a photo in a folder.
+"""Photo control: the live camera image, always on, and a button that saves a photo in a folder.
 
 `tag_provider()` (set by the main window) may return a dict with object / depth_mm / force_g for
-the photo taken now (Meten): the file name then says so, and a line goes into metingen.csv in
-the photo folder (file, time, object, indrukking, kracht)."""
+the photo taken now (Measure): the file name then says so, and a line goes into measurements.csv in
+the photo folder (file, time, object, indentation, force)."""
 import csv
 import re
 from datetime import datetime
@@ -18,15 +18,15 @@ from ..camera_feed import CameraFeed, default_camera, photo_name
 from .style import ACCENT, ACCENT_DARK, action_button
 
 PHOTOS_DIR = config.PROJECT_DIR / "photos"
-LOG_NAME = "metingen.csv"
-LOG_HEADER = ["bestand", "tijd", "object", "indrukking_mm", "kracht_g"]
+LOG_NAME = "measurements.csv"
+LOG_HEADER = ["file", "time", "object", "indentation_mm", "force_g"]
 
 
 def tagged_name(tag, when=None):
-    """foto_<object>_d0.300mm_F123.4g_<time>.tif"""
+    """photo_<object>_d0.300mm_F123.4g_<time>.tif"""
     obj = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(tag.get("object") or "object")).strip("-") or "object"
-    return (f"foto_{obj}_d{tag['depth_mm']:.3f}mm_F{tag['force_g']:.1f}g_"
-            + photo_name(when).removeprefix("foto_"))
+    return (f"photo_{obj}_d{tag['depth_mm']:.3f}mm_F{tag['force_g']:.1f}g_"
+            + photo_name(when).removeprefix("photo_"))
 EXPOSURE_MS_RANGE = (0.05, 2000.0)
 GAIN_RANGE = (1.0, 16.0)
 
@@ -49,7 +49,7 @@ class LiveView(QLabel):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setStyleSheet("background: #0f172a; color: #94a3b8; border-radius: 6px;")
         self._image = None
-        self.setText("Geen camerabeeld")
+        self.setText("No camera image")
 
     def set_image(self, image):
         self._image = image
@@ -76,20 +76,20 @@ class PhotoPanel(QGroupBox):
     photoSaved = Signal(object, object)  # path or None, error or None
 
     def __init__(self, settings=None, open_camera=None, parent=None):
-        super().__init__("Foto control", parent)
+        super().__init__("Photo control", parent)
         self.settings = settings or QSettings("TUDelft", "pathprogrammer")
         self.count = 0
         self.tag_provider = lambda: None
         self._tags = {}                  # file name -> tag, logged once the photo is saved
         self.view = LiveView()
-        self.state_label = QLabel("Camera zoeken...")
+        self.state_label = QLabel("Looking for the camera...")
         self.state_label.setStyleSheet("color: #64748b; font-weight: normal;")
-        self.photo_btn = QPushButton("Maak foto")
+        self.photo_btn = QPushButton("Take photo")
         action_button(self.photo_btn, ACCENT, ACCENT_DARK)
         self.photo_btn.setEnabled(False)
-        self.folder_btn = QPushButton("Map...")
-        self.folder_btn.setToolTip("Map waarin de foto's komen")
-        self.open_btn = QPushButton("Open map")
+        self.folder_btn = QPushButton("Folder...")
+        self.folder_btn.setToolTip("Folder the photos are saved in")
+        self.open_btn = QPushButton("Open folder")
         self.saved_label = QLabel("")
         self.saved_label.setWordWrap(True)
         self.saved_label.setStyleSheet("color: #64748b; font-weight: normal;")
@@ -98,15 +98,15 @@ class PhotoPanel(QGroupBox):
         self.exposure.setRange(*EXPOSURE_MS_RANGE)
         self.exposure.setDecimals(2)
         self.exposure.setSuffix(" ms")
-        self.exposure.setToolTip("Sluitertijd van de camera: hoe lang de sensor per beeld licht opvangt. "
-                                 "Langer = lichter beeld. De LED-verlichting staat hier los van.")
+        self.exposure.setToolTip("Exposure time of the camera: how long the sensor collects light per image. "
+                                 "Longer = brighter image. The LED lighting is separate from this.")
         self.exposure.setValue(self.settings.value("camera/exposure_ms", config.CAMERA_EXPOSURE_US / 1000,
                                                    type=float))
         self.gain = QDoubleSpinBox()
         self.gain.setRange(*GAIN_RANGE)
         self.gain.setDecimals(1)
         self.gain.setSingleStep(0.5)
-        self.gain.setToolTip("Versterking (gain): hoger is lichter, maar met meer ruis")
+        self.gain.setToolTip("Gain: higher is brighter, but with more noise")
         self.gain.setValue(self.settings.value("camera/gain", 1.0, type=float))
         for w in (self.exposure, self.gain):
             w.setKeyboardTracking(False)
@@ -116,7 +116,7 @@ class PhotoPanel(QGroupBox):
         lay.addWidget(self.view, 1)
         lay.addWidget(self.state_label)
         srow = QHBoxLayout()
-        for text, w in (("Sluitertijd", self.exposure), ("Gain", self.gain)):
+        for text, w in (("Exposure", self.exposure), ("Gain", self.gain)):
             lbl = QLabel(text)
             lbl.setStyleSheet("font-weight: normal;")
             srow.addWidget(lbl)
@@ -143,7 +143,7 @@ class PhotoPanel(QGroupBox):
         self._settings_changed()
         self._show_folder()
         if CameraFeed.disabled():
-            self.state_label.setText("Camera uitgeschakeld (PRINTERPROJECT_NO_CAMERA)")
+            self.state_label.setText("Camera disabled (PRINTERPROJECT_NO_CAMERA)")
         self.feed.start()
 
     def _settings_changed(self, *_):
@@ -156,13 +156,13 @@ class PhotoPanel(QGroupBox):
         return Path(self.settings.value("photo_folder", str(PHOTOS_DIR)))
 
     def choose_folder(self):
-        path = QFileDialog.getExistingDirectory(self, "Map voor foto's", str(self.folder()))
+        path = QFileDialog.getExistingDirectory(self, "Folder for photos", str(self.folder()))
         if path:
             self.settings.setValue("photo_folder", path)
             self._show_folder()
 
     def _show_folder(self):
-        self.saved_label.setText(f"Foto's gaan naar: {self.folder()}")
+        self.saved_label.setText(f"Photos go to: {self.folder()}")
 
     def _open_folder(self):
         self.folder().mkdir(parents=True, exist_ok=True)
@@ -176,10 +176,21 @@ class PhotoPanel(QGroupBox):
             tag = None
         name = tagged_name(tag) if tag else None
         if not self.feed.take_photo(self.folder(), name):
-            self.saved_label.setText("Geen camera aangesloten: er is geen foto gemaakt.")
+            self.saved_label.setText("No camera connected: no photo was taken.")
             return
         if tag:
             self._tags[name] = tag
+
+    def take_tagged(self, folder, tag):
+        """A photo with object / depth_mm / force_g in its name into `folder` (made if needed), logged in
+        that folder's measurements.csv once saved. Returns the file name, or None without a camera."""
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+        name = tagged_name(tag)
+        if not self.feed.take_photo(folder, name):
+            return None
+        self._tags[name] = tag
+        return name
 
     def _log(self, path, tag):
         log = Path(path).parent / LOG_NAME
@@ -194,7 +205,7 @@ class PhotoPanel(QGroupBox):
     def release(self):
         """Close the camera so a run can use it."""
         self.feed.release()
-        self.view.clear_image("Camera in gebruik door de run")
+        self.view.clear_image("Camera in use by the run")
 
     def resume(self):
         self.feed.start()
@@ -211,13 +222,13 @@ class PhotoPanel(QGroupBox):
         self.state_label.setStyleSheet(f"color: {color}; font-weight: normal;")
         self.state_label.setText(("● " if connected else "○ ") + message
                                  + ("" if connected or not self.feed.is_running() else
-                                    " (zoekt automatisch verder)"))
+                                    " (keeps looking automatically)"))
         if not connected and self.feed.is_running():
-            self.view.clear_image("Geen camerabeeld")
+            self.view.clear_image("No camera image")
 
     def _on_saved(self, path, error):
         if error:
-            self.saved_label.setText(f"Foto niet opgeslagen: {error}")
+            self.saved_label.setText(f"Photo not saved: {error}")
             return
         self.count += 1
         tag = self._tags.pop(Path(path).name, None)
@@ -225,8 +236,8 @@ class PhotoPanel(QGroupBox):
         if tag:
             try:
                 self._log(path, tag)
-                extra = (f" ({tag.get('object')}, indrukking {tag['depth_mm']:.3f} mm, "
-                         f"kracht {tag['force_g']:.1f} g; ook in {LOG_NAME})")
+                extra = (f" ({tag.get('object')}, indentation {tag['depth_mm']:.3f} mm, "
+                         f"force {tag['force_g']:.1f} g; also in {LOG_NAME})")
             except OSError as e:
-                extra = f" ({LOG_NAME} niet bijgewerkt: {e})"
-        self.saved_label.setText(f"Foto {self.count} opgeslagen: {path}{extra}")
+                extra = f" ({LOG_NAME} not updated: {e})"
+        self.saved_label.setText(f"Photo {self.count} saved: {path}{extra}")

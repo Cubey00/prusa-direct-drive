@@ -60,10 +60,10 @@ def test_feed_waits_for_a_camera_then_streams():
     feed.start()
     try:
         _wait(lambda: len(attempts) >= 2)
-        assert states == [(False, "Geen camera: geen camera aangesloten")]     # said once, not every retry
+        assert states == [(False, "No camera: no camera connected")]     # said once, not every retry
         plugged.set()
         _wait(lambda: len(frames) >= 2)
-        assert states[-1] == (True, "Camera verbonden") and feed.connected
+        assert states[-1] == (True, "Camera connected") and feed.connected
     finally:
         feed.release()
     assert not feed.is_running() and states[-1][0] is False
@@ -93,9 +93,9 @@ def test_photo_button_saves_a_tiff(qtbot, tmp_path):
         qtbot.waitUntil(lambda: panel.count == 1, timeout=5000)
     finally:
         panel.shutdown()                       # waits until the TIFF is written
-    files = list((tmp_path / "fotos").glob("foto_*.tif"))
+    files = list((tmp_path / "fotos").glob("photo_*.tif"))
     assert len(files) == 1 and tifffile.imread(files[0]).shape == (300, 400, 3)
-    assert "Foto 1 opgeslagen" in panel.saved_label.text()
+    assert "Photo 1 saved" in panel.saved_label.text()
 
 
 def test_no_camera_no_photo(qtbot, tmp_path):
@@ -103,10 +103,10 @@ def test_no_camera_no_photo(qtbot, tmp_path):
                        open_camera=lambda: (_ for _ in ()).throw(RuntimeError("No camera found")))
     qtbot.addWidget(panel)
     try:
-        qtbot.waitUntil(lambda: "Geen camera" in panel.state_label.text(), timeout=5000)
+        qtbot.waitUntil(lambda: "No camera" in panel.state_label.text(), timeout=5000)
         assert not panel.photo_btn.isEnabled()
         panel.take_photo()
-        assert "Geen camera aangesloten" in panel.saved_label.text()
+        assert "No camera connected" in panel.saved_label.text()
     finally:
         panel.shutdown()
 
@@ -140,7 +140,7 @@ def test_exposure_and_gain_reach_the_camera_also_after_a_reconnect(qtbot, tmp_pa
 def test_errors_are_explained():
     assert "SDK" in camera_feed.explain(Exception("GENICAM_GENTL64_PATH environment variable not found!"))
     assert "pip install" in camera_feed.explain(ModuleNotFoundError("No module named 'ids_peak'"))
-    assert camera_feed.explain(RuntimeError("No camera found.")) == "geen camera aangesloten"
+    assert camera_feed.explain(RuntimeError("No camera found.")) == "no camera connected"
 
 
 def test_measuring_photo_gets_object_depth_and_force(qtbot, tmp_path):
@@ -155,9 +155,9 @@ def test_measuring_photo_gets_object_depth_and_force(qtbot, tmp_path):
         qtbot.waitUntil(lambda: panel.count == 1, timeout=5000)
     finally:
         panel.shutdown()
-    files = list((tmp_path / "fotos").glob("foto_mini-square_d0.200mm_F123.5g_*.tif"))
+    files = list((tmp_path / "fotos").glob("photo_mini-square_d0.200mm_F123.5g_*.tif"))
     assert len(files) == 1
     rows = (tmp_path / "fotos" / photo_panel.LOG_NAME).read_text(encoding="utf-8").splitlines()
-    assert rows[0] == "bestand;tijd;object;indrukking_mm;kracht_g"
+    assert rows[0] == "file;time;object;indentation_mm;force_g"
     assert rows[1].startswith(files[0].name) and rows[1].endswith(";mini square;0.200;123.5")
-    assert "indrukking 0.200 mm" in panel.saved_label.text()
+    assert "indentation 0.200 mm" in panel.saved_label.text()

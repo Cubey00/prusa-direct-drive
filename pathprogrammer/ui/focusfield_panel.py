@@ -705,7 +705,7 @@ class FocusFieldPanel(QWidget):
             "Manual calibration from saved photos\n\n"
             "1. Use a flat black-and-white checkerboard with a white margin. "
             "An 8 × 6 board has 7 × 5 inner corners. Measure the width of a square in millimeters.\n\n"
-            "2. Near your working distance, use Foto control → Maak foto to save full-size TIFFs with "
+            "2. Near your working distance, use Photo control → Take photo to save full-size TIFFs with "
             "the camera, lens and image geometry you’ll use for the scan. Move and slightly tilt the board "
             "to sample the center and edges. Keep the whole board visible.\n\n"
             "3. Put at least 8 photos in a calibration folder and 2 different photos in a validation folder "

@@ -187,9 +187,9 @@ class PrinterBox(QGroupBox):
 
     def _set_dot(self, connected):
         """Connection indicator: True connected, False searching, None no login saved."""
-        text, color = {True: ("● Verbonden", "#16a34a"),
-                       False: ("○ Niet verbonden, zoekt automatisch", "#b45309"),
-                       None: ("○ Geen login opgeslagen", "#64748b")}[connected]
+        text, color = {True: ("● Connected", "#16a34a"),
+                       False: ("○ Not connected, retrying automatically", "#b45309"),
+                       None: ("○ No login saved", "#64748b")}[connected]
         self.link_dot.setText(text)
         self.link_dot.setStyleSheet(f"color: {color}; font-weight: normal;")
 

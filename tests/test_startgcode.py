@@ -50,8 +50,7 @@ def test_ini_is_written_only_when_something_changes(start, tmp_path):
     path, _ = startgcode.write_start_ini({"start_gcode": start}, tmp_path, printing)
     assert path.name == "start_gcode.ini"
     assert read_profile(path)["start_gcode"].count("G29 P1 X") == 6     # 5 + the purge-place one
-    same = replace(printing, bed_probe_points=(), wait_for_bed_frame=True)
-    assert startgcode.write_start_ini({"start_gcode": start}, tmp_path / "x", same) == (None, [])
+    assert startgcode.write_start_ini({"start_gcode": "M17"}, tmp_path / "x", printing)[0] is None   # nothing to adapt
 
 
 def test_probe_point_out_of_reach_is_refused(tmp_path, monkeypatch):
@@ -60,3 +59,46 @@ def test_probe_point_out_of_reach_is_refused(tmp_path, monkeypatch):
     bad.write_text(text.replace("[100, 117]]", "[100, 230]]"), encoding="utf-8")
     with pytest.raises(machine_settings.SettingsError, match="bed probe point"):
         machine_settings.load(bad)
+
+
+def test_purge_line_moves_where_the_nozzle_can_reach(start):
+    new, notes = startgcode.adapt(start, (), True, (80.0, 47.0))
+    assert notes == ["purge line X80 -> X30 at Y47"]
+    lines = new.split("\\n")
+    i0, i1 = lines.index(startgcode.PURGE_START), lines.index(startgcode.PURGE_END)
+    moves = [l for l in lines[i0:i1] if l.startswith(("G0", "G1"))]
+    xs = [float(t[1:]) for l in moves for t in l.split(";")[0].split() if t.startswith("X")]
+    assert xs == [80, 66, 56, 46, 36, 33, 30]              # Prusa's 249 -> 199, shifted
+    assert all("Y-2.5" not in l for l in lines) and "G0 X80 Y47 Z15 F4800" in new
+    assert "G29 P9 X39 Y47 W32 H4" in lines                # nozzle cleaning moved along
+    assert "G29 P1 X20 Y43 W70 H12 C ; probe near purge place" in lines
+    tx, ty = machine_settings.load().printer.travel
+    assert all(tx[0] <= x <= tx[1] for x in xs) and ty[0] <= 47 <= ty[1]
+
+
+def test_default_settings_move_the_purge(start):
+    printing = machine_settings.load().printing
+    _, notes = startgcode.adapt(start, printing.bed_probe_points, printing.wait_for_bed_frame,
+                                (printing.purge_start_x, printing.purge_y))
+    assert notes[0].startswith("purge line X")
+
+
+@pytest.mark.parametrize("change, match", [
+    ("purge_y = 47.0", "purge_y = 54.0"),          # too close to the usable area
+    ("purge_y = 47.0", "purge_y = 40.0"),          # outside the nozzle's reach
+    ("purge_start_x = 80.0", "purge_start_x = 230.0"),
+    ("purge_start_x = 80.0", "purge_start_x = 40.0"),   # line would start left of X -2
+])
+def test_purge_out_of_reach_is_refused(tmp_path, change, match):
+    text = machine_settings.DEFAULT_PATH.read_text(encoding="utf-8")
+    assert change in text
+    bad = tmp_path / "s.toml"
+    bad.write_text(text.replace(change, match), encoding="utf-8")
+    with pytest.raises(machine_settings.SettingsError, match="purge"):
+        machine_settings.load(bad)
+
+
+def test_slicer_prints_slower_with_skirt_and_brim():
+    o = cfg.SLICER_OVERRIDES
+    assert "--external-perimeter-speed=40" in o and "--max-print-speed=100" in o
+    assert "--skirts=1" in o and "--brim-width=2" in o and "--support-material=0" in o

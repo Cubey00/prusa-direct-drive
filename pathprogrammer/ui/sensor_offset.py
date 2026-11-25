@@ -8,29 +8,28 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QDoubleSpin
 
 import machine_settings
 
-CONFIRM_WORD = "AANPASSEN"
+CONFIRM_WORD = "ADJUST"
 
 
 def offset_text(sensor):
     """Short description of [sensor] offset for the main window."""
     x, y, z = sensor.offset
-    how = "gemeten bij de kalibratie" if sensor.measured else "geschat, nog niet gemeten"
-    return (f"Sensorkop t.o.v. nozzle: <b>X {x:+.2f} &nbsp;Y {y:+.2f} &nbsp;Z {z:+.2f} mm</b>"
+    how = "measured by the calibration" if sensor.measured else "estimated, not measured yet"
+    return (f"Sensor head relative to nozzle: <b>X {x:+.2f} &nbsp;Y {y:+.2f} &nbsp;Z {z:+.2f} mm</b>"
             f"<br><span style='color:#64748b'>({how})</span>")
 
 
 class SensorOffsetDialog(QDialog):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Sensorafstand handmatig aanpassen")
+        self.setWindowTitle("Adjust the sensor offset by hand")
         self.saved = None
         warn = QLabel(
-            "<b style='color:#b91c1c'>Liever niet.</b> De kalibratie meet deze afstand op de kegels en "
-            "slaat hem op; dat is nauwkeuriger dan een getal dat je hier intypt. Pas hem alleen aan als je "
-            "zeker weet dat de waarde niet klopt (bijvoorbeeld na het verplaatsen van de sensor) en "
-            "kalibreer daarna opnieuw.")
+            "<b style='color:#b91c1c'>Better not.</b> The calibration measures this offset on the cones and "
+            "saves it; that is more accurate than a number you type here. Only change it if you are sure "
+            "the value is wrong (for example after moving the sensor), and calibrate again afterwards.")
         warn.setWordWrap(True)
-        self.sure = QCheckBox("Ik weet wat ik doe en wil de ingestelde waarden overschrijven")
+        self.sure = QCheckBox("I know what I am doing and want to overwrite the set values")
         self.fields = []
         form = QFormLayout()
         for name, v in zip("XYZ", settings.sensor.offset):
@@ -43,9 +42,9 @@ class SensorOffsetDialog(QDialog):
             form.addRow(f"offset {name}", s)
             self.fields.append(s)
         self.word = QLineEdit()
-        self.word.setPlaceholderText(f"typ {CONFIRM_WORD}")
+        self.word.setPlaceholderText(f"type {CONFIRM_WORD}")
         self.word.setEnabled(False)
-        form.addRow("Bevestig", self.word)
+        form.addRow("Confirm", self.word)
         self.buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.buttons.button(QDialogButtonBox.Save).setEnabled(False)
         self.buttons.accepted.connect(self.save)
@@ -72,6 +71,6 @@ class SensorOffsetDialog(QDialog):
             self.saved = machine_settings.save_values(
                 "sensor", {"offset_x": x, "offset_y": y, "offset_z": z, "measured": False})
         except machine_settings.SettingsError as e:
-            QMessageBox.warning(self, "Sensorafstand", f"Niet opgeslagen: {e}")
+            QMessageBox.warning(self, "Sensor offset", f"Not saved: {e}")
             return
         self.accept()

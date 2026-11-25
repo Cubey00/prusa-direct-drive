@@ -1,4 +1,4 @@
-"""The nozzle -> sensor offset is shown above Start kalibratie; changing it by hand takes two steps."""
+"""The nozzle -> sensor offset is shown above Start calibration; changing it by hand takes two steps."""
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QDialogButtonBox
 
@@ -22,12 +22,12 @@ def test_offset_needs_the_box_and_the_word(qtbot, tmp_path, monkeypatch):
     dlg.sure.setChecked(True)
     assert dlg.fields[1].isEnabled() and not save.isEnabled()
     dlg.fields[1].setValue(-39.5)
-    dlg.word.setText("aanpassen")
+    dlg.word.setText("adjust")
     assert save.isEnabled()
     save.click()
     s = machine_settings.load()
     assert s.sensor.offset[1] == -39.5 and s.sensor.measured is False
-    assert "-39.50" in offset_text(s.sensor) and "geschat" in offset_text(s.sensor)
+    assert "-39.50" in offset_text(s.sensor) and "estimated" in offset_text(s.sensor)
 
 
 def test_offset_the_sensor_cannot_work_with_is_refused(qtbot, tmp_path, monkeypatch):
@@ -39,7 +39,7 @@ def test_offset_the_sensor_cannot_work_with_is_refused(qtbot, tmp_path, monkeypa
     qtbot.addWidget(dlg)
     dlg.sure.setChecked(True)
     dlg.fields[1].setValue(-45.0)                 # sensor can no longer reach the back of the plate
-    dlg.word.setText("AANPASSEN")
+    dlg.word.setText("ADJUST")
     dlg.buttons.button(QDialogButtonBox.Save).click()
     assert shown and "sensor can reach" in shown[0] and dlg.saved is None
     assert machine_settings.load().sensor.offset[1] != -45.0

@@ -123,10 +123,10 @@ def test_open_plate_fills_fiducials_and_calibrates(qtbot, tmp_path):
 def test_import_mini_testset_builds_a_plate_with_two_parts(panel, qtbot, tmp_path):
     assert panel.import_mini_testset()
     qtbot.waitUntil(lambda: panel.result is not None, timeout=30000)
-    assert sorted(f.name for f in (tmp_path / "testset_mini").glob("*.3mf")) ==         ["06_vierkant_5mm.3mf", "21_halve_bol_5mm.3mf"]
+    assert sorted(f.name for f in (tmp_path / "testset_mini").glob("*.3mf")) ==         ["06_square_5mm.3mf", "21_dome_5mm.3mf"]
     assert panel.plate_list.count() == 1
     m = panel.preview.manifest
-    assert [p["id"] for p in m["parts"]] == ["06_vierkant_5mm", "21_halve_bol_5mm"]
+    assert [p["id"] for p in m["parts"]] == ["06_square_5mm", "21_dome_5mm"]
     assert len(m["fiducials"]) == 3
     assert (tmp_path / "plates" / "testset_mini" / "plate_01.3mf").exists()
     assert panel.mini_btn.isEnabled()

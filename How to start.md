@@ -1,42 +1,42 @@
 # How to start
 
-Stap voor stap: wat je de **eerste keer** op een laptop moet doen om de Touch Path Programmer te
-gebruiken. Daarna start je hem gewoon met de snelkoppeling op je bureaublad.
+Step by step: what you need to do the **first time** on a laptop to use the Touch Path Programmer.
+After that, you simply start it with the shortcut on your desktop.
 
-Deze handleiding gaat uit van **Windows**. Voor een Mac, zie [docs/macos-setup.md](docs/macos-setup.md).
+This guide assumes **Windows**. For a Mac, see [docs/macos-setup.md](docs/macos-setup.md).
 
-| Stap | Wat | Hoe vaak |
+| Step | What | How often |
 |---|---|---|
-| 1 | Python installeren | één keer per laptop |
-| 2 | Git en de code ophalen | één keer per laptop |
-| 3 | Python-pakketten installeren | één keer, en na een nieuwe `requirements.txt` |
-| 4 | PrusaSlicer installeren | één keer per laptop |
-| 5 | IDS peak SDK (camera-driver) installeren | één keer per laptop |
-| 6 | Netwerkkabel en vast adres | één keer per laptop |
-| 7 | Snelkoppeling maken | één keer per laptop |
-| 8 | Eerste keer starten: PrusaLink-wachtwoord | één keer per laptop |
-| 9 | Controleren dat alles werkt | elke keer even kijken |
+| 1 | Install Python | once per laptop |
+| 2 | Git and getting the code | once per laptop |
+| 3 | Install the Python packages | once, and after a new `requirements.txt` |
+| 4 | Install PrusaSlicer | once per laptop |
+| 5 | Install the IDS peak SDK (camera driver) | once per laptop |
+| 6 | Network cable and fixed address | once per laptop |
+| 7 | Create the shortcut | once per laptop |
+| 8 | First start: PrusaLink password | once per laptop |
+| 9 | Check that everything works | a quick look every time |
 
 ---
 
-## Stap 1: Python installeren
+## Step 1: install Python
 
-1. Download **Python 3.12** (64-bit) van [python.org/downloads](https://www.python.org/downloads/).
-2. Vink in het eerste scherm van de installer **"Add python.exe to PATH"** aan.
-3. Klik op **Install Now**.
-4. Controleer het: open een opdrachtprompt (Windows-toets, typ `cmd`) en typ:
+1. Download **Python 3.12** (64-bit) from [python.org/downloads](https://www.python.org/downloads/).
+2. On the first screen of the installer, tick **"Add python.exe to PATH"**.
+3. Click **Install Now**.
+4. Check it: open a command prompt (Windows key, type `cmd`) and type:
 
    ```bash
    python --version
    ```
 
-   Je moet `Python 3.12.x` zien.
+   You should see `Python 3.12.x`.
 
-## Stap 2: Git en de code ophalen
+## Step 2: Git and getting the code
 
-1. Installeer **Git** van [git-scm.com](https://git-scm.com/download/win). De standaardinstellingen
-   zijn goed.
-2. Haal de code op en ga naar de teambranch:
+1. Install **Git** from [git-scm.com](https://git-scm.com/download/win). The default settings are
+   fine.
+2. Get the code and switch to the team branch:
 
    ```bash
    git clone https://github.com/Cubey00/prusa-direct-drive.git
@@ -50,162 +50,172 @@ Deze handleiding gaat uit van **Windows**. Voor een Mac, zie [docs/macos-setup.m
    git checkout development-bep-groep
    ```
 
-3. Later de nieuwste versie ophalen doe je in die map met:
+3. To get the newest version later, run this in that folder:
 
    ```bash
    git pull
    ```
 
-> **Let op:** zet de firmware-repository (`prusa-direct-drive-firmware`) **niet** in deze map of
-> in de map erboven. Die hoort apart.
+> **Note:** do **not** put the firmware repository (`prusa-direct-drive-firmware`) in this folder or
+> in the folder above it. It belongs somewhere separate.
 
-## Stap 3: Python-pakketten installeren
+## Step 3: install the Python packages
 
-In de map `prusa-direct-drive`:
+In the `prusa-direct-drive` folder:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-Dit installeert alles wat het programma gebruikt: PySide6 (de vensters), numpy, trimesh,
-pyserial (USB naar de printer), requests (PrusaLink), tifffile (foto's) en de Python-pakketten
-van de camera, `ids_peak` en `ids_peak_ipl`.
+This installs everything the program uses: PySide6 (the windows), numpy, trimesh, pyserial (USB to
+the printer), requests (PrusaLink), tifffile (photos) and the camera's Python packages, `ids_peak`
+and `ids_peak_ipl`.
 
-Krijg je later een melding als *"No module named …"*? Draai dit commando dan opnieuw: er is
-waarschijnlijk een pakket bijgekomen.
+Do you later get a message like *"No module named …"*? Then run this command again: a package has
+probably been added.
 
-## Stap 4: PrusaSlicer installeren
+## Step 4: install PrusaSlicer
 
-Het programma gebruikt PrusaSlicer om de printplaten te slicen en om G-code in 3D te laten zien.
+The program uses PrusaSlicer to slice the print plates and to show G-code in 3D.
 
-1. Download **PrusaSlicer 2.9 of nieuwer** van
-   [prusa3d.com/page/prusaslicer_424](https://www.prusa3d.com/page/prusaslicer_424/). Oudere
-   versies kennen de Core One niet.
-2. Installeer het op de standaardplek (`C:\Program Files\Prusa3D\PrusaSlicer`). Daar zoekt het
-   programma het vanzelf.
+1. Download **PrusaSlicer 2.9 or newer** from
+   [prusa3d.com/page/prusaslicer_424](https://www.prusa3d.com/page/prusaslicer_424/). Older versions
+   do not know the Core One.
+2. Install it in the default location (`C:\Program Files\Prusa3D\PrusaSlicer`). The program looks
+   for it there by itself.
 
-Staat PrusaSlicer ergens anders? Zet dan het pad in `slicing/config.py` bij `SLICER_EXE`.
+Is PrusaSlicer somewhere else? Then put its path in `slicing/config.py` at `SLICER_EXE`.
 
-## Stap 5: IDS peak SDK (camera-driver) installeren
+## Step 5: install the IDS peak SDK (camera driver)
 
-De Python-pakketten uit stap 3 praten met de camera via de **IDS peak SDK**. Die bevat de
-USB3-driver en moet je los installeren. Zonder SDK zegt het cameravenster:
-*"IDS peak SDK (camera-driver) is niet geïnstalleerd op deze computer"*.
+The Python packages from step 3 talk to the camera through the **IDS peak SDK**. It contains the
+USB3 driver and has to be installed separately. Without the SDK the camera panel says:
+*"IDS peak SDK (camera driver) is not installed on this computer"*.
 
-1. Ga naar [ids-imaging.com](https://www.ids-imaging.com) → **Downloads**, kies jullie camera en
-   download **IDS peak** voor Windows (64-bit). Kies bij voorkeur dezelfde reeks als het
-   Python-pakket (`ids_peak` 1.17).
-2. Start de installer **als beheerder** en laat de **USB3 Vision-driver** aangevinkt.
-3. **Herstart de laptop.** De installer zet de omgevingsvariabele `GENICAM_GENTL64_PATH`; die
-   wordt pas na een herstart overal gezien.
-4. Sluit de camera aan op een **USB 3-poort** (blauw, of met "SS").
-5. Controleer het eventueel met **IDS peak Cockpit**, dat met de SDK is meegeïnstalleerd: daar
-   moet de camera in de lijst staan.
+1. Go to [ids-imaging.com](https://www.ids-imaging.com) → **Downloads**, choose your camera and
+   download **IDS peak** for Windows (64-bit). Preferably choose the same series as the Python
+   package (`ids_peak` 1.17).
+2. Run the installer **as administrator** and leave the **USB3 Vision driver** ticked.
+3. **Restart the laptop.** The installer sets the environment variable `GENICAM_GENTL64_PATH`; it
+   is only seen everywhere after a restart.
+4. Connect the camera to a **USB 3 port** (blue, or marked "SS").
+5. If you like, check it with **IDS peak Cockpit**, which is installed with the SDK: the camera
+   should be in its list.
 
-Heb je geen camera nodig, dan kun je deze stap overslaan. De rest van het programma werkt ook
-zonder.
+If you do not need a camera, you can skip this step. The rest of the program works without it.
 
-## Stap 6: netwerkkabel en vast adres (voor PrusaLink en de krachtdata)
+## Step 6: network cable and fixed address (for PrusaLink and the force data)
 
-Printen via het programma (PrusaLink) en de krachtdata van de load cell gaan over een
-**netwerkkabel rechtstreeks van de printer naar de laptop**. De netwerkaansluiting in de muur
-van de TU werkt hier niet voor.
+Printing from the program (PrusaLink) and the load cell's force data go over a **network cable
+straight from the printer to the laptop**. The network socket in the wall at the TU does not work
+for this.
 
-Het volledige stappenplan staat in [docs/printer-verbinden.md](docs/printer-verbinden.md). Kort:
+The full procedure is in [docs/connecting-the-printer.md](docs/connecting-the-printer.md). In
+short:
 
-1. Sluit een netwerkkabel aan van de printer naar je laptop (eventueel via een
-   USB-naar-Ethernet-adapter).
-2. Geef je laptop één keer het vaste adres `192.168.50.1`. Start daarvoor
-   [printer_network/laptop_setup.ps1](printer_network/laptop_setup.ps1) **als beheerder**. Het
-   script zet ook de firewallregel voor de krachtdata (UDP 8514). Ongedaan maken doe je met
+1. Connect a network cable from the printer to your laptop (if needed through a USB-to-Ethernet
+   adapter).
+2. Give your laptop the fixed address `192.168.50.1` once. To do so, run
+   [printer_network/laptop_setup.ps1](printer_network/laptop_setup.ps1) **as administrator**. The
+   script also adds the firewall rule for the force data (UDP 8514). Undo it with
    `laptop_undo.ps1`.
-3. De printer staat al op `192.168.50.2`. Is dat na een reset niet meer zo, volg dan stap 1 van
-   [docs/printer-verbinden.md](docs/printer-verbinden.md).
-4. Sluit ook de **USB-kabel** van de printer aan op de laptop. Daarover bestuurt het programma de
-   printer (bewegen, kalibreren, aantikken). Het programma vindt de printer zelf. Vindt hij hem
-   niet, dan staat er *"No Prusa printer found"*: controleer of de kabel goed vastzit en de printer
-   aanstaat.
+3. The printer is already at `192.168.50.2`. If that is no longer the case after a reset, follow
+   step 1 of [docs/connecting-the-printer.md](docs/connecting-the-printer.md).
+4. Also connect the printer's **USB cable** to the laptop. The program controls the printer over it
+   (moving, calibrating, touching). The program finds the printer by itself. If it does not, it
+   says *"No Prusa printer found"*: check that the cable is plugged in properly and the printer is
+   on.
 
-Je laptop houdt gewoon Wi-Fi (eduroam) voor internet.
+Your laptop keeps using Wi-Fi (eduroam) for the internet.
 
-> **Firmware:** het programma werkt met de **teamfirmware** (Core One, 6.10.100, met onder andere
-> de aangepaste M410-stop en de grenzen van de afstandsblokjes). Op een printer met standaard
-> Prusa-firmware werken bewegen, kalibreren en aantikken niet goed.
+> **Firmware:** the program works with the **team firmware** (Core One, 6.10.100, with among other
+> things the modified M410 stop and the limits of the spacer blocks). On a printer with standard
+> Prusa firmware, moving, calibrating and touching do not work properly.
 
-## Stap 7: snelkoppeling maken
+## Step 7: create the shortcut
 
-Maak in de map `prusa-direct-drive` één keer de snelkoppeling aan:
+In the `prusa-direct-drive` folder, create the shortcut once:
 
 ```bash
 python tools/make_shortcut.py
 ```
 
-Er staat nu **"Touch Path Programmer"** (met het blauwe logo) op je bureaublad en in de
-projectmap. Dubbelklikken start het programma, zonder zwart opdrachtvenster.
+There is now a **"Touch Path Programmer"** shortcut (with the blue logo) on your desktop and in the
+project folder. Double-clicking it starts the program, without a black command window.
 
-Starten zonder snelkoppeling kan ook, vanuit de projectmap:
+You can also start it without the shortcut, from the project folder:
 
 ```bash
 python -m pathprogrammer
 ```
 
-## Stap 8: eerste keer starten en PrusaLink instellen
+## Step 8: first start and setting up PrusaLink
 
-1. Start het programma met de snelkoppeling.
-2. Klik in het vak **Printer (PrusaLink)** op **Printer settings...**
-3. Vul het **wachtwoord** in. Dat staat op de printer onder
-   **Settings > Network > PrusaLink**; de gebruiker is `maker` en het adres `192.168.50.2` staat
-   er al. Heeft de printer een **API key** in plaats van een wachtwoord, vul dan die in.
-4. Klik op **Test connection**. Je moet *"Connected: printer is …"* zien. Klik dan op **Save**.
+1. Start the program with the shortcut.
+2. In the **Printer (PrusaLink)** box, click **Printer settings...**
+3. Enter the **password**. You find it on the printer under **Settings > Network > PrusaLink**; the
+   user is `maker` and the address `192.168.50.2` is already filled in. If the printer has an
+   **API key** instead of a password, enter that.
+4. Click **Test connection**. You should see *"Connected: printer is …"*. Then click **Save**.
 
-Het wachtwoord wordt alleen op deze laptop bewaard, niet in de repository. Vanaf nu maakt het
-programma zelf verbinding zodra de printer is aangesloten. Linksboven in het printervak staat
-dan **● Verbonden**.
+The password is only stored on this laptop, not in the repository. From now on the program connects
+by itself as soon as the printer is connected. The top left of the printer box then shows
+**● Connected**.
 
-## Stap 9: controleren dat alles werkt
+## Step 9: check that everything works
 
-| Waar | Wat je moet zien | Zo niet |
+| Where | What you should see | If not |
 |---|---|---|
-| Printer (PrusaLink) | **● Verbonden** en de printerstatus | Kabel, vast adres (stap 6), wachtwoord (stap 8) |
-| Foto control | Live camerabeeld, **Maak foto** is blauw | SDK (stap 5), camera op USB 3, laptop herstart |
-| Print plates | Na **Mini test set**: "All plates sliced" | PrusaSlicer 2.9+ (stap 4) |
-| Kalibratie | Bij **Start kalibratie**: de stappen in het kalibratievenster, geen foutmelding over de printer | USB-kabel naar de printer, printer aan |
+| Printer (PrusaLink) | **● Connected** and the printer status | Cable, fixed address (step 6), password (step 8) |
+| Photo control | Live camera image, **Take photo** is blue | SDK (step 5), camera on USB 3, laptop restarted |
+| Print plates | After **Mini test set**: "All plates sliced" | PrusaSlicer 2.9+ (step 4) |
+| Calibration | With **Start calibration**: the steps in the calibration window, no error about the printer | USB cable to the printer, printer on |
 
 ---
 
-## Daarna: zo gebruik je het programma
+## After that: how to use the program
 
-1. **Platen maken.** Kies in **Print plates** het filament dat in de printer zit, en klik op
-   **Dataset...** (jullie eigen onderdelen) of **Mini test set** (twee kleine testonderdelen).
-   Het programma verdeelt de onderdelen over platen en slicet ze. De geselecteerde plaat wordt
-   meteen als model geladen.
-2. **Printen.** Haal de sensor van de printkop. Klik daarna op de groene knop **Print this plate**
-   en blijf bij de printer tot de eerste laag ligt.
-3. **Kalibreren.** Zet de sensor terug op de kop en klik op de blauwe knop **Start kalibratie**.
-   Volg de stappen: per kegel F1, F2 en F3 eerst **Ga naar kegel**, dan met de jogknoppen de
-   sensor precies op de top zetten, en dan **Positie insturen**. Boven de knop zie je de
-   afstand tussen nozzle en sensorkop. Pas die alleen aan als je zeker weet dat hij niet klopt;
-   de kalibratie meet hem zelf.
-4. **Foto's.** In **Foto control** zie je altijd het live camerabeeld. **Maak foto** slaat een
-   TIFF op in de map `photos/`. Met **Map...** kies je een andere map. Onder het beeld stel je de
-   **sluitertijd** (hoe lang de camera per beeld licht opvangt) en de **gain** in. De LED-verlichting
-   (5 V) staat los van het programma: die zet je zelf aan.
-5. **Aantikken.** Open **Points in ascending order** en zet punten op het model. Start daarna met
-   **Execute program**. De rode **STOP** werkt altijd.
+1. **Make plates.** In **Print plates**, choose the filament that is in the printer and click
+   **Dataset...** (your own parts) or **Mini test set** (two small test parts). The program
+   divides the parts over plates and slices them. The selected plate is loaded as the model right
+   away.
+2. **Print.** Take the sensor off the print head. Then click the green **Print this plate** button
+   and stay with the printer until the first layer is down.
+3. **Calibrate.** Put the sensor back on the head and click the blue **Start calibration** button.
+   Choose **All 3 cones**, **Only cone 2** or (when the calibration is already right) **Home X and
+   Y only**, and follow the steps: per cone, first **Go to cone N**, then put the sensor exactly on
+   the tip with the jog buttons, and then **Send position of cone N**. Above the button you see the
+   offset between the nozzle and the sensor head. Only change it if you are sure it is wrong; the
+   calibration measures it itself.
+4. **Measure.** In **Measure**, **Hover 1 cm above point 1** puts the sensor above the first part,
+   **Move very slowly until the sensor touches the object** makes the first touch, **Go 0.1 mm
+   down** presses deeper in steps, and **Go to next point** moves on to the next part.
+   **Do whole measuring procedure** does it all in one go: home X and Y, then for every part on
+   the plate: go above it, first touch, then the set number of steps (each **Down per step** deeper, stopping at **Max force**),
+   with a photo at every step. Each run gets its own folder named after the date and start time,
+   with all photos, `measurements.csv` and `procedure.json` (object, indentation and force per
+   photo). STOP ends it at once.
+5. **Photos.** **Photo control** always shows the live camera image. **Take photo** saves a TIFF
+   in the `photos/` folder. With **Folder...** you choose another folder. Below the image you set
+   the **exposure** (how long the camera collects light per image) and the **gain**. While a first
+   touch exists, the photo name contains the object, the indentation and the force, and a line is
+   added to `measurements.csv`. The LED lighting (5 V) is separate from the program: switch it on
+   yourself.
+6. **Touching.** Open **Points in ascending order** and place points on the model. Then start with
+   **Execute program**. The red **STOP** always works.
 
-## Veelvoorkomende problemen
+## Common problems
 
-- **"No Prusa printer found"**: de USB-kabel zit niet goed, of de printer staat uit. Bij twee
-  aangesloten Prusa's kies je de poort met `PORT_OVERRIDE` in `gantry_controls.py`.
-- **Printer niet bereikbaar (PrusaLink)**: controleer de netwerkkabel en het vaste adres. In een
-  opdrachtprompt moet `ping 192.168.50.2` antwoorden.
-- **Geen krachtdata**: de firewallregel voor UDP 8514 ontbreekt; draai `laptop_setup.ps1`
-  opnieuw als beheerder. Vraagt de printer op zijn scherm om een metrics-adres te bevestigen,
-  bevestig dat dan.
-- **"Bed omhoog" wordt geweigerd tijdens het kalibreren**: de sensor voelt meer dan 100 g, dus hij
-  drukt al op de kegel. Laat het bed iets zakken. Gebeurt het terwijl de sensor nergens tegenaan
-  zit, dan is de load cell verlopen (drift).
-- **Het programma start niet na een `git pull`**: draai
-  `python -m pip install -r requirements.txt` opnieuw.
-- **Instellingen van de opstelling** (werkgebied, kegels, krachtgrenzen, sensorafstand) staan
-  allemaal in `machine_settings.toml`. Pas ze daar aan, nergens anders.
+- **"No Prusa printer found"**: the USB cable is not plugged in properly, or the printer is off.
+  With two Prusas connected, choose the port with `PORT_OVERRIDE` in `gantry_controls.py`.
+- **Printer not reachable (PrusaLink)**: check the network cable and the fixed address. In a
+  command prompt, `ping 192.168.50.2` should get an answer.
+- **No force data**: the firewall rule for UDP 8514 is missing; run `laptop_setup.ps1` again as
+  administrator. If the printer asks on its screen to confirm a metrics address, confirm it.
+- **"Bed up" is refused during calibration**: the sensor feels more than 100 g, so it is already
+  pressing on the cone. Lower the bed a little. If it happens while the sensor is not touching
+  anything, the load cell has drifted.
+- **The program does not start after a `git pull`**: run
+  `python -m pip install -r requirements.txt` again.
+- **Settings of the setup** (work area, cones, force limits, sensor offset) are all in
+  `machine_settings.toml`. Change them there, nowhere else.

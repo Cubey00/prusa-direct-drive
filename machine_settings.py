@@ -17,6 +17,7 @@ from pathlib import Path
 DEFAULT_PATH = Path(__file__).resolve().parent / "machine_settings.toml"
 ENV_VAR = "PRINTERPROJECT_SETTINGS"
 PROBE_CLEARANCE = 3.0   # mm kept free around the firmware's G28 probe points
+PURGE_LENGTH = 50.0              # mm, the purge line from purge_start_x to the left (slicing/startgcode.py)
 
 
 class SettingsError(ValueError):
@@ -47,6 +48,8 @@ class Printing:
     filament: str
     bed_probe_points: tuple       # ((x, y), ...) bed mm; () = probe the whole print area
     wait_for_bed_frame: bool
+    purge_start_x: float
+    purge_y: float
 
 
 @dataclass(frozen=True)
@@ -119,6 +122,8 @@ class Forces:
     guard_drop_mm: float
     contact_rise_g: float
     contact_rise_s: float
+    contact_hold_s: float
+    contact_verify_s: float
 
 
 @dataclass(frozen=True)
@@ -263,6 +268,16 @@ def _check(s, where):
         if not (tx0 <= px <= tx1 and ty0 <= py <= ty1):
             fail(f"[printing] bed probe point ({px:g}, {py:g}) is outside what the nozzle can reach "
                  f"(X {tx0:g}..{tx1:g}, Y {ty0:g}..{ty1:g})")
+    pr = s.printing
+    if not (tx0 <= pr.purge_start_x - PURGE_LENGTH and pr.purge_start_x + 2 <= tx1):
+        fail(f"[printing] purge line X {pr.purge_start_x - PURGE_LENGTH:g}..{pr.purge_start_x:g} is outside what "
+             f"the nozzle can reach (X {tx0:g}..{tx1:g})")
+    if not (ty0 <= pr.purge_y and pr.purge_y + 4 <= uy0):
+        fail(f"[printing] purge_y {pr.purge_y:g} must lie between the nozzle's reach (Y {ty0:g}) and the "
+             f"usable area (Y {uy0:g}) minus 4 mm")
+    for px, py in s.work_area.probe_points:
+        if pr.purge_start_x - PURGE_LENGTH - 5 < px < pr.purge_start_x + 5 and abs(py - pr.purge_y) < 5:
+            fail(f"[printing] the purge line passes the G28 probe point ({px:g}, {py:g}): move it")
     for name in ("F1", "F2", "F3"):
         pos = s.calibration.cone_position(name)
         if pos and not (tx0 <= pos[0] <= tx1 and ty0 <= pos[1] <= ty1 and 0 <= pos[2] <= s.printer.z_max):
@@ -304,6 +319,10 @@ def _check(s, where):
         fail("[forces] needs 0 < contact_rise_g < jog_stop_g")
     if not 0.1 <= fo.contact_rise_s <= 20:
         fail("[forces] needs 0.1 <= contact_rise_s <= 20")
+    if not 0 <= fo.contact_hold_s <= 2:
+        fail("[forces] needs 0 <= contact_hold_s <= 2")
+    if not 0 <= fo.contact_verify_s <= 5:
+        fail("[forces] needs 0 <= contact_verify_s <= 5")
     if s.camera.mm_per_px < 0:
         fail("[camera] mm_per_px cannot be negative")
     if s.camera.measured and s.camera.mm_per_px == 0:
@@ -336,7 +355,7 @@ def parse(data, where="settings"):
                        travel_x="pair", travel_y="pair"),
         prusalink=_build(PrusaLinkSettings, data, "prusalink", where, host=str, user=str),
         printing=_build(Printing, data, "printing", where, filament=str, bed_probe_points="points",
-                        wait_for_bed_frame=bool),
+                        wait_for_bed_frame=bool, purge_start_x=float, purge_y=float),
         work_area=_build(WorkArea, data, "work_area", where, usable_x="pair", usable_y="pair",
                          probe_points="points"),
         raster=_build(Raster, data, "raster", where, margin_x=float, margin_y=float, cell_pitch=float,
@@ -349,7 +368,8 @@ def parse(data, where="settings"):
         camera=_build(Camera, data, "camera", where, mm_per_px=float, centre_px="pair", measured=bool),
         forces=_build(Forces, data, "forces", where, contact_g=float, max_force_g=float,
                       guard_trip_g=float, guard_release_g=float, jog_stop_g=float,
-                      guard_drop_mm=float, contact_rise_g=float, contact_rise_s=float),
+                      guard_drop_mm=float, contact_rise_g=float, contact_rise_s=float,
+                      contact_hold_s=float, contact_verify_s=float),
         calibration=_build(Calibration, data, "calibration", where, min_distance=float, scale_tol=float,
                            residual_tol=float, cone_F1="xyz_or_empty", cone_F2="xyz_or_empty",
                            cone_F3="xyz_or_empty"),

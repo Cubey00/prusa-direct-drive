@@ -22,7 +22,7 @@ travel_x = [-2.0, 201.0]
 travel_y = [42.0, 221.0]
 
 [prusalink]
-# Network address of the printer for printing and status (docs/printer-verbinden.md: direct
+# Network address of the printer for printing and status (docs/connecting-the-printer.md: direct
 # cable, printer fixed at 192.168.50.2). The app uses these unless "Printer settings..." overrides
 # them. The password is NOT kept here: it is entered once in the app and stays on that laptop.
 host = "192.168.50.2"
@@ -42,6 +42,13 @@ bed_probe_points = [[10, 66], [190, 66], [10, 169], [190, 169], [100, 117]]
 # After the bed reaches its temperature, wait until the whole bed frame has warmed up as well
 # ("Absorbing heat" on the printer's screen). Takes minutes from a cold bed; false skips it.
 wait_for_bed_frame = false
+# Purge line at the start of every print. Prusa's start G-code draws it at the very front right
+# (X 249 -> 199, Y -2.5), which the spacer blocks make unreachable (nozzle X -2..201, Y 42..221):
+# the nozzle then starts the parts empty. It is moved into the front strip instead, in front of
+# the usable area and away from the G28 probe points (X 189-194): from purge_start_x 50 mm to the
+# left, at purge_y; the nozzle cleaning (G29 P9) and the probe box of the purge place move along.
+purge_start_x = 80.0
+purge_y = 47.0
 
 [work_area]
 # Plates and fiducials stay inside this rectangle (bed coordinates). It must be reachable by the
@@ -73,13 +80,13 @@ height = 5.0                       # tip height above the bed
 #   offset_x > 0: sensor to the right of the nozzle
 #   offset_y < 0: sensor IN FRONT of the nozzle (towards the door)
 #   offset_z < 0: sensor LOWER than the nozzle
-# First guess: 40 mm in front and 80 mm below the nozzle. TODO measure (docs/kalibratie-plan.md,
-# stap A1); "Start kalibratie" can save new values here. Used to send the sensor to the
+# First guess: 40 mm in front and 80 mm below the nozzle. TODO measure (docs/calibration-plan.md,
+# step A1); "Start calibration" can save new values here. Used to send the sensor to the
 # fiducials, to keep it clear of the plate, and to check the usable area.
-mount = "zijkant mount"            # which bracket is fitted (zijkant mount / fan mount V2)
+mount = "side mount"               # which bracket is fitted (side mount / fan mount V2)
 offset_x = 0.0
 offset_y = -40.0
-offset_z = -58.45
+offset_z = -51.25
 measured = false
 hover_clearance = 10.0             # mm the sensor stays above the plate (cones, parts) when it travels
 # Size of the sensor housing, for clearance checks between neighbouring parts. TODO measure.
@@ -88,7 +95,7 @@ polymer_protrusion = 5.0           # how far the polymer sticks out below the ho
 
 [camera]
 # Camera inside the sensor. mm per pixel at the polymer surface, and the pixel where the touch
-# point (sensor axis) appears. TODO measure (stap A2).
+# point (sensor axis) appears. TODO measure (step A2).
 mm_per_px = 0.0
 centre_px = [0.0, 0.0]
 measured = false
@@ -99,25 +106,31 @@ max_force_g = 450.0                # a touch is aborted above this
 guard_trip_g = 500.0               # force_guard: emergency drop above this
 guard_release_g = 50.0             # ...until the force is below this
 guard_drop_mm = 30.0               # ...but never more than this far (mm) per trip
-# Meten "Beweeg heel langzaam tot de sensor het object raakt": the load cell drifts, so contact is
+# Measure "Move very slowly until the sensor touches the object": the load cell drifts, so contact is
 # a quick rise (a peak), not a level: the force must rise contact_rise_g above its average of
 # contact_rise_s..2*contact_rise_s seconds earlier. Slow drift never does that; a contact at
 # 0.1 mm/s (~100 g/mm: ~10 g/s) does within about a second. Above jog_stop_g it stops anyway.
 contact_rise_g = 10.0
 contact_rise_s = 1.0
-jog_stop_g = 100.0                 # calibrator: "Bed omhoog" refused above this (load cell drifts: well above contact_g)
+# Against false contacts in the air: the rise must last contact_hold_s (a spike from the motor or
+# noise does not), and after the stop the force must still be up contact_verify_s later (at least
+# half of contact_rise_g); if not, the bed goes on. The known-free part of the way (8 of the 10 mm
+# below the hover) only stops at jog_stop_g.
+contact_hold_s = 0.2
+contact_verify_s = 0.3
+jog_stop_g = 100.0                 # calibrator: "Bed up" refused above this (load cell drifts: well above contact_g)
 
 [calibration]
 min_distance = 10.0                # mm: calibration points closer than this are refused
 scale_tol = 0.02                   # warn if the fitted scale differs more than this from 1
 residual_tol = 0.5                 # mm: warn if a point is further than this off the 3-point fit
 # Head position (machine X, Y, Z in mm) where the sensor stood on each cone in the last good
-# calibration; "Start kalibratie" saves them. The sensor sits the same way every time, so the
+# calibration; "Start calibration" saves them. The sensor sits the same way every time, so the
 # next calibration drives straight there, [sensor] hover_clearance higher, instead of predicting
 # it from the offset. [] = not known yet. They hold as long as the cones stay where they are
 # ([work_area], [fiducials]); clear them after changing those.
 cone_F1 = []
-cone_F2 = [175.985, 104.805, 63.450]
+cone_F2 = [176.835, 104.655, 56.250]
 cone_F3 = []
 
 [focusfield]

@@ -52,6 +52,7 @@ class TouchResult:
     message: str = ""
     trace: list = field(default_factory=list)   # [t (s), phase, metrics Z, |force| (g)]
     images: list = field(default_factory=list)  # one dict per capture(): increment, target, forces, z
+    false_alarms: int = 0          # creep: stops that turned out not to be contact (it went on)
 
     def to_dict(self):
         return asdict(self)
@@ -262,14 +263,24 @@ class RiseDetector:
     """Contact as a quick rise of the force (a peak), not a level, so load cell drift does not
     count: hit when the signed force differs `rise_g` or more from its mean over the window
     [now - 2*lag_s, now - lag_s] (before that window has data: from the first reading). A slow
-    drift of d g/s moves that difference only ~1.5*lag_s*d. `abs_g`: hit anyway at this |force|
-    (a contact too soft to make a quick rise must not press on forever)."""
+    drift of d g/s moves that difference only ~1.5*lag_s*d. The rise has to last `hold_s`: a
+    short spike (vibration when the motor starts, noise) is no contact, a real contact keeps
+    rising. `abs_g`: hit anyway, at once, at this |force| (a contact too soft to make a quick
+    rise must not press on forever)."""
 
-    def __init__(self, gauge, rise_g=10.0, lag_s=1.0, abs_g=None, clock=None):
+    def __init__(self, gauge, rise_g=10.0, lag_s=1.0, abs_g=None, clock=None, hold_s=0.0):
         self.gauge, self.rise_g, self.lag_s, self.abs_g = gauge, rise_g, lag_s, abs_g
+        self.hold_s = hold_s
         self.clock = clock or time.monotonic
         self.hist = deque()
         self.rise = 0.0          # last difference from the baseline (g)
+        self.base = None         # the baseline (g) of the last reading
+        self.since = None        # when the rise went over rise_g (None: it is under)
+
+    def reset(self):
+        """Start again (after a false alarm: the spike must not end up in the baseline)."""
+        self.hist.clear()
+        self.since = None
 
     def __call__(self, _abs_f=None):
         f = _force(self.gauge)
@@ -280,22 +291,56 @@ class RiseDetector:
             h.popleft()
         base = [v for tt, v in h if t - 2 * self.lag_s <= tt <= t - self.lag_s]
         b = sum(base) / len(base) if base else h[0][1]
-        self.rise = f - b
-        return abs(self.rise) >= self.rise_g or (self.abs_g is not None and abs(f) >= self.abs_g)
+        self.base, self.rise = b, f - b
+        if self.abs_g is not None and abs(f) >= self.abs_g:
+            return True
+        if abs(self.rise) < self.rise_g:
+            self.since = None
+            return False
+        if self.since is None:
+            self.since = t
+        return t - self.since >= self.hold_s
+
+    def still_contact(self, f, frac=0.5):
+        """After the stop: does the settled force `f` still stand `frac` of rise_g away from the
+        baseline from before the rise? A spike has died away by then, a contact has not."""
+        if self.abs_g is not None and abs(f) >= self.abs_g:
+            return True
+        return self.base is not None and abs(f - self.base) >= frac * self.rise_g
 
 
-CREEP_SPEED = 0.1         # mm/s: "heel langzaam" towards the object (Meten)
+MAX_FALSE_ALARMS = 10     # creep: more stops that were not contact than this = a noisy signal
+
+
+def _confirm(gauge, res, detector, verify_s, max_force_g, cancel, trace):
+    """After an M410 on a rise: wait verify_s with the bed still, then is the force still up?"""
+    end = time.monotonic() + verify_s
+    while time.monotonic() < end:
+        _check(gauge, res, max_force_g, cancel, trace)
+        time.sleep(POLL)
+    if not gauge.wait_samples(FAST, timeout=2.0):
+        raise PrinterError("Lost load cell data")
+    f = _force(gauge)
+    trace(abs(f), always=True)
+    return detector.still_contact(f)
+
+
+CREEP_SPEED = 0.1         # mm/s: "very slowly" towards the object (Measure)
 CREEP_FAST_SPEED = 0.5    # mm/s for the part that is known to be free (above the expected contact)
 
 
 def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, fast_mm=0.0,
                      speed=CREEP_SPEED, fast_speed=CREEP_FAST_SPEED, cancel=None, on_status=print,
-                     rise_g=None, rise_s=1.0, abs_g=None):
+                     rise_g=None, rise_s=1.0, abs_g=None, hold_s=0.0, verify_s=0.0,
+                     max_false_alarms=None):
     """Bed up very slowly until the load cell feels contact, then stop (M410) and STAY there:
     the sensor just touches the object. fast_mm: the first part of the way that is known to be
     free (e.g. 8 of the 10 mm hover gap) goes at fast_speed. Tares right before moving.
-    Contact: with rise_g, a quick rise of rise_g within ~rise_s s (RiseDetector: drift does not
-    count; abs_g stops it anyway); without, |force| >= contact_g.
+    Contact: with rise_g, a quick rise of rise_g within ~rise_s s that lasts hold_s (RiseDetector:
+    drift and short spikes do not count; abs_g stops it anyway); without, |force| >= contact_g.
+    With rise_g the fast part (known free) only stops at abs_g: a spike there is no contact.
+    verify_s: after a stop, wait this long and check the force is still up (still_contact); if
+    not it was a false alarm and the bed goes on (at most max_false_alarms times).
     Returns a TouchResult (status ok / no_contact / overload / aborted / error;
     contact_z = end_z = where it stopped, final_g the force there)."""
     res = TouchResult()
@@ -310,21 +355,46 @@ def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, f
             if not gauge.tare_fresh(TARE_SAMPLES):
                 raise PrinterError("No fresh load cell data for the tare")
             limit_z = res.start_z - max_travel
+            if max_false_alarms is None:
+                max_false_alarms = MAX_FALSE_ALARMS
             if rise_g:
-                contact = RiseDetector(gauge, rise_g, rise_s, abs_g)
+                detector = RiseDetector(gauge, rise_g, rise_s, abs_g, hold_s=hold_s)
+                contact = detector
+                hard = abs_g if abs_g is not None else max_force_g
+                free = lambda f: f >= hard             # known-free part: only a real push stops it
             else:
-                contact = lambda f: f >= contact_g
+                detector = None
+                contact = free = lambda f: f >= contact_g
             z = res.start_z
             fast_mm = max(0.0, min(fast_mm, max_travel))
-            segments = ([(res.start_z - fast_mm, fast_speed)] if fast_mm > 0 else []) + [(limit_z, speed)]
-            for to_z, v in segments:
-                on_status(f"Omhoog met {v:g} mm/s ...")
-                if _move_watch(gauge, res, z, to_z, v, contact, max_force_g, cancel, trace,
-                               "approach" if v > speed else "search") == "hit":
+            segments = ([(res.start_z - fast_mm, fast_speed, free)] if fast_mm > 0 else []) \
+                + [(limit_z, speed, contact)]
+            hit = False
+            for to_z, v, stop_when in segments:
+                on_status(f"Up at {v:g} mm/s ...")
+                while z > to_z + REACH_TOL:
+                    if _move_watch(gauge, res, z, to_z, v, stop_when, max_force_g, cancel, trace,
+                                   "approach" if v > speed else "search") != "hit":
+                        z = to_z
+                        break
+                    if detector is None or stop_when is free or verify_s <= 0 \
+                            or _confirm(gauge, res, detector, verify_s, max_force_g, cancel, trace):
+                        hit = True
+                        break
+                    # a spike, not the object: go on from where it stopped
+                    res.false_alarms += 1
+                    if res.false_alarms > max_false_alarms:
+                        res.status = "error"
+                        res.message = (f"The load cell signal is too noisy: {res.false_alarms} false "
+                                       "contacts. Check the sensor and the cable, then try again.")
+                        return res
+                    on_status(f"False contact ignored ({res.false_alarms}), going on ...")
+                    z = _stopped_z(gauge, trace)
+                    detector.reset()
+                if hit:
                     break
-                z = to_z
-            else:
-                res.status, res.message = "no_contact", f"Geen contact binnen {max_travel:g} mm"
+            if not hit:
+                res.status, res.message = "no_contact", f"No contact within {max_travel:g} mm"
                 return res
             res.contact_z = res.end_z = _stopped_z(gauge, trace)
             res.final_g = _settled_force(gauge, res, max_force_g, cancel, trace)
@@ -339,7 +409,7 @@ def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, f
 
 
 def press_step(gauge, step_mm=0.1, stop_g=300.0, max_force_g=450.0, speed=CREEP_SPEED, cancel=None):
-    """Meten: bed `step_mm` further up (the sensor presses deeper), M410 as soon as |force|
+    """Measure: bed `step_mm` further up (the sensor presses deeper), M410 as soon as |force|
     reaches stop_g. Refused when the force is already at stop_g. The bed stays where it ends.
     Returns a TouchResult: status ok (whole step) / limit (stopped at stop_g) / overload /
     aborted / error; start_z, end_z and final_g (settled |force|) filled in."""
@@ -354,14 +424,14 @@ def press_step(gauge, step_mm=0.1, stop_g=300.0, max_force_g=450.0, speed=CREEP_
             f0 = abs(_force(gauge))
             if f0 >= stop_g:
                 res.status, res.end_z, res.final_g = "limit", res.start_z, f0
-                res.message = f"De kracht is al {f0:.0f} g (grens {stop_g:g} g): niet verder."
+                res.message = f"The force is already {f0:.0f} g (limit {stop_g:g} g): not going further."
                 return res
             target = res.start_z - step_mm
             if _move_watch(gauge, res, res.start_z, target, speed, lambda f: f >= stop_g, max_force_g,
                            cancel, trace, "press") == "hit":
                 res.end_z = _stopped_z(gauge, trace)
                 res.status = "limit"
-                res.message = f"Gestopt: de kracht kwam boven {stop_g:g} g."
+                res.message = f"Stopped: the force went above {stop_g:g} g."
             else:
                 res.end_z = _z()
                 res.status = "ok"

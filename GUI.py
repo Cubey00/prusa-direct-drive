@@ -38,7 +38,7 @@ class App:
     def __init__(self, root, link=None, hidden=False):
         self.root = root
         self.link = link              # CalibratorClient when started by the path programmer
-        self._creep_cancel = threading.Event()   # stops a Meten creep (IPC "halt")
+        self._creep_cancel = threading.Event()   # stops a Measure creep (IPC "halt")
         self.hidden = hidden and link is not None   # no window: messages go to the wizard instead
         self.root.title("PRUSA Core One load cell and control tool")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -347,7 +347,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def link_home(self, msg):
-        """Wizard "Alleen X en Y homen": bed down to the travel height, then G28 X Y (never Z)."""
+        """Wizard "Home X and Y only": bed down to the travel height, then G28 X Y (never Z)."""
         label = msg.get("label", "home")
         try:
             z = float(msg["z"])
@@ -382,7 +382,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def link_creep(self, msg):
-        """Meten: bed up very slowly until the sensor just touches the object (load cell), then stay."""
+        """Measure: bed up very slowly until the sensor just touches the object (load cell), then stay."""
         from touch import creep_to_contact
         try:
             fast_mm = max(0.0, float(msg.get("fast_mm", 0.0)))
@@ -390,10 +390,10 @@ class App:
         except (TypeError, ValueError):
             return
         if not 0 < max_mm <= 30 or fast_mm >= max_mm:
-            self.link.send_touch_done(False, "error", "Aanraken geweigerd: max 30 mm en het snelle stuk korter dan het geheel")
+            self.link.send_touch_done(False, "error", "Touch refused: max 30 mm and the fast part shorter than the whole")
             return
         if not self._tared:
-            self.link.send_touch_done(False, "error", "Nog geen krachtdata van de load cell; wacht even en probeer opnieuw.")
+            self.link.send_touch_done(False, "error", "No force data from the load cell yet; wait a moment and try again.")
             return
         self.motion.halt()
         self._creep_cancel.clear()
@@ -403,17 +403,20 @@ class App:
             res = creep_to_contact(self.gauge, contact_g=fo.contact_g, max_force_g=fo.max_force_g,
                                    max_travel=max_mm, fast_mm=fast_mm, cancel=self._creep_cancel,
                                    on_status=lambda m: None, rise_g=fo.contact_rise_g,
-                                   rise_s=fo.contact_rise_s, abs_g=fo.jog_stop_g)
+                                   rise_s=fo.contact_rise_s, abs_g=fo.jog_stop_g,
+                                   hold_s=fo.contact_hold_s, verify_s=fo.contact_verify_s)
             self.motion.halt()                       # next jog starts from the real position
-            texts = {"ok": "De sensor raakt het object.", "no_contact": res.message,
-                     "overload": f"Te veel kracht ({res.peak_g:.0f} g): gestopt.", "aborted": "Gestopt."}
+            ok_text = "The sensor touches the object." + (
+                f" ({res.false_alarms} false contact(s) in the air ignored.)" if res.false_alarms else "")
+            texts = {"ok": ok_text, "no_contact": res.message,
+                     "overload": f"Too much force ({res.peak_g:.0f} g): stopped.", "aborted": "Stopped."}
             self.link.send_touch_done(res.status == "ok", res.status, texts.get(res.status, res.message),
                                       res.end_z, res.final_g)
             self.root.after(0, self.update_position_labels)
         threading.Thread(target=work, daemon=True).start()
 
     def link_step(self, msg):
-        """Meten: press `mm` deeper (bed up), stop at stop_g grams."""
+        """Measure: press `mm` deeper (bed up), stop at stop_g grams."""
         from touch import press_step
         try:
             mm, stop_g = float(msg.get("mm", 0.1)), float(msg.get("stop_g", 300.0))
@@ -421,10 +424,10 @@ class App:
             return
         fo = SETTINGS.forces
         if not 0 < mm <= 1.0 or not 0 < stop_g < fo.max_force_g:
-            self.link.send_touch_done(False, "error", f"Stap geweigerd: max 1 mm en de grens onder {fo.max_force_g:g} g")
+            self.link.send_touch_done(False, "error", f"Step refused: max 1 mm and the limit below {fo.max_force_g:g} g")
             return
         if not self._tared:
-            self.link.send_touch_done(False, "error", "Nog geen krachtdata van de load cell; wacht even en probeer opnieuw.")
+            self.link.send_touch_done(False, "error", "No force data from the load cell yet; wait a moment and try again.")
             return
         self.motion.halt()
         self._creep_cancel.clear()
@@ -433,7 +436,7 @@ class App:
             res = press_step(self.gauge, step_mm=mm, stop_g=stop_g, max_force_g=fo.max_force_g,
                              cancel=self._creep_cancel)
             self.motion.halt()
-            texts = {"overload": f"Te veel kracht ({res.peak_g:.0f} g): gestopt.", "aborted": "Gestopt."}
+            texts = {"overload": f"Too much force ({res.peak_g:.0f} g): stopped.", "aborted": "Stopped."}
             self.link.send_touch_done(res.status == "ok", res.status, texts.get(res.status, res.message),
                                       res.end_z, res.final_g)
             self.root.after(0, self.update_position_labels)
@@ -496,11 +499,12 @@ class App:
             self.root.after(0, self.refresh_preview)
 
     def _on_guard_trip(self):
+        from pathprogrammer.ipc import GUARD_STATUS
         self.motion.halt()      # drop queued nudges
         self.root.after(0, lambda: self.alert("FORCE LIMIT: bed dropped"))
         if self.link is not None:   # hidden calibrator: the path programmer shows why the bed dropped
-            self.link.send_status(False, f"Krachtbeveiliging: meer dan {SETTINGS.forces.guard_trip_g:.0f} g gemeten, "
-                                         f"bed max {SETTINGS.forces.guard_drop_mm:.0f} mm gezakt.")
+            self.link.send_status(False, f"{GUARD_STATUS}: more than {SETTINGS.forces.guard_trip_g:.0f} g measured, "
+                                         f"bed dropped at most {SETTINGS.forces.guard_drop_mm:.0f} mm.")
 
     ALERT_S = 10.0          # how long an alert stays
     ALERT_BLINK_MS = 400
@@ -547,7 +551,7 @@ class App:
                 def failed():
                     self._gauge_running = False
                     self.progress_label.config(text=f"No force data: {msg}")
-                    self.report_error("Geen krachtdata", msg)
+                    self.report_error("No force data", msg)
                 self.root.after(0, failed)
                 return
 

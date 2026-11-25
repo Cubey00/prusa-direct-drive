@@ -1,4 +1,5 @@
-"""A faster start of each print: fewer bed probe points and no wait for the bed frame to warm up.
+"""A faster start of each print (fewer bed probe points, no wait for the bed frame to warm up) and a
+purge line the nozzle can reach.
 
 Prusa's start G-code (slicing/profiles/coreone.ini) runs `G29 P1`, which probes every probe-grid
 point in the first layer's area enlarged by one grid step (~30 mm) all round: 7 x 6 = 42 points on
@@ -9,7 +10,14 @@ Instead each spot in machine_settings.toml [printing] bed_probe_points is probed
 (`G29 P1 X Y W H` with a small box around one grid point; `C` keeps the points probed before),
 and the start G-code's own `G29 P3.2` / `G29 P3.13` fill in the rest of the mesh from them.
 The result is written as an extra .ini that PrusaSlicer loads after the profile.
+
+Purge: Prusa draws the purge line at the very front right (X 249 -> 199, Y -2.5, the nozzle
+cleaning G29 P9 at X 208 and a probe box at Y 0..20). The spacer blocks stop the nozzle at
+X 201 / Y 42, so all of that ends up squeezed against the limits and the parts start with an empty
+nozzle. Every X of the purge part is shifted so the line starts at [printing] purge_start_x, its
+Y becomes purge_y, and the purge place's probe box moves along (machine_settings checks the spot).
 """
+import re
 from pathlib import Path
 
 # Probe grid of the team firmware (Cubey00/prusa-direct-drive-firmware,
@@ -25,6 +33,13 @@ BOX = 2.0                     # mm around a grid point: catches that point only
 PROBE_LINE = "G29 P1 ; invalidate mbl & probe print area"
 ABSORB_LINE = "G29 G ; absorb heat"
 INI_NAME = "start_gcode.ini"
+PURGE_REF_X = 249.0           # where Prusa's purge starts (G0 X249 Y-2.5 Z15 ...)
+PURGE_REF_Y = "Y-2.5"
+PURGE_LENGTH = 50.0           # 249 -> 199
+NOZZLE_CLEAN = "G29 P9 X208 Y-2.5 W32 H4"
+PURGE_PROBE = "G29 P1 X150 Y0 W100 H20 C ; probe near purge place"
+PURGE_START = "; prepare for purge"
+PURGE_END = "M591 R ; restore stuck detection"
 
 
 def probe_grid():
@@ -56,11 +71,42 @@ def probe_commands(points):
     return lines
 
 
-def adapt(start_gcode, probe_points, wait_for_bed_frame):
+def _shift_x(line, dx, y):
+    """X values moved by dx and the purge Y replaced, in one G-code line (comment kept)."""
+    code, sep, comment = line.partition(";")
+    code = re.sub(r"X(-?\d+(?:\.\d+)?)", lambda m: f"X{float(m.group(1)) + dx:g}", code)
+    code = code.replace(PURGE_REF_Y, f"Y{y:g}")
+    return code + sep + comment
+
+
+def move_purge(lines, start_x, y, mesh_min_y=MESH_MIN[1]):
+    """The purge part of the start G-code moved to start at start_x, at height y (in place).
+    Returns a note, or None if the profile's purge was not recognised."""
+    if PURGE_START not in lines or PURGE_END not in lines:
+        return None
+    dx = start_x - PURGE_REF_X
+    i0, i1 = lines.index(PURGE_START), lines.index(PURGE_END)
+    for i in range(i0, i1):
+        if lines[i].startswith(("G0", "G1")):
+            lines[i] = _shift_x(lines[i], dx, y)
+    if NOZZLE_CLEAN in lines:
+        lines[lines.index(NOZZLE_CLEAN)] = _shift_x(NOZZLE_CLEAN, dx, y)
+    if PURGE_PROBE in lines:
+        x0 = start_x - PURGE_LENGTH - 10
+        lines[lines.index(PURGE_PROBE)] = (f"G29 P1 X{x0:g} Y{mesh_min_y:g} W{PURGE_LENGTH + 20:g} "
+                                           f"H{y + 8 - mesh_min_y:g} C ; probe near purge place")
+    return f"purge line X{start_x:g} -> X{start_x - PURGE_LENGTH:g} at Y{y:g}"
+
+
+def adapt(start_gcode, probe_points, wait_for_bed_frame, purge=None):
     """The profile's start_gcode value (as in the .ini: lines joined by a literal '\\n') with the
-    probing and the bed-frame wait replaced. Returns (new value, notes about what changed)."""
+    probing, the bed-frame wait and (purge = (start_x, y)) the purge line replaced.
+    Returns (new value, notes about what changed)."""
     lines = start_gcode.split("\\n")
     notes = []
+    if purge is not None:
+        note = move_purge(lines, *purge)
+        notes.append(note or "purge line unchanged: not recognised in the profile")
     if probe_points:
         if PROBE_LINE in lines:
             i = lines.index(PROBE_LINE)
@@ -84,7 +130,8 @@ def write_start_ini(profile_values, out_dir, printing):
     start = profile_values.get("start_gcode")
     if start is None:
         return None, ["start G-code unchanged: the profile has none"]
-    new, notes = adapt(start, printing.bed_probe_points, printing.wait_for_bed_frame)
+    new, notes = adapt(start, printing.bed_probe_points, printing.wait_for_bed_frame,
+                       (printing.purge_start_x, printing.purge_y))
     if new == start:
         return None, notes
     path = Path(out_dir) / INI_NAME

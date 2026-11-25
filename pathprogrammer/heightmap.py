@@ -7,7 +7,6 @@ the face, x right, y toward the front); value = height above the bottom of the o
 import numpy as np
 
 from . import config
-from .model_io import model_to_face
 
 
 def compute(mesh, res_mm=config.HEIGHTMAP_RES_MM, max_px=config.HEIGHTMAP_MAX_PX):
@@ -20,10 +19,12 @@ def compute(mesh, res_mm=config.HEIGHTMAP_RES_MM, max_px=config.HEIGHTMAP_MAX_PX
     ys = (np.arange(ny) + 0.5) * (h / ny)
     H = np.full((ny, nx), -np.inf)
     zmin = mesh.bounds[0][2]
-    tris = mesh.triangles
-    up = mesh.face_normals[:, 2] > 1e-9
-    for t in tris[up]:
-        f = model_to_face(mesh, t)                      # 3 x 2 face coordinates
+    tris = np.asarray(mesh.triangles)[np.asarray(mesh.face_normals)[:, 2] > 1e-9]
+    # all face coordinates at once: model_to_face per triangle asks the mesh for its bounds each
+    # time, and trimesh then re-hashes the whole mesh (minutes on a full plate)
+    (bx0, by0, _), (_, by1, _) = np.asarray(mesh.bounds, dtype=float)
+    faces2d = np.stack([tris[..., 0] - bx0, by1 - tris[..., 1]], axis=-1)   # T x 3 x 2, = model_to_face
+    for t, f in zip(tris, faces2d):
         z = t[:, 2] - zmin
         x0, x1 = f[:, 0].min(), f[:, 0].max()
         y0, y1 = f[:, 1].min(), f[:, 1].max()

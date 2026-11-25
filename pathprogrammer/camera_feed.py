@@ -57,11 +57,11 @@ def explain(error):
     """What to do about an error from opening the camera, in words for the user."""
     text = str(error)
     if isinstance(error, ModuleNotFoundError) and "ids_peak" in text:
-        return "IDS-Python-pakketten ontbreken (pip install ids_peak ids_peak_ipl)"
+        return "IDS Python packages are missing (pip install ids_peak ids_peak_ipl)"
     if GENTL_VAR in text:
-        return "IDS peak SDK (camera-driver) is niet geïnstalleerd op deze computer"
+        return "IDS peak SDK (camera driver) is not installed on this computer"
     if "No camera" in text or "Found 0" in text or "does not exist" in text:
-        return "geen camera aangesloten"
+        return "no camera connected"
     return text
 
 
@@ -77,7 +77,7 @@ def preview_of(frame, width=PREVIEW_WIDTH):
 
 def photo_name(when=None):
     when = when or datetime.now()
-    return f"foto_{when:%Y%m%d_%H%M%S}_{when.microsecond // 1000:03d}.tif"
+    return f"photo_{when:%Y%m%d_%H%M%S}_{when.microsecond // 1000:03d}.tif"
 
 
 class CameraFeed:
@@ -125,7 +125,7 @@ class CameraFeed:
         return True
 
     def set_settings(self, exposure_us=None, gain=None):
-        """Exposure time (us, "sluitertijd") and gain; applied in the feed thread, also to a camera plugged in later."""
+        """Exposure time (us) and gain; applied in the feed thread, also to a camera plugged in later."""
         with self._lock:
             if exposure_us is not None:
                 self._settings["exposure_us"] = float(exposure_us)
@@ -142,9 +142,9 @@ class CameraFeed:
                 try:
                     getattr(cam, setter)(settings[key])
                 except Exception as e:
-                    problems.append(f"{'sluitertijd' if key == 'exposure_us' else 'gain'}: {e}")
+                    problems.append(f"{'exposure' if key == 'exposure_us' else 'gain'}: {e}")
         if problems:
-            self._set_state(True, "Camera verbonden; niet ingesteld: " + "; ".join(problems))
+            self._set_state(True, "Camera connected; not configured: " + "; ".join(problems))
 
     def _set_state(self, connected, message):
         self.connected = connected
@@ -161,14 +161,14 @@ class CameraFeed:
                     try:
                         cam = self.open_camera()
                     except Exception as e:
-                        msg = f"Geen camera: {explain(e)}"
+                        msg = f"No camera: {explain(e)}"
                         if msg != last_error:
                             self._set_state(False, msg)
                             last_error = msg
                         self._stop.wait(RETRY_S)
                         continue
                     last_error = None
-                    self._set_state(True, "Camera verbonden")
+                    self._set_state(True, "Camera connected")
                     self._settings_changed = True
                 if self._settings_changed:
                     self._apply_settings(cam)
@@ -177,7 +177,7 @@ class CameraFeed:
                 except Exception as e:
                     self._close(cam)
                     cam = None
-                    self._set_state(False, f"Camera losgekoppeld: {e}")
+                    self._set_state(False, f"Camera disconnected: {e}")
                     self._stop.wait(RETRY_S)
                     continue
                 with self._lock:
@@ -196,7 +196,7 @@ class CameraFeed:
             saver.close()
             for e in saver.errors[reported:]:
                 self.on_saved(None, e)
-            self._set_state(False, "Camera vrijgegeven")
+            self._set_state(False, "Camera released")
 
     @staticmethod
     def _close(cam):

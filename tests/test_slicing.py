@@ -208,8 +208,8 @@ def test_mini_testset_writes_two_small_parts_and_clears_others(tmp_path):
     write_testset(tmp_path)                                # a full set first
     (tmp_path / "eigen_onderdeel.3mf").write_bytes(b"")     # a file the user put there stays
     paths = write_mini_testset(tmp_path)
-    assert [p.name for p in paths] == ["06_vierkant_5mm.3mf", "21_halve_bol_5mm.3mf"]
-    assert sorted(f.name for f in tmp_path.glob("*.3mf")) ==         ["06_vierkant_5mm.3mf", "21_halve_bol_5mm.3mf", "eigen_onderdeel.3mf"]
+    assert [p.name for p in paths] == ["06_square_5mm.3mf", "21_dome_5mm.3mf"]
+    assert sorted(f.name for f in tmp_path.glob("*.3mf")) ==         ["06_square_5mm.3mf", "21_dome_5mm.3mf", "eigen_onderdeel.3mf"]
     grid = make_grid()
     for p in paths:
         mesh = trimesh.load(p, force="mesh")

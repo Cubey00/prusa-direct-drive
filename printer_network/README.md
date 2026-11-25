@@ -1,8 +1,8 @@
 # printer_network
 
 Files for connecting the Core One to a laptop with a direct Ethernet cable (fixed addresses:
-printer `192.168.50.2`, laptop `192.168.50.1`). The full step-by-step guide (Dutch, Windows and
-macOS, troubleshooting) is [docs/printer-verbinden.md](../docs/printer-verbinden.md).
+printer `192.168.50.2`, laptop `192.168.50.1`). The full step-by-step guide (Windows and
+macOS, troubleshooting) is [docs/connecting-the-printer.md](../docs/connecting-the-printer.md).
 
 | File | What |
 |---|---|

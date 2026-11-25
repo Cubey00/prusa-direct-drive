@@ -290,3 +290,65 @@ def test_press_step_stops_at_the_force_limit(rig):
     assert res.status == "limit" and gauge.peak_true < 40
     res = touch_mod.press_step(gauge, step_mm=0.1, stop_g=20.0)       # already above: no move
     assert res.status == "limit" and res.end_z == res.start_z
+
+
+class SpikyGauge(FakeGauge):
+    """Load cell with false peaks in the air: each spike (z, amp g, dur s) starts when the bed
+    passes height z and lasts dur seconds, whatever the bed does then (vibration, noise)."""
+
+    def __init__(self, axis, spikes):
+        super().__init__(axis)
+        self.spikes = [[z, amp, dur, None] for z, amp, dur in spikes]
+
+    def force_g(self, n=300):
+        t = self.axis.clock.monotonic()
+        extra = 0.0
+        for sp in self.spikes:
+            z, amp, dur, t0 = sp
+            if t0 is None and self.axis.z_at(t) <= z:
+                sp[3] = t0 = t
+            if t0 is not None and t0 <= t <= t0 + dur:
+                extra += amp
+        f = super().force_g(n)
+        return None if f is None else f - extra          # pressing reads negative, like the real cell
+
+
+def guarded_creep(gauge, **kw):
+    return creep(gauge, rise_g=10.0, rise_s=1.0, abs_g=100.0, hold_s=0.2, verify_s=0.3, **kw)
+
+
+def test_short_spike_is_no_contact(rig):
+    axis, _ = rig
+    gauge = SpikyGauge(axis, [(2.3, 25.0, 0.1)])          # 0.1 s: shorter than the hold
+    res = guarded_creep(gauge, fast_mm=2.5, max_travel=10.0)
+    assert res.status == "ok" and abs(res.contact_z - SURFACE) < 0.2 and res.false_alarms == 0
+
+
+def test_longer_spike_is_checked_and_the_bed_goes_on(rig):
+    axis, _ = rig
+    gauge = SpikyGauge(axis, [(2.3, 25.0, 0.4)])          # passes the hold, gone when checked
+    res = guarded_creep(gauge, fast_mm=2.5, max_travel=10.0)
+    assert res.status == "ok", res.message
+    assert res.false_alarms == 1 and abs(res.contact_z - SURFACE) < 0.2
+    assert gauge.peak_true < 30
+
+
+def test_old_detection_stopped_in_the_air(rig):
+    axis, _ = rig
+    gauge = SpikyGauge(axis, [(2.3, 25.0, 0.4)])
+    res = rise_creep(gauge, fast_mm=2.5, max_travel=10.0)  # no hold, no check: stops on the spike
+    assert res.status == "ok" and res.contact_z > 2.0
+
+
+def test_spike_in_the_known_free_part_is_ignored(rig):
+    axis, _ = rig
+    gauge = SpikyGauge(axis, [(4.0, 60.0, 0.5)])          # during the fast part, below abs_g
+    res = guarded_creep(gauge, fast_mm=2.5, max_travel=10.0)
+    assert res.status == "ok" and abs(res.contact_z - SURFACE) < 0.2 and res.false_alarms == 0
+
+
+def test_a_noisy_signal_gives_up(rig):
+    axis, _ = rig
+    gauge = SpikyGauge(axis, [(2.4 - 0.05 * i, 25.0, 0.4) for i in range(6)])
+    res = guarded_creep(gauge, fast_mm=2.5, max_travel=10.0, max_false_alarms=3)
+    assert res.status == "error" and "too noisy" in res.message and res.false_alarms == 4

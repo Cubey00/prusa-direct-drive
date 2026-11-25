@@ -5,7 +5,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from . import config
-from .model_io import model_to_face
 
 
 @dataclass
@@ -28,28 +27,31 @@ class ShadedTopRenderer:
         img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
-        tris = mesh.triangles                          # F x 3 x 3
-        up = mesh.face_normals[:, 2] > 1e-6
-        zmin, zmax = mesh.bounds[0][2], mesh.bounds[1][2]
+        # everything computed once, as arrays: asking the mesh (bounds, normals) per triangle
+        # makes trimesh re-hash the whole mesh every time, which takes minutes on a full plate
+        (x0, y0, zmin), (_x1, y1, zmax) = np.asarray(mesh.bounds, dtype=float)
         zspan = max(zmax - zmin, 1e-9)
-        def to_px(pts):
-            f = model_to_face(mesh, pts) * px_per_mm
-            return [tuple(p) for p in f]
+        verts = np.asarray(mesh.vertices, dtype=float)
+        vpx = np.column_stack([verts[:, 0] - x0, y1 - verts[:, 1]]) * px_per_mm   # = model_to_face
+        faces = np.asarray(mesh.faces)
+        normals_z = np.asarray(mesh.face_normals)[:, 2]
+        up = normals_z > 1e-6
 
         idx = np.where(up)[0]
-        idx = idx[np.argsort(tris[idx, :, 2].mean(axis=1))]
-        for i in idx:
-            t = tris[i]
-            shade = int(110 + 120 * (t[:, 2].mean() - zmin) / zspan)
-            light = 0.75 + 0.25 * mesh.face_normals[i, 2]
-            g = int(shade * light)
-            draw.polygon(to_px(t), fill=(g, int(g * 0.95), int(g * 0.6), 255))
+        zmean = verts[faces[idx]][:, :, 2].mean(axis=1)
+        order = np.argsort(zmean)
+        idx, zmean = idx[order], zmean[order]
+        shade = (110 + 120 * (zmean - zmin) / zspan).astype(int)
+        g = (shade * (0.75 + 0.25 * normals_z[idx])).astype(int)
+        for i, gi in zip(idx.tolist(), g.tolist()):
+            draw.polygon([tuple(pt) for pt in vpx[faces[i]].tolist()],
+                         fill=(gi, int(gi * 0.95), int(gi * 0.6), 255))
 
         # sharp edges where at least one side faces up
         if len(mesh.face_adjacency):
             sharp = mesh.face_adjacency_angles > self.edge_angle
             pairs = mesh.face_adjacency[sharp]
             visible = up[pairs].any(axis=1)
-            for a, b in mesh.face_adjacency_edges[sharp][visible]:
-                draw.line(to_px(mesh.vertices[[a, b]]), fill=(40, 40, 40, 255), width=1)
+            for a, b in mesh.face_adjacency_edges[sharp][visible].tolist():
+                draw.line([tuple(vpx[a]), tuple(vpx[b])], fill=(40, 40, 40, 255), width=1)
         return FaceImage(np.array(img), float(w_mm), float(h_mm))

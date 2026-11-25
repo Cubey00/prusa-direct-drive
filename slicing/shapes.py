@@ -65,18 +65,18 @@ def fiducial():
 PRISM_H = 2.0       # mm, height of the flat test prisms
 
 TEST_SHAPES = {
-    "driehoek": lambda s: regular_prism(3, s / math.cos(math.radians(30)), PRISM_H),  # side = s
-    "vierkant": lambda s: prism([(-s / 2, -s / 2), (s / 2, -s / 2), (s / 2, s / 2), (-s / 2, s / 2)],
+    "triangle": lambda s: regular_prism(3, s / math.cos(math.radians(30)), PRISM_H),  # side = s
+    "square": lambda s: prism([(-s / 2, -s / 2), (s / 2, -s / 2), (s / 2, s / 2), (-s / 2, s / 2)],
                                 PRISM_H),
-    "rechthoek": lambda s: prism([(-s / 2, -s / 4), (s / 2, -s / 4), (s / 2, s / 4), (-s / 2, s / 4)],
+    "rectangle": lambda s: prism([(-s / 2, -s / 4), (s / 2, -s / 4), (s / 2, s / 4), (-s / 2, s / 4)],
                                  PRISM_H),
-    "zeshoek": lambda s: regular_prism(6, s, PRISM_H),
-    "cilinder": lambda s: regular_prism(64, s, PRISM_H),
-    "kubus": lambda s: trimesh.creation.box((s, s, s)),
-    "halve_bol": half_sphere,
-    "kegel": lambda s: cone(s, s),
-    "piramide": lambda s: pyramid(s, s),
-    "wig": lambda s: wedge(s, s / 2),
+    "hexagon": lambda s: regular_prism(6, s, PRISM_H),
+    "cylinder": lambda s: regular_prism(64, s, PRISM_H),
+    "cube": lambda s: trimesh.creation.box((s, s, s)),
+    "dome": half_sphere,
+    "cone": lambda s: cone(s, s),
+    "pyramid": lambda s: pyramid(s, s),
+    "wedge": lambda s: wedge(s, s / 2),
 }
 TEST_SIZES = (3.0, 4.0, 5.0)     # mm
 

@@ -13,8 +13,8 @@ class ForceGraph(QWidget):
         self.samples = None
         self.max_g = None           # next point's force target, None for depth points / no point
         self.threshold_g = None
-        self.empty_text = ("Geen load cell data: die komt zodra de printerverbinding loopt "
-                           "(Start kalibratie of Meten)")
+        self.empty_text = ("No load cell data: it arrives once the printer connection runs "
+                           "(Start calibration or Measure)")
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll)
         self.timer.start(interval_ms)

@@ -9,7 +9,7 @@ from . import config as cfg
 from .shapes import simple_parts
 
 # A flat square and a dome: two quick, small prints to try out printing, calibrating and touching
-MINI_PARTS = ("vierkant_5mm", "halve_bol_5mm")
+MINI_PARTS = ("square_5mm", "dome_5mm")
 
 
 def write_testset(folder, names=None):

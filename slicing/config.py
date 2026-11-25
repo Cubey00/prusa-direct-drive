@@ -44,7 +44,21 @@ SLICER_SEARCH = [
 # Export once from the PrusaSlicer GUI (File > Export > Export Config) with the Core One printer,
 # the print settings and the filament selected. Every plate is sliced with exactly this file.
 SLICER_PROFILE = PROJECT_DIR / "slicing" / "profiles" / "coreone.ini"
-SLICER_OVERRIDES = ["--support-material=0", "--support-material-auto=0"]   # never supports
+# On top of the profile (command-line options win over --load). The profile is Prusa's
+# "0.20mm SPEED": outer walls at 200 mm/s, infill at 300 and accelerations up to 7000 mm/s^2 spoil
+# our small (5-15 mm) parts, so they print slower. A skirt primes the nozzle before the first part,
+# a narrow brim keeps small PETG parts on the bed (2 mm: still a gap between the 15 mm cells).
+PRINT_SPEEDS = {
+    "first-layer-speed": 25, "external-perimeter-speed": 40, "perimeter-speed": 60,
+    "small-perimeter-speed": 30, "infill-speed": 100, "solid-infill-speed": 80,
+    "top-solid-infill-speed": 50, "gap-fill-speed": 40, "bridge-speed": 30, "max-print-speed": 100,
+    "default-acceleration": 2000, "external-perimeter-acceleration": 1000,
+    "perimeter-acceleration": 1500, "infill-acceleration": 3000, "solid-infill-acceleration": 2000,
+    "top-solid-infill-acceleration": 1000,
+}
+PRIME = {"skirts": 1, "skirt-distance": 3, "skirt-height": 1, "min-skirt-length": 20, "brim-width": 2}
+SLICER_OVERRIDES = (["--support-material=0", "--support-material-auto=0"]          # never supports
+                    + [f"--{k}={v}" for k, v in {**PRINT_SPEEDS, **PRIME}.items()])
 FILAMENT = SETTINGS.printing.filament   # PrusaSlicer filament preset; '' = the profile's own
 PRINTER_MODEL = SETTINGS.printer.model   # printer_model the profile must have (COREONEL is the bigger L)
 MIN_SLICER_VERSION = (2, 9)    # first PrusaSlicer that knows the Core One
