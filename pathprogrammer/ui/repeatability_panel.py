@@ -1,18 +1,22 @@
 """Edit and run a printer sequence that pauses for manual dial readings."""
 
+import json
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
 from threading import Event
 
-from PySide6.QtCore import QThread, Qt, Signal
+from PySide6.QtCore import QIODevice, QSaveFile, QThread, Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QFileDialog, QFormLayout, QGridLayout,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 import machine_settings
-from ..repeatability import HOME, MEASURE, MOVE, Plan, PrinterMotion, RunLog, Step, dial_value
+from ..repeatability import (HOME, MEASURE, MOVE, SEQUENCE_FORMAT, Plan, PrinterMotion, RunLog, Step,
+                             dial_value, load_sequence)
 from .style import ACCENT, ACCENT_DARK, STOP, STOP_DARK, action_button
+
+SEQUENCE_FILTER = "Repeatability sequences (*.json)"
 
 
 class RepeatabilityWorker(QThread):
@@ -98,6 +102,8 @@ class RepeatabilityPanel(QWidget):
         super().__init__(parent)
         self.prepare_run = prepare_run
         self.worker = None
+        self._sequence_folder = Path(runs_folder) / "repeatability"
+        self._sequence_path = None
         self.run_name = QLineEdit()
         self.measurement = [QLineEdit() for _ in range(3)]
         self.clearance = QLineEdit()
@@ -109,7 +115,7 @@ class RepeatabilityPanel(QWidget):
         self.dial_count.setRange(1, 3)
         self.dial_count.setValue(2)
         self.dial_names = [QLineEdit(name) for name in ("X", "Y", "Z")]
-        self.folder = QLineEdit(str(Path(runs_folder) / "repeatability"))
+        self.folder = QLineEdit(str(self._sequence_folder))
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse)
         self.simulate = QCheckBox("Simulate (no printer motion)")
@@ -119,6 +125,15 @@ class RepeatabilityPanel(QWidget):
         self.setup = QWidget()
         setup = QVBoxLayout(self.setup)
         setup.setContentsMargins(0, 0, 0, 0)
+        files = QHBoxLayout()
+        self.open_sequence_btn = QPushButton("Open sequence…")
+        self.save_sequence_btn = QPushButton("Save sequence…")
+        self.open_sequence_btn.clicked.connect(self._open_sequence)
+        self.save_sequence_btn.clicked.connect(self._save_sequence)
+        files.addWidget(self.open_sequence_btn)
+        files.addWidget(self.save_sequence_btn)
+        files.addStretch()
+        setup.addLayout(files)
         settings = QGroupBox("Run setup")
         fields = QGridLayout(settings)
         fields.addWidget(QLabel("Test name"), 0, 0)
@@ -206,6 +221,7 @@ class RepeatabilityPanel(QWidget):
         layout.addWidget(self.prompt)
         layout.addLayout(buttons)
         layout.addWidget(self.status)
+        self._saved_sequence = self._sequence_data()
 
     @property
     def active(self):
@@ -220,14 +236,90 @@ class RepeatabilityPanel(QWidget):
         if folder:
             self.folder.setText(folder)
 
-    def _add_step(self, action):
+    def _sequence_data(self):
+        return {
+            "format": SEQUENCE_FORMAT,
+            "name": self.run_name.text(),
+            "measurement": [field.text() for field in self.measurement],
+            "clearance_z": self.clearance.text(),
+            "cycles": self.cycles.value(),
+            "dials": [field.text() for field in self.dial_names[:self.dial_count.value()]],
+            "home_first": self.home_first.isChecked(),
+            "steps": [[self.steps.item(row, col).text() for col in range(4)]
+                      for row in range(self.steps.rowCount())],
+        }
+
+    def _save_sequence(self):
+        default = self._sequence_path
+        if default is None:
+            folder = self._sequence_folder
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                folder = Path.home()
+            default = folder / "repeatability-sequence.json"
+        dialog = QFileDialog(self, "Save repeatability sequence", str(default), SEQUENCE_FILTER)
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        dialog.setDefaultSuffix("json")
+        files = dialog.selectedFiles() if dialog.exec() == QFileDialog.Accepted else []
+        dialog.deleteLater()
+        if not files:
+            return
+        path = Path(files[0])
+        data = self._sequence_data()
+        payload = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        output = QSaveFile(str(path))
+        if not output.open(QIODevice.WriteOnly) or output.write(payload) != len(payload) or not output.commit():
+            self.status.setText(f"Could not save sequence: {output.errorString()}")
+            return
+        self._sequence_path, self._saved_sequence = path, data
+        self.status.setText(f"Sequence saved to {path}")
+
+    def _open_sequence(self):
+        folder = self._sequence_path.parent if self._sequence_path else self._sequence_folder
+        filename, _ = QFileDialog.getOpenFileName(self, "Open repeatability sequence", str(folder), SEQUENCE_FILTER)
+        if not filename:
+            return
+        path = Path(filename)
+        try:
+            data = load_sequence(path)
+        except (OSError, ValueError) as exc:
+            self.status.setText(f"Could not open sequence: {exc}")
+            return
+        current = self._sequence_data()
+        if current != self._saved_sequence and current != data and QMessageBox.question(
+            self, "Open sequence", "Replace your unsaved sequence edits?",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
+        ) != QMessageBox.Yes:
+            return
+        self.run_name.setText(data["name"])
+        for field, value in zip(self.measurement, data["measurement"]):
+            field.setText(value)
+        self.clearance.setText(data["clearance_z"])
+        self.cycles.setValue(data["cycles"])
+        self.dial_count.setValue(len(data["dials"]))
+        for index, field in enumerate(self.dial_names):
+            field.setText(data["dials"][index] if index < len(data["dials"]) else "XYZ"[index])
+        self.home_first.setChecked(data["home_first"])
+        self.simulate.setChecked(True)
+        self.steps.setRowCount(0)
+        for action, *coordinates in data["steps"]:
+            self._append_step(action, coordinates)
+        self._sequence_path, self._saved_sequence = path, self._sequence_data()
+        self.status.setText(f"Sequence opened from {path}")
+
+    def _append_step(self, action, coordinates=("", "", "")):
         row = self.steps.rowCount()
         self.steps.insertRow(row)
-        for col in range(4):
-            item = QTableWidgetItem(action if col == 0 else "")
+        for col, text in enumerate((action, *coordinates)):
+            item = QTableWidgetItem(text)
             if col == 0 or action != MOVE:
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
             self.steps.setItem(row, col, item)
+        return row
+
+    def _add_step(self, action):
+        row = self._append_step(action)
         self.steps.selectRow(row)
         if action == MOVE:
             self.steps.editItem(self.steps.item(row, 1))

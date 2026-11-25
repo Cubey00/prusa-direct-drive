@@ -1,6 +1,7 @@
 """Sequence validation, positioning and CSV logging for manual dial readings."""
 
 import csv
+import json
 import math
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +13,7 @@ from . import config
 MOVE = "Move"
 HOME = "Home X/Y"
 MEASURE = "Measure"
+SEQUENCE_FORMAT = "prusa-repeatability-sequence/1"
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,29 @@ def dial_value(text):
     if not math.isfinite(value):
         raise ValueError("Reading must be finite.")
     return value
+
+
+def load_sequence(path):
+    """Read an editable setup. Run validation happens separately when starting it."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("format") != SEQUENCE_FORMAT:
+        raise ValueError("Choose a repeatability sequence saved by this tab.")
+
+    def text_list(values, minimum, maximum):
+        return (isinstance(values, list) and minimum <= len(values) <= maximum
+                and all(isinstance(value, str) for value in values))
+
+    cycles = data.get("cycles")
+    if (not isinstance(data.get("name"), str) or not isinstance(data.get("clearance_z"), str)
+            or not text_list(data.get("measurement"), 3, 3) or not text_list(data.get("dials"), 1, 3)
+            or type(cycles) is not int or not 1 <= cycles <= 999
+            or type(data.get("home_first")) is not bool or not isinstance(data.get("steps"), list)):
+        raise ValueError("The repeatability sequence has invalid setup fields.")
+    for number, row in enumerate(data["steps"], 1):
+        if (not text_list(row, 4, 4) or row[0] not in (MOVE, HOME, MEASURE)
+                or (row[0] != MOVE and any(row[1:]))):
+            raise ValueError(f"Invalid action or coordinates in step {number}.")
+    return data
 
 
 class RunLog:

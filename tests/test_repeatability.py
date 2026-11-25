@@ -1,14 +1,16 @@
 import csv
+import json
 from threading import Event
 from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 import gantry_controls as gc
 from pathprogrammer.repeatability import HOME, MEASURE, MOVE, PrinterMotion, Step
 from pathprogrammer.ui.main_window import MainWindow
+from pathprogrammer.ui.repeatability_panel import RepeatabilityPanel
 
 
 @pytest.fixture
@@ -16,7 +18,9 @@ def panel(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr("pathprogrammer.ui.main_window.CalibratorServer", Mock(
         return_value=Mock(is_running=Mock(return_value=False))
     ))
-    window = MainWindow(QSettings(str(tmp_path / "settings.ini"), QSettings.IniFormat))
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.IniFormat)
+    settings.setValue("runs_folder", str(tmp_path))
+    window = MainWindow(settings)
     qtbot.addWidget(window)
     tab = window.repeatability
     window.centralWidget().setCurrentWidget(tab)
@@ -36,6 +40,89 @@ def read_log(folder):
     path, = folder.glob("repeatability_*.csv")
     with path.open(newline="", encoding="utf-8") as stream:
         return list(csv.DictReader(stream))
+
+
+def test_saved_sequence_can_be_opened_edited_and_run(panel, qtbot, tmp_path, monkeypatch):
+    path = tmp_path / "saved.json"
+    monkeypatch.setattr(QFileDialog, "exec", lambda _: QFileDialog.Accepted)
+    monkeypatch.setattr(QFileDialog, "selectedFiles", lambda _: [str(path)])
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_: (str(path), ""))
+
+    panel.cycles.setValue(3)
+    panel.dial_count.setValue(1)
+    panel.dial_names[0].setText("Bed Z")
+    panel.home_first.setChecked(True)
+    panel.simulate.setChecked(False)
+    panel._add_step(MOVE)
+    for col, value in enumerate(("70", "90", "40"), 1):
+        panel.steps.item(0, col).setText(value)
+    panel._add_step(HOME)
+    panel._add_step(MEASURE)
+    panel.save_sequence_btn.click()
+    assert "Sequence saved" in panel.status.text()
+
+    reopened = RepeatabilityPanel(tmp_path, lambda simulate: None)
+    qtbot.addWidget(reopened)
+    reopened.show()
+    reopened.simulate.setChecked(False)
+    reopened.open_sequence_btn.click()
+    assert reopened.simulate.isChecked()
+    assert reopened._sequence_data() == panel._sequence_data()
+    reopened.cycles.setValue(1)
+    reopened.steps.item(0, 1).setText("75")
+    reopened.save_sequence_btn.click()
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["cycles"] == 1 and saved["steps"][0][1] == "75"
+
+    reopened.folder.setText(str(tmp_path))
+    try:
+        reopened.start.click()
+        qtbot.waitUntil(reopened.prompt.isVisible)
+        reopened.reading_fields[0].setText("-0.021")
+        reopened.save.click()
+        qtbot.waitUntil(lambda: not reopened.active)
+    finally:
+        if reopened.active:
+            reopened.stop_run()
+            qtbot.waitUntil(lambda: not reopened.active)
+    rows = read_log(tmp_path)
+    assert any(row["action"] == MOVE and row["target_x_mm"] == "75.0" for row in rows)
+    assert any(row["dial_1_name"] == "Bed Z" and row["dial_1_mm"] == "-0.021" for row in rows)
+
+
+def test_open_sequence_protects_unsaved_edits_and_restores_drafts(panel, tmp_path, monkeypatch):
+    path = tmp_path / "draft.json"
+    monkeypatch.setattr(QFileDialog, "exec", lambda _: QFileDialog.Accepted)
+    monkeypatch.setattr(QFileDialog, "selectedFiles", lambda _: [str(path)])
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_: (str(path), ""))
+    panel.measurement[0].clear()
+    panel._add_step(MOVE)
+    panel.steps.item(0, 1).setText("70,5")
+    panel.save_sequence_btn.click()
+    draft = panel._sequence_data()
+
+    panel.run_name.setText("Unsaved edit")
+    question = Mock(return_value=QMessageBox.Cancel)
+    monkeypatch.setattr(QMessageBox, "question", question)
+    panel.open_sequence_btn.click()
+    question.assert_called_once()
+    assert panel.run_name.text() == "Unsaved edit"
+
+    question.return_value = QMessageBox.Yes
+    panel.open_sequence_btn.click()
+    assert panel._sequence_data() == draft
+
+
+def test_invalid_file_leaves_current_sequence_intact(panel, tmp_path, monkeypatch):
+    path = tmp_path / "bad.json"
+    data = panel._sequence_data()
+    data["steps"] = [[MOVE, "75"]]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_: (str(path), ""))
+    before = panel._sequence_data()
+    panel.open_sequence_btn.click()
+    assert panel._sequence_data() == before
+    assert "Invalid action or coordinates in step 1." in panel.status.text()
 
 
 @pytest.mark.parametrize("count", [1, 2, 3])
