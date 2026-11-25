@@ -30,6 +30,8 @@ DISCONNECT_WAIT = 2.0       # s disconnect() waits for a running command before 
 _ser = None
 _device_lease = None
 _lock = threading.RLock()   # serial access must be one command at a time
+_activities = []            # (label, start) of what holds the serial link now, outermost first
+_last_cmd = [None, 0.0]     # last G-code sent and when
 _write_lock = threading.Lock()  # serialize command dispatch with immediate STOP
 _stop = threading.Event()   # set while a stop is in progress; long-running moves check it
 _closing = threading.Event()  # set by disconnect(): a command still waiting for its 'ok' gives up
@@ -86,9 +88,38 @@ def get_local_ip():
         s.close()
 
 
+class activity:
+    """`with activity("homing X and Y"):` marks what the serial link is busy with, so a refusal
+    can say so (busy_text). Nests; cheap."""
+
+    def __init__(self, label):
+        self.label = label
+
+    def __enter__(self):
+        _activities.append((self.label, time.monotonic()))
+        return self
+
+    def __exit__(self, *exc):
+        if _activities:
+            _activities.pop()
+
+
+def busy_text():
+    """What keeps the printer busy right now, in words, for a 'printer busy' message."""
+    now = time.monotonic()
+    parts = []
+    if _activities:
+        label, t0 = _activities[0]
+        parts.append(f"{label} (for {now - t0:.0f} s)")
+    cmd, t = _last_cmd
+    if cmd:
+        parts.append(f"last command sent: {cmd} ({now - t:.0f} s ago)")
+    return "; ".join(parts) or "an earlier command"
+
+
 def connect():
     global _ser, _device_lease
-    with _lock:
+    with _lock, activity("connecting to the printer over USB"):
         if _ser is not None and _ser.is_open:
             return
         port = find_port()
@@ -163,6 +194,7 @@ def _send(cmd, timeout=30, *, cancel=None):
     once that 'ok' is read; otherwise the next command would take it as its own."""
     connect()
     ser = _ser
+    _last_cmd[:] = [cmd, time.monotonic()]
     _write_line(ser, f"{cmd}\n".encode(), cancel)
     response = []
     error = None
@@ -191,6 +223,7 @@ def _send_nowait(cmd):
     pending 'ok' with _resync_serial() (halt_move does). The printer answers a G1 only once the
     move is done, so this is the only way to watch the load cell while a move runs."""
     connect()
+    _last_cmd[:] = [cmd, time.monotonic()]
     _write_line(_ser, f"{cmd}\n".encode())
 
 
@@ -241,6 +274,12 @@ METRICS = ("loadcell", "pos_x", "pos_y", "pos_z")     # the only metrics the PC 
 def enable_metrics(port=8514, pc_ip=None):
     pc_ip = pc_ip or get_local_ip()
     # M334 asks for confirmation on the printer screen if the metrics settings change
+    with _lock, activity("setting up the force data (M334): if the printer's screen asks to confirm "
+                         "the metrics address, confirm it there"):
+        _enable_metrics(pc_ip, port)
+
+
+def _enable_metrics(pc_ip, port):
     send_gcode(f"M334 {pc_ip} {port}", timeout=300)
     # The printer can have dozens of diagnostic metrics on (after a firmware update/reset). Its
     # sender then drops points, and the low-rate pos_x/y/z are the ones that go missing while the
@@ -299,7 +338,8 @@ def home():
     """Home all axes. Do this once before nudging."""
     _homing.set()
     try:
-        return send_gcode("G28", timeout=120)
+        with _lock, activity("homing all axes (G28)"):
+            return send_gcode("G28", timeout=120)
     finally:
         time.sleep(0.5)  # let the gauge window flush the bed-touch readings
         _homing.clear()
@@ -316,15 +356,16 @@ def home_xy(*, cancel=None):
     XY_HOLD_S of idle, long enough to fine-tune a calibration point."""
     _homing.set()
     try:
-        send_gcode("G28 X Y", timeout=120, cancel=cancel)
-        send_gcode(f"M84 S{XY_HOLD_S}", cancel=cancel)
+        with _lock, activity("homing X and Y (G28 X Y)"):
+            send_gcode("G28 X Y", timeout=120, cancel=cancel)
+            send_gcode(f"M84 S{XY_HOLD_S}", cancel=cancel)
     finally:
         _homing.clear()
 
 
 def move_relative(dx=0.0, dy=0.0, dz=0.0, XYfeed=XYFEEDRATE, Zfeed=ZFEEDRATE):
     """Relative move; XY and Z are separate so Z can have a lower speed cap."""
-    with _lock:
+    with _lock, activity("a jog move"):
         if _stop.is_set():
             raise PrinterError("Motion stopped")
         _send("G91")
@@ -340,7 +381,8 @@ def move_relative(dx=0.0, dy=0.0, dz=0.0, XYfeed=XYFEEDRATE, Zfeed=ZFEEDRATE):
 
 def move_absolute(x=None, y=None, z=None, XYfeed=XYFEEDRATE, Zfeed=ZFEEDRATE, *, cancel=None):
     """Absolute move and wait for it; None keeps that axis where it is."""
-    with _lock:
+    where = " ".join(f"{a}{v:.1f}" for a, v in (("X", x), ("Y", y), ("Z", z)) if v is not None)
+    with _lock, activity(f"moving to {where}"):
         if _stop.is_set():
             raise PrinterError("Motion stopped")
         _send("G90", cancel=cancel)

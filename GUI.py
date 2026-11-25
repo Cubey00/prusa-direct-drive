@@ -14,7 +14,7 @@ from PIL import Image, ImageTk
 #from imaging import single_image, set_photo_folder
 from gantry_controls import (MotionController, force_guard, home, motionstop, _stop, enable_metrics,
                              disconnect, move_absolute, _quickstop as quickstop, _lock as gantry_lock,
-                             home_xy, send_gcode, read_position, bed_up_refusal)
+                             home_xy, send_gcode, read_position, bed_up_refusal, busy_text)
 from machine_settings import SETTINGS
 from strain_gauge import StrainGauge
 
@@ -310,16 +310,6 @@ class App:
             self.progress_label.config(text=text)
             self.link.send_goto_done(label, False, text)
             return
-        # A command still waiting for the printer (e.g. M334 while the printer asks on its screen
-        # to confirm the metrics address) holds the serial lock: say so instead of waiting silently.
-        if not gantry_lock.acquire(blocking=False):
-            text = (f"Cannot go to {label}: the printer is still busy with an earlier command. "
-                    "Check the printer's screen for a question (e.g. confirm the metrics address) "
-                    "and try again.")
-            self.progress_label.config(text=text)
-            self.link.send_goto_done(label, False, text)
-            return
-        gantry_lock.release()
         if self.gauge.pos.get("z") is None:
             self.progress_label.config(text="Note: no live position from the printer yet (metrics); moving anyway.")
         feed = self.get_speed() or 1200.0         # mm/min (get_speed converts the mm/s field)
@@ -329,6 +319,9 @@ class App:
                                    + f"then X{x:.1f} Y{y:.1f} ...")
 
         def work():
+            if not self._wait_for_printer(f"go to {label}"):
+                self._refuse_busy(label, f"Cannot go to {label}")
+                return
             try:
                 move_absolute(z=z)                                     # bed to travel height first
                 if home:
@@ -358,17 +351,13 @@ class App:
             self.progress_label.config(text=text)
             self.link.send_goto_done(label, False, text)
             return
-        if not gantry_lock.acquire(blocking=False):
-            text = ("Cannot home X/Y: the printer is still busy with an earlier command. Check the "
-                    "printer's screen for a question and try again.")
-            self.progress_label.config(text=text)
-            self.link.send_goto_done(label, False, text)
-            return
-        gantry_lock.release()
         self.motion.halt()
         self.progress_label.config(text=f"Homing X/Y: Z{z:.1f} first (bed down) ...")
 
         def work():
+            if not self._wait_for_printer("home X and Y"):
+                self._refuse_busy(label, "Cannot home X and Y")
+                return
             try:
                 move_absolute(z=z)                 # sensor clear of the plate before the head moves
                 home_xy()                          # Z is kept (its motors stay on)
@@ -381,13 +370,46 @@ class App:
                                         self.update_position_labels()))
         threading.Thread(target=work, daemon=True).start()
 
+    BUSY_WAIT_S = 30.0          # how long a command from the path programmer waits for a busy printer
+    BUSY_REPORT_S = 3.0         # ... telling it every this many seconds what it waits for
+
+    def _wait_for_printer(self, what):
+        """Worker thread: wait until nothing holds the serial link (up to BUSY_WAIT_S), telling the
+        path programmer what the printer is busy with meanwhile. True when it is free."""
+        t0 = time.monotonic()
+        next_report = t0 + 0.5
+        while True:
+            if gantry_lock.acquire(timeout=0.2):
+                gantry_lock.release()
+                return True
+            now = time.monotonic()
+            if now - t0 > self.BUSY_WAIT_S:
+                return False
+            if now >= next_report:
+                next_report = now + self.BUSY_REPORT_S
+                text = f"Waiting to {what}: the printer is busy with {busy_text()}"
+                self.link.send_status(True, text)
+                self.root.after(0, lambda t=text: self.progress_label.config(text=t))
+
+    def _refuse_busy(self, label, start):
+        text = (f"{start}: after {self.BUSY_WAIT_S:.0f} s the printer is still busy with {busy_text()}. "
+                "If that never ends, close the program and start it again.")
+        self.link.send_goto_done(label, False, text)
+        self.root.after(0, lambda: self.progress_label.config(text=text))
+
     def link_creep(self, msg):
         """Measure: bed up very slowly until the sensor just touches the object (load cell), then stay."""
-        from touch import creep_to_contact
+        from touch import creep_to_contact, CREEP_FAST_SPEED, CREEP_SPEED
         try:
             fast_mm = max(0.0, float(msg.get("fast_mm", 0.0)))
             max_mm = float(msg.get("max_mm", 15.0))
+            fast_speed = float(msg.get("fast_speed", CREEP_FAST_SPEED))
+            speed = float(msg.get("speed", CREEP_SPEED))
         except (TypeError, ValueError):
+            return
+        if not (0.01 <= speed <= 0.5 and 0.1 <= fast_speed <= 5.0):
+            self.link.send_touch_done(False, "error", "Touch refused: slow speed 0.01-0.5 mm/s and fast "
+                                                      "speed 0.1-5 mm/s")
             return
         if not 0 < max_mm <= 30 or fast_mm >= max_mm:
             self.link.send_touch_done(False, "error", "Touch refused: max 30 mm and the fast part shorter than the whole")
@@ -399,9 +421,14 @@ class App:
         self._creep_cancel.clear()
 
         def work():
+            if not self._wait_for_printer("touch the object"):
+                self.link.send_touch_done(False, "error", f"Cannot touch: the printer is still busy with "
+                                                          f"{busy_text()}.")
+                return
             fo = SETTINGS.forces
             res = creep_to_contact(self.gauge, contact_g=fo.contact_g, max_force_g=fo.max_force_g,
                                    max_travel=max_mm, fast_mm=fast_mm, cancel=self._creep_cancel,
+                                   speed=speed, fast_speed=fast_speed,
                                    on_status=lambda m: None, rise_g=fo.contact_rise_g,
                                    rise_s=fo.contact_rise_s, abs_g=fo.jog_stop_g,
                                    hold_s=fo.contact_hold_s, verify_s=fo.contact_verify_s)
@@ -433,6 +460,10 @@ class App:
         self._creep_cancel.clear()
 
         def work():
+            if not self._wait_for_printer("press a step deeper"):
+                self.link.send_touch_done(False, "error", f"Cannot press deeper: the printer is still busy "
+                                                          f"with {busy_text()}.")
+                return
             res = press_step(self.gauge, step_mm=mm, stop_g=stop_g, max_force_g=fo.max_force_g,
                              cancel=self._creep_cancel)
             self.motion.halt()
@@ -461,8 +492,7 @@ class App:
         # confirmation on the printer's screen); queued jogs would only pile up behind it
         if self.motion.pending == 0:
             if not gantry_lock.acquire(blocking=False):
-                self.link.send_status(False, "The printer is still busy with an earlier command; "
-                                             "check its screen for a question.")
+                self.link.send_status(False, f"The printer is still busy with {busy_text()}.")
                 return
             gantry_lock.release()
         try:
@@ -848,4 +878,8 @@ if __name__ == "__main__":
     app = App(root, link, hidden=args.hidden)
     if link is not None:
         link.on_message = lambda msg: root.after(0, app.on_link_message, msg)
+        if args.hidden:
+            # without a window nobody can close it: when the path programmer is gone (closed or
+            # crashed), close too, or it keeps the printer's USB port and the force data to itself
+            link.on_lost = lambda: root.after(0, app.on_close)
     root.mainloop()

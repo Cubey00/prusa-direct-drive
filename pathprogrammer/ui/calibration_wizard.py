@@ -324,7 +324,7 @@ class CalibrationWizard(QDialog):
             self.text_label.setText(
                 f"<span style='color:{OK_COLOR}; font-size: 16px;'><b>X and Y homed.</b></span> The "
                 "saved calibration is used. Click <b>Go to point 1</b>: the sensor will hover "
-                f"{measure.HOVER_TEXT} above the first part.")
+                f"{self.main._hover_text() if hasattr(self.main, '_hover_text') else measure.HOVER_TEXT} above the first part.")
 
     def go_to_point1(self):
         """After "Home X and Y only": close this window, keep the calibrator (X/Y stay homed) and
@@ -434,6 +434,8 @@ class CalibrationWizard(QDialog):
             else:
                 self.link_label.setText(f"<span style='color:{ERR_COLOR}'>{msg.get('message', '')}</span>")
                 self.set_state(GOTO)
+        elif kind == "status" and msg.get("ok") and self.state in (MOVING, SENDING):
+            self.link_label.setText(str(msg.get("message", "")))              # e.g. waiting for a busy printer
         elif kind == "status" and not msg.get("ok"):
             self.link_label.setText(f"<span style='color:{ERR_COLOR}'>{msg.get('message', '')}</span>")
             if self.state == SENDING:

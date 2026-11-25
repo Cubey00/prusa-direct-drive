@@ -10,10 +10,13 @@ from dataclasses import dataclass
 
 from . import calibration
 
+# Defaults of the approach settings in the Measure box (changeable there, remembered per laptop):
 HOVER_MM = 3.0              # sensor this far above the top of the part before touching (less = faster)
 HOVER_TEXT = f"{HOVER_MM:g} mm"
 CREEP_SAFE_MM = 1.5         # of the hover gap, this last part is crept slowly (the part may be a bit higher)
-CREEP_FREE_MM = max(0.0, HOVER_MM - CREEP_SAFE_MM)   # the rest is known free: a bit faster
+CREEP_FREE_MM = max(0.0, HOVER_MM - CREEP_SAFE_MM)   # the rest is known free: faster
+FAST_SPEED = 2.0            # mm/s over the known-free part
+SLOW_SPEED = 0.1            # mm/s over the last part, where the object is expected
 
 
 class MeasureError(Exception):

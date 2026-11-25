@@ -22,7 +22,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, asdict, field
 
-from gantry_controls import _lock, _send, _send_nowait, _resync_serial, _stop, _POS_RE, halt_move, PrinterError
+from gantry_controls import _lock, _send, _send_nowait, _resync_serial, _stop, _POS_RE, halt_move, PrinterError, activity
 
 FAST = 16                 # samples (~50 ms at ~320 Hz) for the force reading while moving
 POLL = 0.002              # s between force checks
@@ -345,7 +345,7 @@ def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, f
     contact_z = end_z = where it stopped, final_g the force there)."""
     res = TouchResult()
     trace = _Tracer(res, gauge)
-    with _lock:
+    with _lock, activity("touching the object (slow approach)"):
         try:
             _wait_for_data(gauge)
             _send("G90")
@@ -415,7 +415,7 @@ def press_step(gauge, step_mm=0.1, stop_g=300.0, max_force_g=450.0, speed=CREEP_
     aborted / error; start_z, end_z and final_g (settled |force|) filled in."""
     res = TouchResult()
     trace = _Tracer(res, gauge)
-    with _lock:
+    with _lock, activity("pressing a step deeper"):
         try:
             _wait_for_data(gauge)
             _send("G90")
@@ -458,7 +458,7 @@ def touch(gauge, mode, value, touch_speed, approach_speed=2.0, contact_g=5.0, ma
     search_speed = min(search_speed, touch_speed)
     res = TouchResult()
     trace = _Tracer(res, gauge)
-    with _lock:
+    with _lock, activity("a touch from the run"):
         try:
             _wait_for_data(gauge)
             _send("G90")

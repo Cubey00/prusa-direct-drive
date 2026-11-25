@@ -5,8 +5,10 @@ Locks cover application clients; external software still needs operator exclusio
 """
 import os
 from pathlib import Path
+import sys
 import tempfile
 import threading
+import time
 
 
 class DeviceBusy(RuntimeError):
@@ -15,6 +17,20 @@ class DeviceBusy(RuntimeError):
 
 _guard = threading.Lock()
 _held = set()
+
+
+def _owner_path(resource):
+    return Path(tempfile.gettempdir()) / f"prusa-direct-drive-{resource}.owner"
+
+
+def _describe_owner(resource):
+    """Who holds the lease, from the note the owner left (PID, program, since when), or ''."""
+    try:
+        pid, since, prog = _owner_path(resource).read_text(encoding="utf-8").split("\n", 2)
+    except (OSError, ValueError):
+        return ""
+    what = "the hidden calibrator of a path programmer" if "--link" in prog else prog.strip()
+    return f" (PID {pid}, {what}, since {since}; close it, or end that PID in Task Manager)"
 
 
 class DeviceLease:
@@ -44,8 +60,14 @@ class DeviceLease:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 handle.close()
-                raise DeviceBusy(f"{self.resource} is owned by another application process") from None
+                raise DeviceBusy(f"{self.resource} is owned by another application process"
+                                 + _describe_owner(self.resource)) from None
             self.file = handle
+            try:                       # a note for whoever is refused next: who holds it
+                _owner_path(self.resource).write_text(
+                    f"{os.getpid()}\n{time.strftime('%H:%M:%S')}\n{' '.join(sys.argv)}", encoding="utf-8")
+            except OSError:
+                pass
             _held.add(self.resource)
         return self
 
