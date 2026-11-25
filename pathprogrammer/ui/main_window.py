@@ -152,9 +152,14 @@ class MainWindow(QMainWindow):
         left_scroll.setWidget(left_col)
         left_scroll.setWidgetResizable(True)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Keep the controls within the viewport even when the vertical scrollbar is shown.
+        left_scroll.setMinimumWidth(left_col.minimumSizeHint().width()
+                                    + left_scroll.verticalScrollBar().sizeHint().width()
+                                    + 2 * left_scroll.frameWidth())
         split = QSplitter(Qt.Horizontal)
         for w in (left_scroll, centre, right):
             split.addWidget(w)
+        split.setCollapsible(0, False)
         split.setSizes([430, 760, 430])
         self.focusfield = FocusFieldPanel(self)
         self.focusfield.hardwareActivityChanged.connect(self._optical_activity)

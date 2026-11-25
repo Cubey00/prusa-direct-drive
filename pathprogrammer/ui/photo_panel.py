@@ -83,6 +83,7 @@ class PhotoPanel(QGroupBox):
         self._tags = {}                  # file name -> tag, logged once the photo is saved
         self.view = LiveView()
         self.state_label = QLabel("Looking for the camera...")
+        self.state_label.setWordWrap(True)
         self.state_label.setStyleSheet("color: #64748b; font-weight: normal;")
         self.photo_btn = QPushButton("Take photo")
         action_button(self.photo_btn, ACCENT, ACCENT_DARK)
