@@ -21,7 +21,7 @@ class MeasureBox(QGroupBox):
                                  "folder named after the date and start time.")
         action_button(self.proc_btn, GREEN, GREEN_DARK)
         self.max_force = QDoubleSpinBox()
-        self.max_force.setRange(10.0, 400.0)
+        self.max_force.setRange(10.0, 1000.0)   # below [forces] max_force_g (1100) and the force guard (1200)
         self.max_force.setDecimals(0)
         self.max_force.setSingleStep(10.0)
         self.max_force.setSuffix(" g")

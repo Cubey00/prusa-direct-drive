@@ -86,7 +86,7 @@ height = 5.0                       # tip height above the bed
 mount = "side mount"               # which bracket is fitted (side mount / fan mount V2)
 offset_x = 0.0
 offset_y = -40.0
-offset_z = -49.25
+offset_z = -62.15
 measured = false
 hover_clearance = 10.0             # mm the sensor stays above the plate (cones, parts) when it travels
 # Size of the sensor housing, for clearance checks between neighbouring parts. TODO measure.
@@ -102,8 +102,8 @@ measured = false
 
 [forces]
 contact_g = 5.0                    # |force| that counts as contact
-max_force_g = 450.0                # a touch is aborted above this
-guard_trip_g = 500.0               # force_guard: emergency drop above this
+max_force_g = 1100.0               # a touch is aborted above this (Measure allows presses up to 1000 g)
+guard_trip_g = 1200.0              # force_guard: emergency drop above this (above max_force_g)
 guard_release_g = 50.0             # ...until the force is below this
 guard_drop_mm = 30.0               # ...but never more than this far (mm) per trip
 # Measure "Move very slowly until the sensor touches the object": the load cell drifts, so contact is
@@ -130,7 +130,7 @@ residual_tol = 0.5                 # mm: warn if a point is further than this of
 # it from the offset. [] = not known yet. They hold as long as the cones stay where they are
 # ([work_area], [fiducials]); clear them after changing those.
 cone_F1 = []
-cone_F2 = [177.835, 106.655, 54.250]
+cone_F2 = [177.830, 106.650, 67.150]
 cone_F3 = []
 
 [focusfield]

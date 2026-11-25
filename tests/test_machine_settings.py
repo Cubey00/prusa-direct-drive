@@ -24,7 +24,7 @@ def test_default_file_loads_with_the_known_values():
     assert len(s.sensor.offset) == 3            # the value itself is this laptop's last calibration
     assert s.work_area.probe_points == ((189.0, 52.0), (194.0, 44.0))
     assert (s.fiducials.inset, s.fiducials.height) == (10.0, 5.0)
-    assert (s.forces.contact_g, s.forces.max_force_g, s.forces.guard_trip_g) == (5.0, 450.0, 500.0)
+    assert (s.forces.contact_g, s.forces.max_force_g, s.forces.guard_trip_g) == (5.0, 1100.0, 1200.0)
     assert set(s.unmeasured()) == {"sensor", "camera"}
 
 
@@ -53,8 +53,8 @@ def test_missing_key_names_section_and_key(data):
     ("work_area", "usable_y", [60.0, 230.0], "inside the bed"),
     ("raster", "min_gap", 25.0, "larger than min_gap"),
     ("fiducials", "inset", 18.0, "do not fit"),
-    ("forces", "max_force_g", 600.0, "contact_g < max_force_g < guard_trip_g"),
-    ("forces", "jog_stop_g", 600.0, "contact_g < jog_stop_g < guard_trip_g"),
+    ("forces", "max_force_g", 1300.0, "contact_g < max_force_g < guard_trip_g"),
+    ("forces", "jog_stop_g", 1300.0, "contact_g < jog_stop_g < guard_trip_g"),
     ("work_area", "usable_y", [50.0, 179.0], "probes the bed"),
     ("work_area", "usable_y", [56.0, 200.0], "sensor can reach"),
     ("work_area", "usable_x", [0.0, 205.0], "nozzle can reach"),

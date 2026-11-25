@@ -547,7 +547,8 @@ class App:
         self.root.after(0, lambda: self.alert("FORCE LIMIT: bed dropped"))
         if self.link is not None:   # hidden calibrator: the path programmer shows why the bed dropped
             self.link.send_status(False, f"{GUARD_STATUS}: more than {SETTINGS.forces.guard_trip_g:.0f} g measured, "
-                                         f"bed dropped at most {SETTINGS.forces.guard_drop_mm:.0f} mm.")
+                                         f"bed dropped at most {SETTINGS.forces.guard_drop_mm:.0f} mm. It drops "
+                                         "again only after a new move.")
 
     ALERT_S = 10.0          # how long an alert stays
     ALERT_BLINK_MS = 400

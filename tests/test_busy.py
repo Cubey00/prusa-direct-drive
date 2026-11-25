@@ -81,3 +81,25 @@ def test_a_command_right_after_hello_is_not_lost():
     assert got.get(timeout=5)["type"] == "home"
     cli.close()
     srv.close()
+
+
+def test_a_lost_usb_link_is_closed_and_explained(monkeypatch):
+    """Windows answers writes on a dead port with 'the device does not recognize the command':
+    close it (the next command reconnects) and say what happened."""
+    import pytest
+    import serial
+
+    class DeadPort:
+        is_open = True
+
+        def write(self, data):
+            raise serial.SerialException("WriteFile failed (PermissionError(13, 'not recognized', None, 22))")
+
+    dropped = []
+    monkeypatch.setattr(gc, "connect", lambda: None)
+    monkeypatch.setattr(gc, "_ser", DeadPort())
+    monkeypatch.setattr(gc, "disconnect", lambda wait=None: dropped.append(wait))
+    with pytest.raises(gc.PrinterError, match="USB connection to the printer was lost"):
+        gc.send_gcode("G90")
+    assert dropped                                               # closed: the next command reopens it
+    gc._quickstop()                                              # an M410 on a dead port stays quiet

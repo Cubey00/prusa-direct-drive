@@ -10,6 +10,8 @@ from focusfield.config import simulation_fixture
 
 # The Foto control live feed stays off unless a test explicitly enables it.
 os.environ.setdefault("PRINTERPROJECT_NO_CAMERA", "1")
+# Simulated printers must not write into the real serial log (gantry_controls.SERIAL_LOG).
+os.environ.setdefault("PRINTERPROJECT_NO_SERIAL_LOG", "1")
 # No on-screen windows: on macOS a Cocoa test process with hidden windows gets App Nap, which
 # stretches sleeps and timers many times over and makes the timing-based tests fail at random.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

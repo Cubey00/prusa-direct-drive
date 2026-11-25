@@ -32,6 +32,13 @@ _device_lease = None
 _lock = threading.RLock()   # serial access must be one command at a time
 _activities = []            # (label, start) of what holds the serial link now, outermost first
 _last_cmd = [None, 0.0]     # last G-code sent and when
+_moves = [0]                # moves sent by anyone but the force guard (it rearms only after a new one)
+_guard_thread = threading.local()
+
+
+def _count_move(cmd):
+    if cmd.startswith(("G0", "G1", "G28")) and not getattr(_guard_thread, "dropping", False):
+        _moves[0] += 1
 _write_lock = threading.Lock()  # serialize command dispatch with immediate STOP
 _stop = threading.Event()   # set while a stop is in progress; long-running moves check it
 _closing = threading.Event()  # set by disconnect(): a command still waiting for its 'ok' gives up
@@ -177,6 +184,8 @@ _log_lock = threading.Lock()
 
 
 def serial_log(direction, text):
+    if os.environ.get("PRINTERPROJECT_NO_SERIAL_LOG"):      # tests: keep the real log clean
+        return
     try:
         with _log_lock:
             if os.path.exists(SERIAL_LOG) and os.path.getsize(SERIAL_LOG) > SERIAL_LOG_MAX:
@@ -188,14 +197,31 @@ def serial_log(direction, text):
         pass
 
 
+LINK_LOST = ("The USB connection to the printer was lost (did the printer restart, or is the USB "
+             "cable loose?). It reconnects by itself on the next command: try again.")
+
+
+def _drop_link(err):
+    """The USB link broke under us (printer restarted, cable, Windows reset the port): Windows then
+    answers every write with 'the device does not recognize the command'. Close the dead port and
+    release the printer, so the next command opens it again."""
+    serial_log("!", f"USB link lost: {err}")
+    disconnect(wait=0.5)
+
+
 def _readline(ser):
     """One line from the printer; PrinterError once the link is closed or closing."""
     if _closing.is_set():
         raise PrinterError("Serial connection is closing")
     try:
         line = ser.readline().decode("utf-8", errors="ignore").strip()
-    except (serial.SerialException, OSError, TypeError, AttributeError):
+    except (TypeError, AttributeError):
         raise PrinterError("Serial connection was closed") from None
+    except (serial.SerialException, OSError) as e:
+        if _closing.is_set():
+            raise PrinterError("Serial connection was closed") from None
+        _drop_link(e)
+        raise PrinterError(f"{LINK_LOST} ({e})") from None
     if line:
         serial_log("<", line)
     return line
@@ -208,7 +234,14 @@ def _write_line(ser, data, cancel=None):
         if cancel is not None and cancel.is_set():
             raise InterruptedError("Motion cancelled before command dispatch")
         serial_log(">", data.decode("utf-8", errors="replace").strip())
-        ser.write(data)
+        try:
+            ser.write(data)
+        except (serial.SerialException, OSError) as e:
+            pass_on = e
+        else:
+            return
+    _drop_link(pass_on)                       # outside _write_lock: disconnect may wait for others
+    raise PrinterError(f"{LINK_LOST} ({pass_on})")
 
 
 def _send(cmd, timeout=30, *, cancel=None):
@@ -220,6 +253,7 @@ def _send(cmd, timeout=30, *, cancel=None):
     connect()
     ser = _ser
     _last_cmd[:] = [cmd, time.monotonic()]
+    _count_move(cmd)
     _write_line(ser, f"{cmd}\n".encode(), cancel)
     response = []
     error = None
@@ -249,6 +283,7 @@ def _send_nowait(cmd):
     move is done, so this is the only way to watch the load cell while a move runs."""
     connect()
     _last_cmd[:] = [cmd, time.monotonic()]
+    _count_move(cmd)
     _write_line(_ser, f"{cmd}\n".encode())
 
 
@@ -289,7 +324,7 @@ def _quickstop():
         return
     try:
         _write_line(ser, b"\nM410\n")
-    except (serial.SerialException, OSError):
+    except (serial.SerialException, OSError, PrinterError):
         pass
 
 
@@ -472,25 +507,33 @@ def force_guard(gauge, trip_g=500.0, release_g=50.0, window=16, on_trip=None, st
                 max_drop=30.0):
     """Start a background thread that runs emergency_drop() whenever |force| > trip_g.
     Only start it after the gauge has been tared, or the raw offset trips it.
-    One trip drops at most `max_drop` mm; if the force is still over trip_g after a drop, it is
-    not the bed pressing (that went away): the guard waits until the force has been under
-    trip_g once before it may drop again, so drift never walks the bed to the bottom.
+    One trip drops at most `max_drop` mm, and then the guard waits: it drops again only after a new
+    move (by the user or the software, not its own drop) AND once the force has been under trip_g.
+    A force that comes and goes while nothing moves (drift, a hand on the sensor) can't be the bed
+    pressing, so it must not walk the bed to the bottom 30 mm at a time.
     Returns the event that ends the guard when set."""
     stop_event = stop_event or threading.Event()
     def loop():
         armed = True
+        was_under = True
+        moves_at_drop = None
         while not stop_event.is_set():
             f = abs(gauge.force_g(window) or 0)
-            if not armed and f <= trip_g:
-                armed = True
+            if not armed:
+                was_under = was_under or f <= trip_g
+                if was_under and _moves[0] != moves_at_drop:
+                    armed = True
             if armed and not _homing.is_set() and f > trip_g:
                 if on_trip:
                     on_trip()
+                _guard_thread.dropping = True
                 try:
                     emergency_drop(gauge, release_g, window, max_drop=max_drop)
                 except Exception as e:
                     print(f"Emergency drop failed: {e}")
-                armed = False
+                finally:
+                    _guard_thread.dropping = False
+                armed, was_under, moves_at_drop = False, False, _moves[0]
             time.sleep(0.005)
     threading.Thread(target=loop, daemon=True).start()
     return stop_event
