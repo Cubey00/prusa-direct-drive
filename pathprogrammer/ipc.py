@@ -209,22 +209,33 @@ class CalibratorServer:
 class CalibratorClient:
     """Used by GUI.py. Fails softly: the calibrator keeps working if the main app is gone."""
 
-    def __init__(self, port, key=None, on_message=None):
+    def __init__(self, port, key=None, on_message=None, start=True):
         """on_message(dict) gets messages from the path programmer (e.g. "goto"), called from a
-        background thread."""
+        background thread. start=False: connect, but say "hello" and listen only on start(), once
+        on_message is set. The path programmer sends its first command right after the hello; a
+        message that arrives before on_message is set would be lost and the app would wait forever."""
         key = key if key is not None else bytes.fromhex(os.environ.get(KEY_ENV, ""))
         self.conn = None
         self.on_message = on_message
         self.on_lost = None        # called (recv thread) when the path programmer goes away
         self._lock = threading.Lock()
+        self._started = False
         try:
             self.conn = Client(("127.0.0.1", int(port)), authkey=key)
-            self._send({"v": VERSION, "type": "hello"})
         except Exception as e:
             print(f"Calibrator link unavailable: {e}")
             self.conn = None
             return
+        if start:
+            self.start()
+
+    def start(self):
+        """Say hello and start listening (once)."""
+        if self.conn is None or self._started:
+            return
+        self._started = True
         threading.Thread(target=self._recv_loop, daemon=True).start()
+        self._send({"v": VERSION, "type": "hello"})
 
     def _recv_loop(self):
         while True:

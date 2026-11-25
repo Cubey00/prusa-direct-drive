@@ -26,6 +26,7 @@ class MeasureBox(QGroupBox):
         self.max_force.setSingleStep(10.0)
         self.max_force.setSuffix(" g")
         self.max_force.setValue(300.0)
+        self.max_force.setMinimumHeight(self.max_force.sizeHint().height())
         self.max_force.setToolTip("Maximum load cell force: a step stops here and the procedure ends")
         self.step_mm = QDoubleSpinBox()
         self.step_mm.setRange(0.01, 1.0)
@@ -33,10 +34,12 @@ class MeasureBox(QGroupBox):
         self.step_mm.setSingleStep(0.05)
         self.step_mm.setSuffix(" mm")
         self.step_mm.setValue(0.1)
+        self.step_mm.setMinimumHeight(self.step_mm.sizeHint().height())
         self.step_mm.setToolTip("How far the sensor presses deeper per step")
         self.n_steps = QSpinBox()
         self.n_steps.setRange(1, 200)
         self.n_steps.setValue(10)
+        self.n_steps.setMinimumHeight(self.n_steps.sizeHint().height())
         self.n_steps.setToolTip("Number of steps after the first touch (one photo per step)")
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
@@ -56,6 +59,7 @@ class MeasureBox(QGroupBox):
             w.setSuffix(suffix)
             w.setValue(value)
             w.setToolTip(tip)
+            w.setMinimumHeight(w.sizeHint().height())      # never squashed flat
             return w
         self.hover_mm = spin(1.0, 20.0, measure.HOVER_MM, 1, 0.5, " mm",
                              "How far above the top of a part the sensor stops before touching it. Less "

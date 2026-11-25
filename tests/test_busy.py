@@ -63,3 +63,21 @@ def test_closing_the_link_ourselves_is_not_a_loss():
         raise AssertionError("on_lost called after our own close")
     except queue.Empty:
         pass
+
+
+def test_a_command_right_after_hello_is_not_lost():
+    """The app sends its first command the moment the calibrator says hello; the calibrator only
+    says hello once it can take commands (start=False, then start())."""
+    to_app = queue.Queue()
+    srv = CalibratorServer(to_app.put)
+    got = queue.Queue()
+    cli = CalibratorClient(srv.port, srv.key, start=False)
+    time.sleep(0.2)
+    assert to_app.empty()                                        # no hello yet: not ready
+    cli.on_message = got.put
+    cli.start()
+    assert to_app.get(timeout=5)["type"] == "hello"
+    srv.home(45.0, "home")                                       # at once, like the procedure
+    assert got.get(timeout=5)["type"] == "home"
+    cli.close()
+    srv.close()

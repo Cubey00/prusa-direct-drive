@@ -6,7 +6,7 @@ Z convention: a higher Z means the bed is LOWER. Z_MAX is the lowest the bed
 can safely go.
 """
 import atexit
-import queue, re, socket, threading, time
+import os, queue, re, socket, tempfile, threading, time
 
 import serial
 from serial.tools import list_ports
@@ -97,11 +97,13 @@ class activity:
 
     def __enter__(self):
         _activities.append((self.label, time.monotonic()))
+        serial_log("+", self.label)
         return self
 
     def __exit__(self, *exc):
         if _activities:
             _activities.pop()
+        serial_log("-", self.label)
 
 
 def busy_text():
@@ -167,14 +169,36 @@ def _connected():
     return _ser is not None and _ser.is_open
 
 
+# Every line to and from the printer, with time and thread, in %TEMP%\prusa-direct-drive-serial.log
+# (the hidden calibrator has no window: this is how to see where it waits). Kept below SERIAL_LOG_MAX.
+SERIAL_LOG = os.path.join(tempfile.gettempdir(), "prusa-direct-drive-serial.log")
+SERIAL_LOG_MAX = 5_000_000
+_log_lock = threading.Lock()
+
+
+def serial_log(direction, text):
+    try:
+        with _log_lock:
+            if os.path.exists(SERIAL_LOG) and os.path.getsize(SERIAL_LOG) > SERIAL_LOG_MAX:
+                os.replace(SERIAL_LOG, SERIAL_LOG + ".old")
+            with open(SERIAL_LOG, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%H:%M:%S')}.{int(time.time() * 1000) % 1000:03d} "
+                        f"[{os.getpid()} {threading.current_thread().name}] {direction} {text}\n")
+    except OSError:
+        pass
+
+
 def _readline(ser):
     """One line from the printer; PrinterError once the link is closed or closing."""
     if _closing.is_set():
         raise PrinterError("Serial connection is closing")
     try:
-        return ser.readline().decode("utf-8", errors="ignore").strip()
+        line = ser.readline().decode("utf-8", errors="ignore").strip()
     except (serial.SerialException, OSError, TypeError, AttributeError):
         raise PrinterError("Serial connection was closed") from None
+    if line:
+        serial_log("<", line)
+    return line
 
 
 # ---------------- G-code ----------------
@@ -183,6 +207,7 @@ def _write_line(ser, data, cancel=None):
     with _write_lock:
         if cancel is not None and cancel.is_set():
             raise InterruptedError("Motion cancelled before command dispatch")
+        serial_log(">", data.decode("utf-8", errors="replace").strip())
         ser.write(data)
 
 

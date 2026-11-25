@@ -157,10 +157,17 @@ class MainWindow(QMainWindow):
         left_scroll.setMinimumWidth(left_col.minimumSizeHint().width()
                                     + left_scroll.verticalScrollBar().sizeHint().width()
                                     + 2 * left_scroll.frameWidth())
+        # the right column scrolls too: squeezed into a low window, Qt would otherwise flatten the
+        # Measure settings (spin boxes) until they can no longer be read
+        right_scroll = QScrollArea()
+        right_scroll.setWidget(right)
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QScrollArea.NoFrame)       # too narrow: a horizontal scroll bar, no clipping
         split = QSplitter(Qt.Horizontal)
-        for w in (left_scroll, centre, right):
+        for w in (left_scroll, centre, right_scroll):
             split.addWidget(w)
         split.setCollapsible(0, False)
+        split.setCollapsible(2, False)
         split.setSizes([430, 760, 430])
         self.focusfield = FocusFieldPanel(self)
         self.focusfield.hardwareActivityChanged.connect(self._optical_activity)
