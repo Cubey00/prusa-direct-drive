@@ -1,7 +1,8 @@
-"""Measure: drive the sensor to the parts of the plate. First step: hang 1 cm above point 1."""
+"""Measure: drive the sensor to the parts of the plate. First step: hover just above point 1."""
 from PySide6.QtWidgets import (QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton,
                                QSpinBox, QVBoxLayout)
 
+from ..measure import HOVER_TEXT
 from .style import action_button
 
 INDIGO, INDIGO_DARK = "#4f46e5", "#4338ca"
@@ -13,7 +14,7 @@ class MeasureBox(QGroupBox):
         super().__init__("Measure", parent)
         # --- the whole procedure in one click, with its settings next to it ---
         self.proc_btn = QPushButton("Do whole measuring procedure")
-        self.proc_btn.setToolTip("Home X and Y (uses the saved calibration), go 1 cm above point 1, touch the "
+        self.proc_btn.setToolTip("Home X and Y (uses the saved calibration), go just above each part, touch the "
                                  "object (indentation 0, photo), then press the set number of steps deeper with "
                                  "a photo at every step. Stops early at the max force. All photos go into one new "
                                  "folder named after the date and start time.")
@@ -44,14 +45,14 @@ class MeasureBox(QGroupBox):
         proc_row = QHBoxLayout()
         proc_row.addWidget(self.proc_btn, 1)
         proc_row.addLayout(form)
-        self.hover_btn = QPushButton("Hover 1 cm above point 1")
+        self.hover_btn = QPushButton(f"Hover {HOVER_TEXT} above point 1")
         self.hover_btn.setToolTip("The bed lowers to a safe height, the head drives to the first part of the "
-                                  "plate and the sensor stops 1 cm above its top")
+                                  f"plate and the sensor stops {HOVER_TEXT} above its top")
         action_button(self.hover_btn, INDIGO, INDIGO_DARK)
         self.next_btn = QPushButton("Go to next point")
         self.next_btn.setToolTip("The bed first lowers to a safe height (the sensor goes up, clear of all "
-                                 "parts), the head drives to the next part and the sensor stops 1 cm above "
-                                 "its top")
+                                 "parts), the head drives to the next part and the sensor stops "
+                                 f"{HOVER_TEXT} above its top")
         action_button(self.next_btn, INDIGO, INDIGO_DARK)
         self.next_btn.setEnabled(False)
         self.touch_btn = QPushButton("Move very slowly until the sensor touches the object")

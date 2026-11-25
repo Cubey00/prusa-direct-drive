@@ -326,7 +326,7 @@ def _confirm(gauge, res, detector, verify_s, max_force_g, cancel, trace):
 
 
 CREEP_SPEED = 0.1         # mm/s: "very slowly" towards the object (Measure)
-CREEP_FAST_SPEED = 0.5    # mm/s for the part that is known to be free (above the expected contact)
+CREEP_FAST_SPEED = 2.0    # mm/s for the part that is known to be free (above the expected contact)
 
 
 def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, fast_mm=0.0,
@@ -335,7 +335,7 @@ def creep_to_contact(gauge, contact_g=5.0, max_force_g=450.0, max_travel=15.0, f
                      max_false_alarms=None):
     """Bed up very slowly until the load cell feels contact, then stop (M410) and STAY there:
     the sensor just touches the object. fast_mm: the first part of the way that is known to be
-    free (e.g. 8 of the 10 mm hover gap) goes at fast_speed. Tares right before moving.
+    free (e.g. 1.5 of the 3 mm hover gap) goes at fast_speed. Tares right before moving.
     Contact: with rise_g, a quick rise of rise_g within ~rise_s s that lasts hold_s (RiseDetector:
     drift and short spikes do not count; abs_g stops it anyway); without, |force| >= contact_g.
     With rise_g the fast part (known free) only stops at abs_g: a spike there is no contact.

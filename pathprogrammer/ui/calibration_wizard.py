@@ -323,8 +323,8 @@ class CalibrationWizard(QDialog):
             self.step_label.setText("X and Y homed")
             self.text_label.setText(
                 f"<span style='color:{OK_COLOR}; font-size: 16px;'><b>X and Y homed.</b></span> The "
-                "saved calibration is used. Click <b>Go to point 1</b>: the sensor will hover 1 cm "
-                "above the first part.")
+                "saved calibration is used. Click <b>Go to point 1</b>: the sensor will hover "
+                f"{measure.HOVER_TEXT} above the first part.")
 
     def go_to_point1(self):
         """After "Home X and Y only": close this window, keep the calibrator (X/Y stay homed) and

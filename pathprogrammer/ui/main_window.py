@@ -72,7 +72,7 @@ class MainWindow(QMainWindow):
         self._pending_goto = None         # goto for Measure, sent once the calibrator says hello
         self._measuring = None            # label of the Measure move under way
         self._needs_home = True           # X/Y position unknown until the calibrator homed them
-        self._hovering = False            # the sensor hangs 1 cm above point 1 (nothing moved since)
+        self._hovering = False            # the sensor hovers above the point (nothing moved since)
         self._contact = None              # first touch: {"object", "z0", "depth_mm", "force_g"}
         self._proc = None                 # 'Do whole measuring procedure' under way: its state (dict)
         self._timeout_token = 0           # only the newest Measure timeout counts
@@ -406,9 +406,9 @@ class MainWindow(QMainWindow):
         return f"point {index + 1}"
 
     def hover_above_point(self, index=0):
-        """'Hover 1 cm above point 1' (index 0) / 'Go to next point': sensor 1 cm above part
+        """'Hover 3 mm above point 1' (index 0) / 'Go to next point': sensor measure.HOVER_MM above part
         `index` of the opened plate. The calibrator lifts to the travel height (clear of every
-        part and cone) before it drives X/Y, then goes down to 1 cm above the part."""
+        part and cone) before it drives X/Y, then goes down to just above the part."""
         if self.focusfield.hardware_active or self.thread is not None or self._measuring:
             return
         manifest = calibration.manifest_for(self.model_path) if self.model_path else None
@@ -436,8 +436,8 @@ class MainWindow(QMainWindow):
             self.open_calibrator()
         self.measure.set_status(f"Starting the printer connection; then the head goes to {where}.", "busy")
 
-    CREEP_MAX_MM = 15.0                   # never more than this far up (1 cm gap + 5 mm)
-    CREEP_FREE_MM = 8.0                   # of the 1 cm gap after "above point 1": known free, a bit faster
+    CREEP_MAX_MM = measure.HOVER_MM + 5.0  # never more than this far up (the hover gap + 5 mm)
+    CREEP_FREE_MM = measure.CREEP_FREE_MM  # of the hover gap: known free, a bit faster
     CREEP_ANSWER_MS = 240000
 
     def creep_to_object(self):
@@ -446,7 +446,8 @@ class MainWindow(QMainWindow):
         if self.focusfield.hardware_active or self.thread is not None or self._measuring:
             return
         if not self.server.is_running():
-            self.measure.set_status("Hover 1 cm above point 1 first: there is no connection to the printer yet.",
+            self.measure.set_status(f"Hover {measure.HOVER_TEXT} above point 1 first: there is no connection to "
+                                    "the printer yet.",
                                     "error")
             return
         fast = self.CREEP_FREE_MM if self._hovering else 0.0
@@ -507,10 +508,10 @@ class MainWindow(QMainWindow):
 
     def start_procedure(self):
         """'Do whole measuring procedure': home X/Y (the saved calibration is used), then for EVERY
-        part of the plate in manifest order: 1 cm above it, first touch (indentation 0, photo),
+        part of the plate in manifest order: just above it, first touch (indentation 0, photo),
         `steps` x `step_mm` deeper with a photo at each step, stopping early at the max force, then
         up to the travel height and on to the next part. A part without contact or out of reach is
-        skipped (noted in procedure.json). At the end the sensor goes back to 1 cm above the last
+        skipped (noted in procedure.json). At the end the sensor goes back to just above the last
         part. All photos, measurements.csv and procedure.json go into one new folder
         <photo folder>/<date_start time>."""
         if self.focusfield.hardware_active or self.thread is not None or self._measuring or self._proc:
@@ -592,7 +593,7 @@ class MainWindow(QMainWindow):
         if self._measuring is None:
             self._procedure_finish(f"Could not go to point {p['point'] + 1}.", "error", retract=False)
         else:
-            self.measure.set_status(f"{self._procedure_where()}: to 1 cm above it...", "busy")
+            self.measure.set_status(f"{self._procedure_where()}: to {measure.HOVER_TEXT} above it...", "busy")
 
     def _procedure_point_done(self, result):
         p = self._proc
@@ -702,7 +703,7 @@ class MainWindow(QMainWindow):
                                         f"({len(p['photos'])} photos so far)...", "busy")
 
     def _procedure_finish(self, result, level, retract=True):
-        """End of the procedure: write procedure.json, then (normally) lift the sensor back to 1 cm
+        """End of the procedure: write procedure.json, then (normally) lift the sensor back to just
         above the last part; the result is shown once that move is done."""
         p = self._proc
         if p is None:
@@ -712,7 +713,7 @@ class MainWindow(QMainWindow):
             self._write_procedure_log(p, result)
             self.hover_above_point(p["point"])
             if self._measuring is not None:
-                self.measure.set_status(f"{result} Lifting the sensor back to 1 cm above the part...", "busy")
+                self.measure.set_status(f"{result} Lifting the sensor back to {measure.HOVER_TEXT} above the part...", "busy")
                 return
         self._proc = None
         self._set_measure_buttons(self._measuring is None)
@@ -759,7 +760,7 @@ class MainWindow(QMainWindow):
             self.measure.next_btn.setText(f"Last point reached (point {i + 1} of {n})")
 
     def next_point(self):
-        """'Go to next point': up to the travel height, over to the next part, 1 cm above it."""
+        """'Go to next point': up to the travel height, over to the next part, just above it."""
         if self._point_index is None:
             self.measure.set_status("Go to point 1 first.", "error")
             return
@@ -834,7 +835,7 @@ class MainWindow(QMainWindow):
                 t = self._hover_target
                 self._point_index = self._target_index
                 label = self._measuring
-                self._measure_done(f"The sensor hovers 1 cm above {label} ({t.part_id}). Head X{t.x:.2f} Y{t.y:.2f} "
+                self._measure_done(f"The sensor hovers {measure.HOVER_TEXT} above {label} ({t.part_id}). Head X{t.x:.2f} Y{t.y:.2f} "
                                    f"Z{t.z:.2f} (from the {t.source}).", "ok")
             else:
                 self._measure_done(f"Failed: {msg.get('message', '')}", "error")

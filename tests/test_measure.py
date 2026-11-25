@@ -1,4 +1,4 @@
-"""Measure: 'Hover 1 cm above point 1' puts the sensor 1 cm above the first part of the plate."""
+"""Measure: 'Hover 3 mm above point 1' puts the sensor 3 mm above the first part of the plate."""
 import json
 
 import pytest
@@ -26,7 +26,7 @@ def test_target_is_above_part_one(win, plate):
     part = manifest["parts"][0]
     assert t.part_id == part["id"] and t.source == "saved cone positions"
     assert (t.x, t.y) == pytest.approx((part["x"] + SHIFT[0], part["y"] + 40.0 + SHIFT[1]), abs=1e-6)
-    assert t.z == pytest.approx(part["size"][2] + 10.0 + 80.0)          # top + 1 cm, sensor 80 mm lower
+    assert t.z == pytest.approx(part["size"][2] + 3.0 + 80.0)           # top + 3 mm, sensor 80 mm lower
     assert t.travel_z >= t.z
 
 
@@ -46,7 +46,7 @@ def test_button_sends_the_head_there(win, plate):
     assert label == "point 1" and win.server.homes[-1] is True             # X/Y homed first
     assert not win.measure.hover_btn.isEnabled()
     msg(win, "goto_done", label="point 1", ok=True, message="")
-    assert win.measure.hover_btn.isEnabled() and "1 cm above point 1" in win.measure.status.text()
+    assert win.measure.hover_btn.isEnabled() and "3 mm above point 1" in win.measure.status.text()
     win.measure.hover_btn.click()
     assert win.server.homes[-1] is False                                   # already homed
     msg(win, "goto_done", label="point 1", ok=False, message="Going to point 1 failed: no printer")
@@ -68,14 +68,14 @@ def test_touch_button_creeps_after_hovering_and_reports(win, plate):
     win.measure.hover_btn.click()
     msg(win, "goto_done", label="point 1", ok=True, message="")
     win.measure.touch_btn.click()
-    assert win.server.creeps == [(8.0, 15.0)] and not win.measure.touch_btn.isEnabled()
+    assert win.server.creeps == [(1.5, 8.0)] and not win.measure.touch_btn.isEnabled()
     win.stop()                                                     # STOP also stops the creep
     assert win.server.halts == 1
     msg(win, "touch_done", ok=True, status="ok", message="The sensor touches the object.", z=93.21, force_g=6.2)
     assert "touches the object" in win.measure.status.text() and "93.210" in win.measure.status.text()
     assert win.measure.touch_btn.isEnabled()
     win.measure.touch_btn.click()                                  # not hovering any more: all of it slowly
-    assert win.server.creeps[-1] == (0.0, 15.0)
+    assert win.server.creeps[-1] == (0.0, 8.0)
 
 
 def test_graph_shows_the_calibrators_force_stream(win):
@@ -134,7 +134,7 @@ def test_next_point_lifts_and_goes_to_point_2(win, plate):
     t = measure.hover_target(manifest, machine_settings.load(), part_index=1)
     assert label == "point 2" and (x, y) == pytest.approx((t.x, t.y), abs=1e-3)
     assert z == pytest.approx(t.travel_z, abs=1e-3) and win.server.finals[-1] == pytest.approx(t.z, abs=1e-3)
-    assert z >= t.z                                                # up first, then down to 1 cm above
+    assert z >= t.z                                                # up first, then down to 3 mm above
     assert win.server.homes[-1] is False and not win.measure.next_btn.isEnabled()
     msg(win, "goto_done", label="point 2", ok=True, message="")
     assert "above point 2" in win.measure.status.text()

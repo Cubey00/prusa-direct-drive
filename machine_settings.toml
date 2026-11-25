@@ -86,7 +86,7 @@ height = 5.0                       # tip height above the bed
 mount = "side mount"               # which bracket is fitted (side mount / fan mount V2)
 offset_x = 0.0
 offset_y = -40.0
-offset_z = -51.25
+offset_z = -49.25
 measured = false
 hover_clearance = 10.0             # mm the sensor stays above the plate (cones, parts) when it travels
 # Size of the sensor housing, for clearance checks between neighbouring parts. TODO measure.
@@ -114,8 +114,8 @@ contact_rise_g = 10.0
 contact_rise_s = 1.0
 # Against false contacts in the air: the rise must last contact_hold_s (a spike from the motor or
 # noise does not), and after the stop the force must still be up contact_verify_s later (at least
-# half of contact_rise_g); if not, the bed goes on. The known-free part of the way (8 of the 10 mm
-# below the hover) only stops at jog_stop_g.
+# half of contact_rise_g); if not, the bed goes on. The known-free part of the way (1.5 of the 3 mm
+# below the hover, pathprogrammer/measure.py) only stops at jog_stop_g.
 contact_hold_s = 0.2
 contact_verify_s = 0.3
 jog_stop_g = 100.0                 # calibrator: "Bed up" refused above this (load cell drifts: well above contact_g)
@@ -130,7 +130,7 @@ residual_tol = 0.5                 # mm: warn if a point is further than this of
 # it from the offset. [] = not known yet. They hold as long as the cones stay where they are
 # ([work_area], [fiducials]); clear them after changing those.
 cone_F1 = []
-cone_F2 = [176.835, 104.655, 56.250]
+cone_F2 = [177.835, 106.655, 54.250]
 cone_F3 = []
 
 [focusfield]

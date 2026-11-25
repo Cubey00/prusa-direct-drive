@@ -59,7 +59,7 @@ def reach_and_touch(w, qtbot, label, n_gotos, n_creeps, z0=93.2, force=8.0):
     assert w.server.homes[-1] is False                     # homed once at the start: not again
     msg(w, "goto_done", label=label, ok=True, message="")
     wait(qtbot, lambda: len(w.server.creeps) == n_creeps)
-    assert w.server.creeps[-1] == (8.0, 15.0)
+    assert w.server.creeps[-1] == (1.5, 8.0)
     msg(w, "touch_done", ok=True, status="ok", message="The sensor touches the object.", z=z0, force_g=force)
     msg(w, "force", g=force + 0.3)
 
@@ -86,7 +86,7 @@ def test_whole_procedure_measures_every_part_into_one_folder(run, qtbot):
     reach_and_touch(w, qtbot, "point 2", n_gotos=2, n_creeps=2, z0=92.7, force=6.0)
     save_photo(w, qtbot, 4)
     do_steps(w, qtbot, 2, first_photo=4, z0=92.7, steps_before=2)
-    # done: back up to 1 cm above the last part
+    # done: back up to 3 mm above the last part
     wait(qtbot, lambda: len(w.server.gotos) == 3)
     assert w.server.gotos[-1][0] == "point 2"
     msg(w, "goto_done", label="point 2", ok=True, message="")
