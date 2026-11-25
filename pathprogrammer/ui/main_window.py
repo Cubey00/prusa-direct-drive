@@ -36,6 +36,7 @@ from .force_graph import ForceGraph
 from .run_controls import RunControls
 from .run_settings import RunSettingsBox
 from .focusfield_panel import FocusFieldPanel
+from .repeatability_panel import RepeatabilityPanel
 
 
 class MainWindow(QMainWindow):
@@ -163,9 +164,13 @@ class MainWindow(QMainWindow):
         split.setSizes([430, 760, 430])
         self.focusfield = FocusFieldPanel(self)
         self.focusfield.hardwareActivityChanged.connect(self._optical_activity)
+        self.repeatability = RepeatabilityPanel(self.runs_folder(), self._prepare_repeatability)
+        self.repeatability.activeChanged.connect(self._repeatability_activity)
+        self._close_after_repeatability = False
         tabs = QTabWidget()
         tabs.addTab(split, "Print, calibration & touch")
         tabs.addTab(self.focusfield, "Focus-Field MTF")
+        tabs.addTab(self.repeatability, "Positioning Repeatability")
         self.setCentralWidget(tabs)
 
         # wiring
@@ -1088,6 +1093,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Run ended", f"{summary.outcome}: {summary.message}")
 
     def stop(self):
+        if self.repeatability.active:
+            self.repeatability.stop_run()
+            return
         if self._proc is not None:
             self._procedure_finish("Stopped with STOP. The sensor stays where it is.", "error", retract=False)
         if self._measuring and self.server.is_running():
@@ -1119,7 +1127,44 @@ class MainWindow(QMainWindow):
         self.printer.hardware_busy = active
         self.printer.refresh()
 
+    def _prepare_repeatability(self, simulate):
+        if self.thread is not None or self._measuring or self._proc or self.focusfield.thread is not None:
+            return "Finish the current operation before starting a repeatability test."
+        if self.wizard is not None and self.wizard.isVisible():
+            return "Close the calibration window before starting a repeatability test."
+        if not simulate:
+            status = self.printer.status
+            if self.printer._busy or (status is not None and status.active):
+                return "Wait for the current print operation to finish."
+            if self.server.is_running():
+                self.server.quit_calibrator()
+                if self.server.is_running():
+                    return "The calibrator is still using the printer connection."
+                self._needs_home = True
+        return None
+
+    def _repeatability_activity(self, active):
+        tabs = self.centralWidget()
+        tabs.setTabEnabled(0, not active)
+        tabs.setTabEnabled(1, not active)
+        self.printer.hardware_busy = active
+        self.printer.refresh()
+        if not active:
+            if not self.repeatability.simulate.isChecked():
+                # A test can home or STOP outside the print tab's tracked session.
+                self._needs_home = True
+                self._hovering = False
+                self._set_contact(None)
+                self._update_next_button(False)
+            if self._close_after_repeatability:
+                QTimer.singleShot(0, self, self.close)
+
     def closeEvent(self, e):
+        if self.repeatability.active:
+            self._close_after_repeatability = True
+            self.repeatability.stop_run()
+            e.ignore()
+            return
         if not self.focusfield.shutdown():
             self.focusfield.status.append("Stopping before closing; close again once the run has ended.")
             e.ignore()
