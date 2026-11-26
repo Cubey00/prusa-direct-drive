@@ -1,5 +1,6 @@
 #GUI
 import argparse
+from datetime import datetime
 import threading
 import time
 import tkinter as tk
@@ -98,6 +99,17 @@ class App:
         tk.Button(calib_pts_frame, text="Delete selected", command=self.delete_calibration_point).grid(row=2, column=0, columnspan=3, pady=(0, 5))
         self.calib_pts_label = tk.Label(calib_pts_frame, text="0 points collected")
         self.calib_pts_label.grid(row=3, column=0, columnspan=3)
+        tk.Label(calib_pts_frame, text="Automatic, with a scale under the sensor (up to 1 kg):",
+                 font=("Arial", 10, "bold")).grid(row=4, column=0, columnspan=3, pady=(12, 2))
+        self.auto_lc_btn = tk.Button(calib_pts_frame, text="Automatic calibration (scale under the sensor)...",
+                                     command=self.auto_loadcell_calibration)
+        self.auto_lc_btn.grid(row=5, column=0, columnspan=2, pady=2, sticky="ew")
+        self.auto_lc_stop = tk.Button(calib_pts_frame, text="Stop", fg="white", bg="#c00000", state="disabled",
+                                      command=lambda: self._lc_cancel.set())
+        self.auto_lc_stop.grid(row=5, column=2, pady=2, sticky="ew")
+        self.auto_lc_label = tk.Label(calib_pts_frame, text="", wraplength=380, justify="left")
+        self.auto_lc_label.grid(row=6, column=0, columnspan=3, sticky="w")
+        self._lc_cancel = threading.Event()
         calib_pts_frame.pack()
 
         # --- Output folder picker ---
@@ -751,6 +763,97 @@ class App:
             self.progress_label.config(text=f"Point {len(self._calib_points)}: reading {r:.2f} -> {weight:g} g")
 
         finish()
+
+    # --- Automatic load cell calibration (loadcell_cal.py) ---
+
+    def auto_loadcell_calibration(self):
+        """Scale under the sensor: per point tare, touch, press to the target, ask the scale."""
+        import loadcell_cal as lc
+        if not self._tared:
+            messagebox.showwarning("Load cell calibration", "No force data from the load cell yet.",
+                                   parent=self.calib_win)
+            return
+        max_g = simpledialog.askfloat("Load cell calibration", "Up to how many grams? (at most 1000)",
+                                      parent=self.calib_win, initialvalue=lc.MAX_G, minvalue=50, maxvalue=1000)
+        if max_g is None:
+            return
+        n = simpledialog.askinteger("Load cell calibration", "How many points?", parent=self.calib_win,
+                                    initialvalue=lc.N_POINTS, minvalue=2, maxvalue=30)
+        if n is None:
+            return
+        if not messagebox.askokcancel(
+                "Load cell calibration",
+                "Put the scale under the sensor and switch it on (zero it with nothing on it).\n"
+                "Jog the sensor to a few mm (at most 15) above the middle of the scale.\n\n"
+                f"The printer then makes {n} points up to {max_g:g} g: for each it lifts the sensor off the "
+                "scale, tares, touches the scale and presses until the load cell reads the target, and "
+                "then holds still and asks what the scale reads.\n\nStart?", parent=self.calib_win):
+            return
+        self._lc_cancel.clear()
+        self.auto_lc_btn.config(state="disabled")
+        self.auto_lc_stop.config(state="normal")
+        self.motion.halt()
+
+        def status(text):
+            self.root.after(0, lambda: (self.auto_lc_label.config(text=text),
+                                        self.progress_label.config(text=text)))
+
+        def ask(q):
+            self.root.after(0, lambda: self._ask_scale(q))
+
+        def work():
+            points, error = [], None
+            try:
+                hw = lc.GaugeHardware(self.gauge, SETTINGS, self._lc_cancel)
+                points = lc.run(hw, ask, status, max_g=max_g, n=n, cancel=self._lc_cancel)
+            except Exception as e:                       # noqa: BLE001  shown to the user
+                error = str(e)
+            self.root.after(0, lambda: self._auto_lc_done(points, error))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ask_scale(self, q):
+        v = simpledialog.askfloat(
+            "Scale reading",
+            f"Point {q.index + 1}: the sensor holds still, the load cell reads about {q.load_cell_g:.0f} g.\n\n"
+            "What does the scale read now (g)?\n(Cancel stops the calibration.)",
+            parent=self.calib_win, minvalue=0, maxvalue=5000)
+        q.answer(v)
+
+    def _auto_lc_done(self, points, error):
+        import loadcell_cal as lc
+        import strain_gauge
+        self.auto_lc_btn.config(state="normal")
+        self.auto_lc_stop.config(state="disabled")
+        if len(points) < 2:
+            text = error or "Stopped before two points were measured: nothing changed."
+            self.auto_lc_label.config(text=text)
+            if error:
+                messagebox.showerror("Load cell calibration", error, parent=self.calib_win)
+            return
+        result = lc.fit(points)
+        folder = Path(__file__).resolve().parent / "logs" / f"loadcell_calibration_{datetime.now():%Y-%m-%d_%H-%M-%S}"
+        old = strain_gauge.SCALE
+        plot = lc.save(points, result, folder, old)
+        self._show_plot(plot)
+        summary = (f"{len(points)} points{' (stopped early: ' + error + ')' if error else ''}.\n"
+                   f"New scale {result.scale:.5f} g per unit (was {old:.5f}), RMSE {result.rmse_g:.2f} g, "
+                   f"R² {result.r2:.5f}.\nGraph and points: {folder}")
+        self.auto_lc_label.config(text=summary)
+        if messagebox.askyesno("Load cell calibration", summary + "\n\nUse the new scale (write it to "
+                               "calibration.json)?", parent=self.calib_win):
+            lc.write_scale(result, strain_gauge.CALIB_FILE, folder.relative_to(Path(__file__).resolve().parent))
+            strain_gauge.SCALE = result.scale                   # in use from now on, here too
+            self.auto_lc_label.config(text=summary + "\nSaved in calibration.json.")
+
+    def _show_plot(self, path):
+        win = tk.Toplevel(self.root)
+        win.title("Load cell calibration")
+        img = Image.open(path)
+        img.thumbnail((900, 850))
+        photo = ImageTk.PhotoImage(img)
+        lbl = tk.Label(win, image=photo)
+        lbl.image = photo                                        # keep a reference
+        lbl.pack()
 
     def finish_calibration(self):
         if len(self._calib_points) < 2:

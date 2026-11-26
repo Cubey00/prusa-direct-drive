@@ -72,6 +72,7 @@ class AutoCalibration(QObject):
         tallest = max([f["z"] for f in manifest["fiducials"]] + [p["size"][2] for p in manifest["parts"]])
         self.travel_z = tallest + self.settings.sensor.hover_clearance - self.settings.sensor.offset[2]
         # a cone with a saved position first: the other one is then predicted from it
+        self._tries = {}
         self.queue = sorted(cones, key=lambda c: self.settings.calibration.cone_position(c) is None)
         self.results = {}                 # cone -> dict(x, y, z, touches, reached)
         self.j = None                     # pixels per mm of head movement (2x2)
@@ -380,6 +381,13 @@ class AutoCalibration(QObject):
             autocal.gray_png(after, f"{stem}_after.png")
             if contact is not None:
                 autocal.diff_png(contact, f"{stem}_difference.png", centre)
+            # the overview of this touch: before, after, difference, and the points with a legend
+            tries = getattr(self, "_tries", {})
+            tries[self.cone] = tries.get(self.cone, 0) + 1
+            self._tries = tries
+            name = f"calibration cone {self.cone[1]}, try {tries[self.cone]}"
+            autocal.touch_panel(self.before, after, contact, centre or self.centre, str(self.folder / f"{name}.png"),
+                                f"{self.folder.name}  -  {name}")
         except Exception as e:                # noqa: BLE001  images are a record, never a reason to stop
             print(f"Could not save the autocal images: {e}")
 

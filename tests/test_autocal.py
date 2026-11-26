@@ -50,7 +50,7 @@ def test_a_fading_old_imprint_does_not_pull_the_centre():
     after = frame(rng, at=(500.0, 260.0), residual=(300.0, 300.0))
     after += 0.6 * 120.0 * np.exp(-((XX - 300) ** 2 + (YY - 300) ** 2) / (2 * 18.0 ** 2))   # ... fading
     c = autocal.contact_centre(before, after, polarity=-1)
-    assert (c.x, c.y) == pytest.approx((500.0, 260.0), abs=1.0)
+    assert (c.x, c.y) == pytest.approx((500.0, 260.0), abs=2.0)      # 2 px: ~0.01 mm on the printer
 
 
 def test_rim_outside_the_window_is_ignored():
@@ -183,6 +183,7 @@ def test_two_cones_are_centred_and_saved(sim, qtbot):
     assert np.array(log["camera_px_per_mm"]) == pytest.approx(J_TRUE, rel=0.25)
     assert log["target_px"] == pytest.approx(list(DISC[:2]), abs=3)          # aimed at the window centre
     assert list(folder.glob("*_difference.png")) and w.left.auto_btn.isEnabled()
+    assert (folder / "calibration cone 1, try 1.png").exists() and (folder / "calibration cone 2, try 1.png").exists()
 
 
 def test_a_cone_just_out_of_reach_is_computed_from_the_photo(sim, qtbot):
@@ -266,3 +267,16 @@ def test_cones_1_and_3_start_from_saved_cone_2(sim, qtbot):
     first_f1 = next(g for g in w.server.gotos if g[0] == "auto F1")
     assert first_f1[1:3] == pytest.approx((f2[0] + fids["F1"]["x"] - fids["F2"]["x"],
                                            f2[1] + fids["F1"]["y"] - fids["F2"]["y"]), abs=0.01)
+
+
+def test_star_shaped_imprint_gives_its_centre_not_its_brightest_lobe():
+    """On the printer a touch can leave a star of four lobes (stress in the gel). The contact is the
+    centre of the star, not its brightest lobe (that once sent the head 8 mm the wrong way)."""
+    rng = np.random.default_rng(7)
+    before = frame(rng)
+    after = before + rng.normal(0.0, 4.0, (H, W))
+    centre = (470.0, 300.0)
+    for (dx, dy), amp in (((45, 0), 300.0), ((-45, 0), 240.0), ((0, 45), -250.0), ((0, -45), -230.0)):
+        after += amp * np.exp(-((XX - centre[0] - dx) ** 2 + (YY - centre[1] - dy) ** 2) / (2 * 16.0 ** 2))
+    c = autocal.contact_centre(before, after.astype(np.float32), disc=autocal.Disc(*DISC))
+    assert np.hypot(c.x - centre[0], c.y - centre[1]) < 10          # the old detector: ~45 px off

@@ -198,7 +198,8 @@ Per cone it:
 4. takes a photo **after** touching. The difference between the two photos is the imprint; its
    centre is compared with the centre of the round sensor window (found in the photo; it need not
    be the centre of the camera frame). Only the inside of the window counts, and a fading imprint
-   of the previous touch is ignored;
+   of the previous touch is ignored. The centre is where the pattern is busiest: a touch leaves
+   a ring or a star of four lobes, whose lines meet where the tip presses;
 5. lifts, moves the head by that difference (85% of it, so it never overshoots) and touches again,
    until the cone is **in the centre** within 0.1 mm (at most 8 touches).
 
@@ -210,7 +211,9 @@ in the photo it aims at the centre of the frame instead. A cone whose centre lie
 (cones at bed X 10 can be 0.2 mm past the spacer-block limit) gets its exact centre computed from
 the photo. With the two cones the plate's shift and rotation are known; the cone positions and the
 sensor offset are saved like a manual calibration, and Measure uses them. Every before / after /
-difference image (red cross = imprint, green = image centre) and `autocal.json` go into
+difference image (green dot = centre of the imprint, red cross = the target, the centre of the
+sensor window), one overview per touch (`calibration cone N, try K.png`: before, after,
+difference and the points, with a legend) and `autocal.json` go into
 `photos/autocal_<date_time>/`. STOP stops it at once.
 
 ### 5.4 Measure
@@ -318,9 +321,29 @@ camera exposure/gain, photo / runs folders, and which boxes are folded open.
 
 ### Load cell scale
 
-`calibration.json` holds the load cell scale (grams = 0.54982 × tared reading, a 50-point fit).
-Redo it with *Weight calibration…* in the visual calibrator (`python GUI.py`) after changing the
-load cell, the sensor mount or the firmware.
+`calibration.json` holds the load cell scale: grams = scale × tared reading. Calibrate it again
+after changing the load cell, the sensor mount or the firmware, or when forces don't match a scale.
+
+**Automatic (recommended), with a scale under the sensor, up to 1 kg:**
+1. Close the Touch Path Programmer and start the visual calibrator: `python GUI.py`.
+2. Put a kitchen/lab scale under the sensor, switch it on and zero it with nothing on it.
+3. Jog the sensor to a few mm (at most 15) above the middle of the scale.
+4. Click **Weight calibration...** → **Automatic calibration (scale under the sensor)...**, choose
+   up to how many grams (default 1000) and how many points (default 10).
+5. For every point the printer lifts the sensor off the scale, **tares**, touches the scale and
+   presses until the load cell reads the target (100, 200 … 1000 g), then **holds still** and asks
+   *"What does the scale read now?"*. Type the scale's value; meanwhile the load cell is averaged.
+   **Stop** (or Cancel in the question) ends it and lifts the sensor.
+6. At the end a graph shows the load cell reading against the weight on the scale, with the fit,
+   the previous scale and the residuals. Graph, points (`points.csv`) and fit (`fit.json`) are saved
+   in `logs/loadcell_calibration_<date_time>/`. Answer **Yes** to write the new scale into
+   `calibration.json`; it is used right away in the calibrator and after a restart in the app.
+
+The targets are pressed using the current scale, so with a scale that is far off the real force
+can end a bit above 1 kg; the fit uses what the scale reads, so it is right either way.
+
+**By hand:** **Add calibration point** (type the grams for each load), **Finish calibration**
+(shows the fit), **Plot calibration**; then copy the fitted `a` into `calibration.json` yourself.
 
 ---
 

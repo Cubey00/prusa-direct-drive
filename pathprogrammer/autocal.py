@@ -86,24 +86,32 @@ class Contact:
     diff: np.ndarray = field(repr=False, default=None)   # the smoothed |after - before| (downsampled)
 
 
+PATTERN_LEVEL = 0.5     # of the peak fringe density: the part of the pattern that counts for its centre
+FRINGE_BLUR = 1.5       # downsampled px: smoothing before looking at the fine structure (the fringes)
+BUSY_SIGMA = 10.0       # downsampled px: how wide "busy" is measured
+
+
 def contact_centre(before, after, factor=DOWNSAMPLE, blur=BLUR_PX, min_strength=MIN_STRENGTH,
                    disc=None, polarity=None, inner=0.85):
-    """Centre of the imprint: where after differs from before. disc: only look inside the sensor's
-    window (inner x its radius: the rim is no imprint). polarity (+1 / -1, learned from a first
-    clean touch): count only that sign, so what is left of an earlier imprint (fading: the other
-    sign) is ignored. Raises AutoCalError when there is no clear imprint."""
+    """Centre of the imprint: where the pattern of after - before is BUSIEST (densest fringes).
+    On the printer a touch leaves a ring, or a star of four lobes (stress in the gel) whose bright
+    lobes reach millimetres away; the fringe lines of either crowd together where the tip presses.
+    So: the fine structure (|Laplacian| of the lightly smoothed difference), averaged over
+    BUSY_SIGMA, and the centre of its part above PATTERN_LEVEL of the maximum. The contrast check
+    (no imprint -> AutoCalError) uses the plain difference.
+    disc: only look inside the sensor's window (inner x its radius: the rim and the corners are no
+    imprint). polarity is accepted for compatibility; a star has both signs, so both count.
+    Raises AutoCalError when there is no clear imprint."""
     b, a = small(to_gray(before), factor), small(to_gray(after), factor)
     if b.shape != a.shape:
         raise AutoCalError("The two photos have a different size")
     signed = ndimage.gaussian_filter(a - b, blur)
-    if polarity is None:
-        d = np.abs(signed)
-    else:
-        d = np.clip(polarity * signed, 0, None)
+    d = np.abs(signed)
     if disc is not None:
         yy, xx = np.mgrid[0:d.shape[0], 0:d.shape[1]]
         cx, cy, r = (disc.x + 0.5) / factor - 0.5, (disc.y + 0.5) / factor - 0.5, disc.r / factor
-        d = np.where((xx - cx) ** 2 + (yy - cy) ** 2 <= (inner * r) ** 2, d, 0.0)
+        inside = (xx - cx) ** 2 + (yy - cy) ** 2 <= (inner * r) ** 2
+        d = np.where(inside, d, 0.0)
     med = float(np.median(d))
     noise = float(np.median(np.abs(d - med))) * 1.4826 + 1e-6
     peak = float(d.max())
@@ -111,13 +119,13 @@ def contact_centre(before, after, factor=DOWNSAMPLE, blur=BLUR_PX, min_strength=
     if strength < min_strength:
         raise AutoCalError(f"No imprint of the cone in the photos (contrast {strength:.1f}, need "
                            f"{min_strength:g}): did the sensor touch it, and is the light on?")
-    level = med + 0.5 * (peak - med)          # the blob: the part above half its height
-    mask = d > level
-    labels, n = ndimage.label(mask)
-    py, px = np.unravel_index(int(np.argmax(d)), d.shape)
-    blob = labels == labels[py, px]            # only the region around the peak
-    w = np.where(blob, d - level, 0.0)
+    busy = ndimage.gaussian_filter(np.abs(ndimage.laplace(ndimage.gaussian_filter(a - b, FRINGE_BLUR))),
+                                   BUSY_SIGMA)
+    if disc is not None:
+        busy = np.where(inside, busy, 0.0)
+    w = np.clip(busy - PATTERN_LEVEL * busy.max(), 0, None)
     cy, cx = ndimage.center_of_mass(w)
+    py, px = np.unravel_index(int(np.argmax(d)), d.shape)
     sign = 1.0 if signed[py, px] >= 0 else -1.0
     return Contact((cx + 0.5) * factor - 0.5, (cy + 0.5) * factor - 0.5, strength, sign, d)
 
@@ -177,20 +185,22 @@ def third_from_two(bed_a, head_a, bed_b, head_b, bed_c):
 
 
 def diff_png(contact, path, centre_px=None, factor=DOWNSAMPLE):
-    """The difference image as an 8-bit PNG with the found centre (red) and the image centre (green)."""
+    """The difference image as an 8-bit PNG: a GREEN DOT where the centre of the imprint was found,
+    a red cross on the target (the centre of the sensor window)."""
     from PIL import Image, ImageDraw
     d = contact.diff
     span = float(d.max() - d.min()) or 1.0
     img = Image.fromarray(((d - d.min()) / span * 255).astype(np.uint8)).convert("RGB")
     draw = ImageDraw.Draw(img)
 
-    def mark(x, y, colour):
-        x, y = (x + 0.5) / factor - 0.5, (y + 0.5) / factor - 0.5
-        draw.line([(x - 8, y), (x + 8, y)], fill=colour, width=2)
-        draw.line([(x, y - 8), (x, y + 8)], fill=colour, width=2)
+    def px(x, y):
+        return (x + 0.5) / factor - 0.5, (y + 0.5) / factor - 0.5
     if centre_px is not None:
-        mark(centre_px[0], centre_px[1], (0, 200, 0))
-    mark(contact.x, contact.y, (230, 0, 0))
+        x, y = px(*centre_px)
+        draw.line([(x - 10, y), (x + 10, y)], fill=(230, 0, 0), width=2)
+        draw.line([(x, y - 10), (x, y + 10)], fill=(230, 0, 0), width=2)
+    x, y = px(contact.x, contact.y)
+    draw.ellipse([x - 6, y - 6, x + 6, y + 6], fill=(0, 230, 0), outline=(0, 90, 0))
     img.save(path)
 
 
@@ -200,3 +210,55 @@ def gray_png(frame, path, factor=DOWNSAMPLE):
     g = small(to_gray(frame), factor)
     lo, hi = np.percentile(g, (1, 99))
     Image.fromarray(np.clip((g - lo) / max(hi - lo, 1e-6) * 255, 0, 255).astype(np.uint8)).save(path)
+
+
+def _gray8(a):
+    lo, hi = np.percentile(a, (1, 99))
+    return np.clip((a - lo) / max(hi - lo, 1e-6) * 255, 0, 255).astype(np.uint8)
+
+
+def touch_panel(before, after, contact, target, path, title="", factor=DOWNSAMPLE):
+    """One image per touch, four panels: photo before, photo after, the difference, and the
+    difference with a GREEN DOT on the centre of the imprint (as found) and a RED CROSS on the
+    target (the centre of the sensor window), plus a legend. contact None: no imprint found."""
+    from PIL import Image, ImageDraw
+    b, a = small(to_gray(before), factor), small(to_gray(after), factor)
+    if contact is not None and contact.diff is not None:
+        d = contact.diff
+    else:
+        d = np.abs(ndimage.gaussian_filter(a - b, BLUR_PX))
+    h, w = b.shape
+    tiles = [Image.fromarray(_gray8(b)).convert("RGB"), Image.fromarray(_gray8(a)).convert("RGB"),
+             Image.fromarray(_gray8(d)).convert("RGB"), Image.fromarray(_gray8(d)).convert("RGB")]
+    marked = ImageDraw.Draw(tiles[3])
+
+    def px(x, y):
+        return (x + 0.5) / factor - 0.5, (y + 0.5) / factor - 0.5
+    size = max(6, w // 90)
+    if target is not None:
+        x, y = px(*target)
+        marked.line([(x - 2 * size, y), (x + 2 * size, y)], fill=(230, 0, 0), width=max(2, size // 3))
+        marked.line([(x, y - 2 * size), (x, y + 2 * size)], fill=(230, 0, 0), width=max(2, size // 3))
+    if contact is not None:
+        x, y = px(contact.x, contact.y)
+        marked.ellipse([x - size, y - size, x + size, y + size], fill=(0, 230, 0), outline=(0, 90, 0))
+    labels = ["1  Photo before the touch", "2  Photo after the touch", "3  Difference (after - before)",
+              "4  Difference with the points"]
+    head, foot = 28, 70
+    sheet = Image.new("RGB", (2 * w + 12, 2 * (h + head) + 12 + foot), "white")
+    draw = ImageDraw.Draw(sheet)
+    for i, (tile, lab) in enumerate(zip(tiles, labels)):
+        x0, y0 = 4 + (i % 2) * (w + 4), 4 + (i // 2) * (h + head + 4)
+        draw.text((x0 + 2, y0 + 6), lab, fill="black")
+        sheet.paste(tile, (x0, y0 + head))
+    ly = 2 * (h + head) + 16
+    draw.text((8, ly), title, fill="black")
+    draw.ellipse([10, ly + 22, 24, ly + 36], fill=(0, 230, 0), outline=(0, 90, 0))
+    found = (f"centre of the imprint, found at ({contact.x:.0f}, {contact.y:.0f}) px"
+             if contact is not None else "no imprint found")
+    draw.text((32, ly + 22), "Green dot: " + found, fill="black")
+    draw.line([(10, ly + 50), (24, ly + 50)], fill=(230, 0, 0), width=3)
+    draw.line([(17, ly + 43), (17, ly + 57)], fill=(230, 0, 0), width=3)
+    aim = f"({target[0]:.0f}, {target[1]:.0f}) px" if target is not None else "unknown"
+    draw.text((32, ly + 44), "Red cross: aim point, the centre of the sensor window " + aim, fill="black")
+    sheet.save(path)
