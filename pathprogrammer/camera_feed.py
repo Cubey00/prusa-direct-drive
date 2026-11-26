@@ -88,6 +88,7 @@ class CameraFeed:
         self._stop = threading.Event()
         self._thread = None
         self._photo = []                 # folders of photos asked for, taken from the next frame
+        self._grabs = []                 # [callback, frames to skip]: full frames asked for in memory
         self._lock = threading.Lock()
         self._settings = {}              # exposure_us / gain to apply (again after every reconnect)
         self._settings_changed = False
@@ -115,6 +116,15 @@ class CameraFeed:
 
     def is_running(self):
         return self._thread is not None
+
+    def grab_frame(self, callback):
+        """callback(frame) (feed thread) with a full frame whose exposure started after this call:
+        the frame being snapped now is skipped. False if there is no camera."""
+        if not self.connected:
+            return False
+        with self._lock:
+            self._grabs.append([callback, 1])
+        return True
 
     def take_photo(self, folder, name=None):
         """Save the next frame to folder (as `name`, default photo_name()). False if there is no camera."""
@@ -182,6 +192,15 @@ class CameraFeed:
                     continue
                 with self._lock:
                     folders, self._photo = self._photo, []
+                    due = [g for g in self._grabs if g[1] <= 0]
+                    for g in self._grabs:
+                        g[1] -= 1
+                    self._grabs = [g for g in self._grabs if g[1] >= 0]
+                for callback, _ in due:
+                    try:
+                        callback(frame)
+                    except Exception as e:      # noqa: BLE001  never let a caller stop the feed
+                        print(f"Frame callback failed: {e}")
                 for folder, name in folders:
                     path = folder / (name or photo_name())
                     saver.put(frame, path)

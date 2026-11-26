@@ -17,6 +17,7 @@ from pathlib import Path
 DEFAULT_PATH = Path(__file__).resolve().parent / "machine_settings.toml"
 ENV_VAR = "PRINTERPROJECT_SETTINGS"
 PROBE_CLEARANCE = 3.0   # mm kept free around the firmware's G28 probe points
+CONE_REACH_TOL = 2.0             # mm a saved cone position may lie outside the head's travel
 PURGE_LENGTH = 50.0              # mm, the purge line from purge_start_x to the left (slicing/startgcode.py)
 
 
@@ -280,7 +281,9 @@ def _check(s, where):
             fail(f"[printing] the purge line passes the G28 probe point ({px:g}, {py:g}): move it")
     for name in ("F1", "F2", "F3"):
         pos = s.calibration.cone_position(name)
-        if pos and not (tx0 <= pos[0] <= tx1 and ty0 <= pos[1] <= ty1 and 0 <= pos[2] <= s.printer.z_max):
+        m = CONE_REACH_TOL      # the automatic calibration computes a centre just past the travel
+        if pos and not (tx0 - m <= pos[0] <= tx1 + m and ty0 - m <= pos[1] <= ty1 + m
+                        and 0 <= pos[2] <= s.printer.z_max):
             fail(f"[calibration] cone_{name} {list(pos)} is outside the printer's travel")
     se = s.sensor
     reach = {"nozzle": (s.printer.travel_x, s.printer.travel_y),

@@ -1,7 +1,7 @@
 """Model files and outer dimensions (this widget), plus the calibration box (`cal_box`), which the
 main window places on its own: calibration points and the visual calibrator link."""
 from PySide6.QtCore import QTimer, Signal
-from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QDoubleSpinBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
                                QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 from ..calibration import LABELS, POINTS, CalPoints
@@ -108,6 +108,35 @@ class LeftPanel(QWidget):
         self.diag_label = QLabel("")
         self.diag_label.setWordWrap(True)
         cv.addWidget(self.diag_label)
+
+        # --- automatic calibration: touch two cones, photo before / after, centre the imprint ---
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("color: #dde2ea;")
+        cv.addWidget(line)
+        head = QLabel("Automatic calibration")
+        head.setStyleSheet("font-weight: bold;")
+        cv.addWidget(head)
+        arow = QHBoxLayout()
+        arow.addWidget(QLabel("Cones"))
+        self.auto_cone_a, self.auto_cone_b = QComboBox(), QComboBox()
+        for box, default in ((self.auto_cone_a, "F1"), (self.auto_cone_b, "F2")):
+            for p in POINTS:
+                box.addItem(f"{p[1]} – {LABELS[p][3:]}", p)       # "1 – front left"
+            box.setCurrentIndex(POINTS.index(default))
+            arow.addWidget(box)
+        arow.addStretch()
+        cv.addLayout(arow)
+        self.auto_btn = QPushButton("Start automatic calibration")
+        self.auto_btn.setToolTip("Touches the two cones, compares a photo before and after each touch and "
+                                 "moves until each cone is exactly in the centre of the sensor; then saves "
+                                 "the calibration. Needs the camera and the light on.")
+        action_button(self.auto_btn, ACCENT, ACCENT_DARK)
+        cv.addWidget(self.auto_btn)
+        self.auto_status = QLabel("Touches two cones and centres them using photos, without jogging by hand.")
+        self.auto_status.setWordWrap(True)
+        self.auto_status.setStyleSheet("color: #64748b; font-weight: normal;")
+        cv.addWidget(self.auto_status)
         # The fiducial coordinates themselves (face from the plate manifest, machine from the
         # calibration) are kept here but not shown: the wizard fills them.
         self.points_box = QWidget()
@@ -123,6 +152,10 @@ class LeftPanel(QWidget):
         cv.addWidget(self.points_box)
 
         lay.addStretch()
+
+    def auto_cones(self):
+        """The two cones chosen for the automatic calibration."""
+        return [self.auto_cone_a.currentData(), self.auto_cone_b.currentData()]
 
     def _xy_row(self, grid, r):
         x, y = _spin(), _spin()
@@ -192,3 +225,4 @@ class LeftPanel(QWidget):
         color = {"ok": "#1b7a1b", "warning": "#b36b00", "error": "#c00000"}.get(level, "gray")
         self.diag_label.setStyleSheet(f"color: {color}; font-weight: normal;")
         self.diag_label.setText(text)
+

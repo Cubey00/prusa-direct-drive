@@ -26,6 +26,7 @@ from ..model_io import Orientation, face_size, load_model, oriented_mesh
 from ..program import Program, RunSettings, TouchMode
 from .face_view import FaceView
 from .calibration_wizard import HOME_LABEL, CalibrationWizard
+from .auto_calibration import AutoCalibration
 from ..ipc import GUARD_STATUS
 from .left_panel import LeftPanel
 from .plates_panel import PlatesPanel
@@ -185,6 +186,19 @@ class MainWindow(QMainWindow):
         self.left.save_folder_btn.clicked.connect(self.choose_save_folder)
         self.left.runs_folder_btn.clicked.connect(self.choose_runs_folder)
         self.left.calib_btn.clicked.connect(self.start_calibration)
+        self.autocal = AutoCalibration(self)
+        self.left.auto_btn.clicked.connect(self.start_auto_calibration)
+        self.autocal.statusChanged.connect(self._auto_status)
+        self.autocal.finished.connect(self._auto_finished)
+        self.photo.frameGrabbed.connect(self.autocal.on_frame)
+        for box in (self.left.auto_cone_a, self.left.auto_cone_b):
+            box.currentIndexChanged.connect(lambda *_: self.settings.setValue(
+                "calibration/auto_cones", ",".join(self.left.auto_cones())))
+        saved = str(self.settings.value("calibration/auto_cones", "F1,F2")).split(",")
+        for box, name in zip((self.left.auto_cone_a, self.left.auto_cone_b), saved):
+            i = box.findData(name)
+            if i >= 0:
+                box.setCurrentIndex(i)
         self.left.offset_btn.clicked.connect(self.edit_sensor_offset)
         self.measure.hover_btn.clicked.connect(lambda: self.hover_above_point(0))
         self.measure.touch_btn.clicked.connect(self.creep_to_object)
@@ -359,6 +373,34 @@ class MainWindow(QMainWindow):
         if issues:
             text += "\n" + "\n".join(i.msg for i in issues)
         self.left.set_diagnostics(text, "warning" if issues else "ok")
+
+    # ---------------- automatic calibration ----------------
+    def start_auto_calibration(self):
+        """'Start automatic calibration': two cones touched and centred with photos (auto_calibration.py)."""
+        if self.focusfield.hardware_active or self.thread is not None or self._measuring or self._proc:
+            self._auto_status("The printer is in use (a run, a scan or Measure): wait until it is done.", "error")
+            return
+        if self.wizard is not None and self.wizard.isVisible() and self.wizard.state not in ("goto", "done",
+                                                                                          "no_plate"):
+            self._auto_status("Close the calibration window first.", "error")
+            return
+        for b in (self.left.auto_btn, self.left.calib_btn, self.measure.proc_btn, self.measure.hover_btn):
+            b.setEnabled(False)
+        self.autocal.start(self.left.auto_cones())
+        if not self.autocal.active:
+            self._auto_finished(False)
+
+    def _auto_status(self, text, level="info"):
+        color = {"info": "#64748b", "ok": "#16a34a", "busy": "#2563eb", "error": "#c00000"}.get(level, "#64748b")
+        self.left.auto_status.setStyleSheet(f"color: {color}; font-weight: normal;")
+        self.left.auto_status.setText(text)
+
+    def _auto_finished(self, ok):
+        self.left.auto_btn.setEnabled(True)
+        self.left.calib_btn.setEnabled(True)
+        self._set_measure_buttons(self._measuring is None)
+        if ok:
+            self.show_sensor_offset(self.autocal.settings)
 
     def show_sensor_offset(self, settings=None):
         """Nozzle -> sensor offset from machine_settings.toml above the calibration button."""
@@ -913,6 +955,8 @@ class MainWindow(QMainWindow):
                 self._measure_done("The printer connection was closed.", "error")
 
     def on_calibrator_message(self, msg):
+        if self.autocal.active:
+            self.autocal.on_message(msg)
         self._measure_message(msg)
         first = self.wizard.sequence()[0] if self.wizard is not None else calibration.POINTS[0]
         if msg.get("type") == "goto_done" and msg.get("ok") and msg.get("label") in (first, HOME_LABEL):
@@ -1121,6 +1165,10 @@ class MainWindow(QMainWindow):
         if self.repeatability.active:
             self.repeatability.stop_run()
             return
+        if self.autocal.active:
+            self.autocal.abort("Stopped with STOP. The sensor stays where it is.")
+            if self.server.is_running():
+                self.server.halt()
         if self._proc is not None:
             self._procedure_finish("Stopped with STOP. The sensor stays where it is.", "error", retract=False)
         if self._measuring and self.server.is_running():

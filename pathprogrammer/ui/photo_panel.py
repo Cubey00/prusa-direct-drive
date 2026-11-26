@@ -74,6 +74,7 @@ class PhotoPanel(QGroupBox):
     frameReady = Signal(object)         # numpy preview, from the feed thread
     stateChanged = Signal(bool, str)
     photoSaved = Signal(object, object)  # path or None, error or None
+    frameGrabbed = Signal(object, object)  # tag, full frame (numpy), asked with grab()
 
     def __init__(self, settings=None, open_camera=None, parent=None):
         super().__init__("Photo control", parent)
@@ -181,6 +182,11 @@ class PhotoPanel(QGroupBox):
             return
         if tag:
             self._tags[name] = tag
+
+    def grab(self, tag):
+        """Ask for one full frame in memory (exposed after this call); it arrives as
+        frameGrabbed(tag, frame). False without a camera."""
+        return self.feed.grab_frame(lambda frame: self.frameGrabbed.emit(tag, frame))
 
     def take_tagged(self, folder, tag):
         """A photo with object / depth_mm / force_g in its name into `folder` (made if needed), logged in

@@ -41,15 +41,25 @@ SINGLE_POINT = "F2"          # "Only cone 2": only this cone saved
 
 def machine_points(session_cal, settings, manifest=None):
     """Head X/Y on F1-F3: this session's calibration if complete, else the saved cone positions,
-    else only the saved F2 plus each cone's bed distance from F2 (shift only, plate square).
+    else two saved cones (automatic calibration: the third follows from a similarity fit), else
+    only the saved F2 plus each cone's bed distance from F2 (shift only, plate square).
     Returns (dict name -> (x, y), source text) or (None, reason)."""
     if session_cal is not None and all(session_cal.machine[p] is not None for p in calibration.POINTS):
         return dict(session_cal.machine), "calibration of this session"
     saved = {p: settings.calibration.cone_position(p) for p in calibration.POINTS}
     if all(saved.values()):
         return {p: (v[0], v[1]) for p, v in saved.items()}, "saved cone positions"
-    f2 = saved[SINGLE_POINT]
     fids = {f["name"]: f for f in (manifest or {}).get("fiducials", [])}
+    two = [p for p in calibration.POINTS if saved[p]]
+    if len(two) == 2 and all(p in fids for p in calibration.POINTS):     # automatic calibration
+        from .autocal import third_from_two
+        a, b = two
+        (c,) = [p for p in calibration.POINTS if p not in two]
+        bed = {p: (fids[p]["x"], fids[p]["y"]) for p in calibration.POINTS}
+        pts = {a: saved[a][:2], b: saved[b][:2]}
+        pts[c] = third_from_two(bed[a], pts[a], bed[b], pts[b], bed[c])
+        return pts, f"saved positions of cones {a[1]} and {b[1]}"
+    f2 = saved[SINGLE_POINT]
     if f2 and all(p in fids for p in calibration.POINTS):
         b2 = fids[SINGLE_POINT]
         return ({p: (f2[0] + fids[p]["x"] - b2["x"], f2[1] + fids[p]["y"] - b2["y"]) for p in calibration.POINTS},

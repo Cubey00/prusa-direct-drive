@@ -180,6 +180,32 @@ the head position on the cone(s) and the measured **sensor offset** (nozzle → 
 `machine_settings.toml`. The next calibration drives straight to the saved spot. The offset is
 shown above **Start calibration**; **Adjust...** changes it by hand (only if you are sure).
 
+#### Automatic calibration
+
+Below **Start calibration** is the **Automatic calibration** heading: choose **two cones** (default
+1 – front left and 2 – front right; far apart gives the best rotation) and click
+**Start automatic calibration**. No jogging by hand; it needs the camera and the LED light on.
+
+Per cone it:
+1. homes X/Y (first cone only), drives above the cone at a safe height and stops 5 mm above the
+   expected tip;
+2. takes a photo **before** touching;
+3. goes up fairly fast (3 mm/s, the last 1 mm at 0.5 mm/s: Z accuracy is not important here)
+   until it touches the tip, then presses 0.3 mm deeper (at most 150 g) so the tip leaves a clear
+   imprint in the gel;
+4. takes a photo **after** touching. The difference between the two photos is the imprint; its
+   centre is compared with the centre of the image;
+5. lifts, moves the head by that difference and touches again, until the cone is **exactly in the
+   centre** (within 0.05 mm, usually after 2 touches).
+
+On the first cone it also measures the camera scale (how many pixels per mm, and how the image is
+turned) with two extra touches 1 mm apart. A cone whose centre lies just beyond the head's reach
+(cones at bed X 10 can be 0.2 mm past the spacer-block limit) gets its exact centre computed from
+the photo. With the two cones the plate's shift and rotation are known; the cone positions and the
+sensor offset are saved like a manual calibration, and Measure uses them. Every before / after /
+difference image (red cross = imprint, green = image centre) and `autocal.json` go into
+`photos/autocal_<date_time>/`. STOP stops it at once.
+
 ### 5.4 Measure
 
 The **Measure** box (right column):
@@ -323,6 +349,7 @@ load cell, the sensor mount or the firmware.
 | Program slow to start | Should be ~2 s now even with 40-part plates; if not, update with `git pull`. |
 | *IDS peak SDK (camera driver) is not installed* | Install the SDK (setup step 5) and restart the laptop. |
 | *No module named …* after `git pull` | `python -m pip install -r requirements.txt` |
+| Automatic calibration: *No imprint of the cone in the photos* | The sensor didn't touch, or the light is off / changed between the photos. Check the light and that the calibration is roughly right. |
 | Anything hangs and you want to know why | Open `%TEMP%\prusa-direct-drive-serial.log`: every command to and reply from the printer, with time and what the program was doing. |
 
 ---
@@ -334,6 +361,7 @@ load cell, the sensor mount or the firmware.
 | `plates/<dataset>/` | `plate_NN.3mf`, `plate_NN.json` (positions of parts and cones), G-code, slicer logs, `summary.json`. |
 | `photos/` | Single photos (**Take photo**). |
 | `photos/<date_start time>/` | One measuring procedure: photos, `measurements.csv`, `procedure.json`. |
+| `photos/autocal_<date_time>/` | One automatic calibration: before / after / difference images per touch, `autocal.json`. |
 | `runs/<run name>/` | Touch programs: `run_log.json`, `images.json`, images, height map. |
 | `runs/repeatability/`, repeatability CSVs | Positioning Repeatability sequences and logs. |
 | `logs/runs/focusfield/` | Focus-Field scans and analyses. |

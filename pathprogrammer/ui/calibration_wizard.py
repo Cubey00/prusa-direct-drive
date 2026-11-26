@@ -213,7 +213,11 @@ class CalibrationWizard(QDialog):
         pos = self.saved(name)
         if pos:
             z_final = pos[2] + self.settings.sensor.hover_clearance
-            return pos[0], pos[1], max(self.travel_z(), z_final), z_final, True
+            (x0, x1), (y0, y1) = self.settings.printer.travel
+            x, y = pos[0], pos[1]
+            if x0 - 2 <= x <= x1 + 2 and y0 - 2 <= y <= y1 + 2:   # saved just past the travel (automatic
+                x, y = min(max(x, x0), x1), min(max(y, y0), y1)    # calibration): go to the edge
+            return x, y, max(self.travel_z(), z_final), z_final, True
         f = self.fiducials()[name]
         ox, oy, _ = self.settings.sensor.offset
         return f["x"] - ox, f["y"] - oy, self.travel_z(), None, False
