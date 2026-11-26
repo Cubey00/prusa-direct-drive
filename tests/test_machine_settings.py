@@ -121,6 +121,8 @@ def test_cone_positions_save_and_load(tmp_path):
     machine_settings = ms
     path = tmp_path / "s.toml"
     path.write_text(machine_settings.DEFAULT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    # start from no saved cones, whatever this laptop's last calibration left in the real file
+    machine_settings.save_values("calibration", {"cone_F1": [], "cone_F2": [], "cone_F3": []}, path)
     assert machine_settings.load(path).calibration.cone_position("F1") is None
     machine_settings.save_values("calibration", {"cone_F1": [10.4, 105.2, 85.25]}, path)
     s = machine_settings.load(path)

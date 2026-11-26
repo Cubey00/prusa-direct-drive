@@ -808,7 +808,7 @@ class App:
                 points = lc.run(hw, ask, status, max_g=max_g, n=n, cancel=self._lc_cancel)
             except Exception as e:                       # noqa: BLE001  shown to the user
                 error = str(e)
-            self.root.after(0, lambda: self._auto_lc_done(points, error))
+            self.root.after(0, lambda: self._auto_lc_done(points, error, max_g))
         threading.Thread(target=work, daemon=True).start()
 
     def _ask_scale(self, q):
@@ -819,7 +819,7 @@ class App:
             parent=self.calib_win, minvalue=0, maxvalue=5000)
         q.answer(v)
 
-    def _auto_lc_done(self, points, error):
+    def _auto_lc_done(self, points, error, max_g=None):
         import loadcell_cal as lc
         import strain_gauge
         self.auto_lc_btn.config(state="normal")
@@ -830,14 +830,18 @@ class App:
             if error:
                 messagebox.showerror("Load cell calibration", error, parent=self.calib_win)
             return
-        result = lc.fit(points)
+        result = lc.fit(points, max_g)
         folder = Path(__file__).resolve().parent / "logs" / f"loadcell_calibration_{datetime.now():%Y-%m-%d_%H-%M-%S}"
         old = strain_gauge.SCALE
         plot = lc.save(points, result, folder, old)
         self._show_plot(plot)
         summary = (f"{len(points)} points{' (stopped early: ' + error + ')' if error else ''}.\n"
-                   f"New scale {result.scale:.5f} g per unit (was {old:.5f}), RMSE {result.rmse_g:.2f} g, "
-                   f"R² {result.r2:.5f}.\nGraph and points: {folder}")
+                   f"New scale {result.scale:.5f} g per unit (was {old:.5f}): a line through zero on "
+                   f"{result.points} points up to {max_g:g} g, RMSE {result.rmse_g:.1f} g, worst "
+                   f"{result.worst_g:.1f} g.\n"
+                   + ("" if result.straight else "Warning: the points bend away from a straight line, "
+                      "see the graph.\n")
+                   + f"Graph and points: {folder}")
         self.auto_lc_label.config(text=summary)
         if messagebox.askyesno("Load cell calibration", summary + "\n\nUse the new scale (write it to "
                                "calibration.json)?", parent=self.calib_win):

@@ -1,4 +1,4 @@
 {
-  "scale": 0.54982,
-  "note": "grams = scale * tared reading. 50-point fit, see logs/50 points calibration.png"
+  "scale": 0.902242,
+  "note": "grams = scale * tared reading (line through zero). Automatic calibration 2026-11-26 13:35, 17 points up to 1000 g, RMSE 12.6 g, see logs/loadcell_calibration_2026-11-26_13-05-02"
 }

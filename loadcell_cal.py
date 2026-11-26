@@ -52,10 +52,14 @@ class Point:
 @dataclass
 class Fit:
     scale: float              # g per reading unit: calibration.json "scale"
-    offset_g: float
+    offset_g: float           # always 0: the line goes through zero (the load cell is tared)
     rmse_g: float
     r2: float
-    points: int
+    points: int               # points used (on the scale up to max_g)
+    max_g: float = None       # the range fitted
+    excluded: int = 0         # points above max_g, shown but not used
+    worst_g: float = 0.0      # largest residual of the points used
+    straight: bool = True     # False: the points bend away from a straight line (see the graph)
 
 
 def targets(max_g=MAX_G, n=N_POINTS):
@@ -73,18 +77,35 @@ def magnitudes(points):
     return x * (1.0 if x.mean() >= 0 else -1.0)
 
 
-def fit(points):
-    """|grams| = scale * |reading| + offset (least squares); scale is what calibration.json holds."""
+def scale_through_zero(x, y):
+    """Least-squares slope of y = k * x (no offset)."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    n = float(x @ x)
+    if n <= 0:
+        raise LoadCellCalError("The load cell gave no reading")
+    return float(x @ y) / n
+
+
+def fit(points, max_g=None):
+    """|grams| = scale * |reading|: a straight line THROUGH ZERO (the load cell is tared right before
+    every touch, so no load reads 0 g, and the software only uses the scale), fitted on the points
+    whose scale value is up to max_g (the range that is measured; above ~1 kg the load cell bends
+    away from a straight line). straight=False when a used point lies more than 25 g and 5 % off."""
     if len(points) < 2:
         raise LoadCellCalError("At least two points are needed for a fit")
     x = magnitudes(points)
     y = np.array([p.scale_g for p in points], float)
-    if np.ptp(x) <= 0:
-        raise LoadCellCalError("The load cell gave the same reading at every point")
-    a, b = np.polyfit(x, y, 1)
-    res = y - (a * x + b)
-    ss = float(np.sum((y - y.mean()) ** 2)) or 1.0
-    return Fit(float(a), float(b), float(np.sqrt(np.mean(res ** 2))), float(1 - np.sum(res ** 2) / ss), len(points))
+    use = np.ones(len(points), bool) if max_g is None else y <= max_g * 1.02
+    if use.sum() < 2:
+        raise LoadCellCalError(f"Fewer than two points up to {max_g:g} g")
+    xu, yu = x[use], y[use]
+    k = scale_through_zero(xu, yu)
+    res = yu - k * xu
+    ss = float(np.sum((yu - yu.mean()) ** 2)) or 1.0
+    worst = float(np.abs(res).max())
+    straight = bool(np.all(np.abs(res) <= np.maximum(25.0, 0.05 * yu)))
+    return Fit(k, 0.0, float(np.sqrt(np.mean(res ** 2))), float(1 - np.sum(res ** 2) / ss), int(use.sum()),
+               max_g, int((~use).sum()), worst, straight)
 
 
 class Question:
@@ -109,6 +130,7 @@ def run(hw, ask, on_status=print, max_g=MAX_G, n=N_POINTS, cancel=None, press_sp
     z_start = hw.z()
     contact = None
     points = []
+    old = hw.scale()                    # the scale the load cell's grams use now (maybe far off)
     try:
         for i, t in enumerate(targets(max_g, n)):
             if cancel.is_set():
@@ -128,12 +150,16 @@ def run(hw, ask, on_status=print, max_g=MAX_G, n=N_POINTS, cancel=None, press_sp
                 raise LoadCellCalError(f"The sensor did not find the scale ({res.status}: {res.message}). "
                                        "Is the scale under the sensor, within 15 mm?")
             contact = res.end_z
+            # the load cell's grams use the old scale; the scale values so far tell the real one, so
+            # the press stops at the REAL target (the old scale once made "1000 g" 1.9 kg)
+            est = scale_through_zero(magnitudes(points), [q.scale_g for q in points]) if points else old
+            stop = t * old / est if est > 0 else t
             on_status(f"Point {i + 1} of {n}: pressing to {t:g} g...")
-            res = hw.press(t, PRESS_MAX_MM, press_speed)
+            res = hw.press(stop, PRESS_MAX_MM, press_speed)
             if res.status not in ("ok", "limit"):
                 raise LoadCellCalError(f"Pressing stopped ({res.status}): {res.message}")
             time.sleep(SETTLE_S)
-            q = Question(i, t, hw.grams())
+            q = Question(i, t, hw.grams() * (est / old if old else 1.0))
             ask(q)
             on_status(f"Point {i + 1} of {n}: holding still; type what the scale reads.")
             vals = []
@@ -157,34 +183,49 @@ def run(hw, ask, on_status=print, max_g=MAX_G, n=N_POINTS, cancel=None, press_sp
     return points
 
 
-def plot(points, result, path, old_scale=None):
-    """The graph: load cell reading against the weight on the scale, with the fit and residuals."""
+def plot(points, result, path, old_scale=None, title="Load cell calibration"):
+    """The graph: load cell reading against the weight on the scale, the line through zero fitted on
+    the points up to max_g (green), points above it grey (not used), the previous scale dashed, and
+    the residuals of the points used."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     x = magnitudes(points)
     y = np.array([p.scale_g for p in points])
-    fig, (ax, axr) = plt.subplots(2, 1, figsize=(8, 7.5), sharex=False,
-                                  gridspec_kw={"height_ratios": [3, 1.3]}, constrained_layout=True)
-    xs = np.linspace(0, max(x.max(), 1) * 1.05, 100)
-    ax.plot(xs, result.scale * xs + result.offset_g, color="#2563eb", lw=2,
-            label=f"fit: grams = {result.scale:.5f} × reading {result.offset_g:+.1f} g")
+    spread = np.array([p.spread for p in points])
+    use = np.ones(len(points), bool) if result.max_g is None else y <= result.max_g * 1.02
+    fig, (ax, axr) = plt.subplots(2, 1, figsize=(8, 7.5), gridspec_kw={"height_ratios": [3, 1.3]},
+                                  constrained_layout=True)
+    top = x[use].max() * 1.08
+    xs = np.linspace(0, top, 100)
+    ax.plot(xs, result.scale * xs, color="#2563eb", lw=2,
+            label=f"fit through 0: grams = {result.scale:.4f} × reading")
     if old_scale:
         ax.plot(xs, old_scale * xs, color="#94a3b8", lw=1.5, ls="--",
-                label=f"previous scale {old_scale:.5f} (calibration.json)")
-    ax.errorbar(x, y, xerr=[p.spread for p in points], fmt="o", ms=7, color="#16a34a",
-                ecolor="#16a34a", capsize=3, label="measured points (scale vs load cell)")
+                label=f"previous scale {old_scale:.4f}")
+    ax.errorbar(x[use], y[use], xerr=spread[use], fmt="o", ms=7, color="#16a34a", ecolor="#16a34a",
+                capsize=3, label=f"measured, used ({use.sum()})")
+    if (~use).any():
+        ax.plot(x[~use], y[~use], "o", ms=6, mfc="none", color="#9ca3af",
+                label=f"measured above {result.max_g:g} g, not used ({(~use).sum()})")
+        top = max(top, x.max() * 1.03)
+    ax.plot([0], [0], "s", color="#2563eb", ms=6)
+    ax.set_xlim(0, top)
+    ax.set_ylim(0, max(y.max(), result.scale * top) * 1.05)
     ax.set_xlabel("Load cell reading (tared, raw units, size)")
     ax.set_ylabel("Weight on the scale (g)")
-    ax.set_title("Load cell calibration", fontsize=14, fontweight="bold")
+    ax.set_title(title, fontsize=14, fontweight="bold")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper left")
-    ax.text(0.98, 0.04, f"{result.points} points up to {y.max():.0f} g\nRMSE {result.rmse_g:.2f} g\n"
-                        f"R² {result.r2:.5f}", transform=ax.transAxes, ha="right", va="bottom",
-            bbox={"boxstyle": "round", "fc": "white", "ec": "#cbd5e1"})
-    resid = y - (result.scale * x + result.offset_g)
+    note = ("" if result.straight else
+            "\nNot straight: the points bend\naway from the line")
+    ax.text(0.98, 0.04, f"{result.points} points up to {y[use].max():.0f} g\nRMSE {result.rmse_g:.1f} g, "
+                        f"worst {result.worst_g:.1f} g\nR² {result.r2:.4f}{note}",
+            transform=ax.transAxes, ha="right", va="bottom",
+            bbox={"boxstyle": "round", "fc": "white" if result.straight else "#fff7ed", "ec": "#cbd5e1"})
+    resid = y[use] - result.scale * x[use]
     axr.axhline(0, color="#2563eb", lw=1)
-    axr.bar(y, resid, width=max(y.max(), 1) / 40, color="#f97316")
+    axr.bar(y[use], resid, width=max(y[use].max(), 1) / 40, color="#f97316")
     axr.set_xlabel("Weight on the scale (g)")
     axr.set_ylabel("Residual (g)")
     axr.grid(True, alpha=0.3)
@@ -192,8 +233,8 @@ def plot(points, result, path, old_scale=None):
     plt.close(fig)
 
 
-def save(points, result, folder, old_scale=None):
-    """points.csv, fit.json and calibration_plot.png in folder (made). Returns the plot path."""
+def save(points, result, folder, old_scale=None, name="calibration_plot.png"):
+    """points.csv, fit.json and the graph in folder (made). Returns the plot path."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     with open(folder / "points.csv", "w", newline="", encoding="utf-8") as f:
@@ -204,15 +245,16 @@ def save(points, result, folder, old_scale=None):
     (folder / "fit.json").write_text(json.dumps({"time": datetime.now().isoformat(timespec="seconds"),
                                                  "fit": asdict(result), "previous_scale": old_scale},
                                                 indent=2), encoding="utf-8")
-    path = folder / "calibration_plot.png"
+    path = folder / name
     plot(points, result, path, old_scale)
     return path
 
 
 def write_scale(result, file, folder=None):
     """The new scale into calibration.json (what strain_gauge.py reads at start)."""
-    note = (f"grams = scale * tared reading. Automatic calibration {datetime.now():%Y-%m-%d %H:%M}, "
-            f"{result.points} points, RMSE {result.rmse_g:.2f} g"
+    note = (f"grams = scale * tared reading (line through zero). Automatic calibration "
+            f"{datetime.now():%Y-%m-%d %H:%M}, {result.points} points up to {result.max_g or 0:g} g, "
+            f"RMSE {result.rmse_g:.1f} g"
             + (f", see {Path(folder).as_posix()}" if folder else ""))
     Path(file).write_text(json.dumps({"scale": round(result.scale, 6), "note": note}, indent=2) + "\n",
                           encoding="utf-8")
@@ -247,6 +289,10 @@ class GaugeHardware:
         from touch import press_step
         return press_step(self.gauge, step_mm=max_mm, stop_g=stop_g, max_force_g=self.fo.max_force_g,
                           speed=speed, cancel=self.cancel)
+
+    def scale(self):
+        import strain_gauge
+        return strain_gauge.SCALE
 
     def reading(self):
         s = self.gauge.recent(32)

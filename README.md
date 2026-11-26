@@ -201,7 +201,8 @@ Per cone it:
    of the previous touch is ignored. The centre is where the pattern is busiest: a touch leaves
    a ring or a star of four lobes, whose lines meet where the tip presses;
 5. lifts, moves the head by that difference (85% of it, so it never overshoots) and touches again,
-   until the cone is **in the centre** within 0.1 mm (at most 8 touches).
+   until the cone is within 0.3 mm of the centre (at most 8 touches). The position it saves is
+   corrected by what the last photo still shows, so it is the cone's real centre.
 
 On the first cone it also measures the camera scale (how many pixels per mm, and how the image is
 turned) with two extra touches 1 mm apart, and refines it with every touch. A cone with a saved
@@ -334,13 +335,16 @@ after changing the load cell, the sensor mount or the firmware, or when forces d
    presses until the load cell reads the target (100, 200 … 1000 g), then **holds still** and asks
    *"What does the scale read now?"*. Type the scale's value; meanwhile the load cell is averaged.
    **Stop** (or Cancel in the question) ends it and lifts the sensor.
-6. At the end a graph shows the load cell reading against the weight on the scale, with the fit,
-   the previous scale and the residuals. Graph, points (`points.csv`) and fit (`fit.json`) are saved
+6. At the end a graph shows the load cell reading against the weight on the scale, with a
+   straight line **through zero** fitted on the points up to your maximum (points above it are
+   shown grey and not used: above ~1 kg the load cell bends away from a straight line), the
+   previous scale and the residuals. It warns when the points are not straight. Graph, points (`points.csv`) and fit (`fit.json`) are saved
    in `logs/loadcell_calibration_<date_time>/`. Answer **Yes** to write the new scale into
    `calibration.json`; it is used right away in the calibrator and after a restart in the app.
 
-The targets are pressed using the current scale, so with a scale that is far off the real force
-can end a bit above 1 kg; the fit uses what the scale reads, so it is right either way.
+The first point is pressed with the current scale; after that, the scale values you typed steer
+the press, so the real force stays near each target even when the current scale is far off
+(the old 0.550 was 1.64× too low and once pressed "1000 g" up to 1.9 kg).
 
 **By hand:** **Add calibration point** (type the grams for each load), **Finish calibration**
 (shows the fit), **Plot calibration**; then copy the fitted `a` into `calibration.json` yourself.

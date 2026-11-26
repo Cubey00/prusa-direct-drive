@@ -14,9 +14,13 @@ OLD_SCALE = 0.55           # what calibration.json says now
 class SimHardware:
     """Load cell over a scale: pressing gives a NEGATIVE reading (like on the printer)."""
 
-    def __init__(self, rng):
+    def __init__(self, rng, true_scale=None):
         self.rng, self.force, self.zpos = rng, 0.0, 50.0
+        self.true = true_scale or TRUE_SCALE
         self.tares, self.moves = 0, []
+
+    def scale(self):
+        return OLD_SCALE
 
     def tare(self):
         self.tares += 1
@@ -36,12 +40,12 @@ class SimHardware:
         return SimpleNamespace(status="ok", message="", end_z=40.0)
 
     def press(self, stop_g, max_mm, speed):
-        self.force = stop_g * TRUE_SCALE / OLD_SCALE      # the old scale was a bit off
+        self.force = stop_g * self.true / OLD_SCALE        # the old scale was off
         self.zpos = 39.5
         return SimpleNamespace(status="limit", message="", end_z=39.5)
 
     def reading(self):
-        return -self.force / TRUE_SCALE + self.rng.normal(0, 0.5)
+        return -self.force / self.true + self.rng.normal(0, 0.5)
 
     def grams(self):
         return abs(self.reading() * OLD_SCALE)
@@ -95,3 +99,27 @@ def test_no_scale_under_the_sensor_is_explained():
     with pytest.raises(lc.LoadCellCalError, match="did not find the scale"):
         lc.run(hw, lambda q: q.answer(1.0), on_status=lambda m: None, max_g=200, n=2)
     assert hw.zpos == 50.0
+
+
+
+def test_fit_goes_through_zero_and_only_uses_the_range():
+    pts = [lc.Point(t, -t / 0.9, t, 1.0, 50) for t in (100, 300, 500, 700, 900)]
+    pts += [lc.Point(t, -t / 1.1, t, 1.0, 50) for t in (1300, 1600, 1900)]          # bends above 1 kg
+    r = lc.fit(pts, 1000)
+    assert r.offset_g == 0 and r.scale == pytest.approx(0.9) and r.points == 5 and r.excluded == 3
+    assert r.straight and r.rmse_g == pytest.approx(0, abs=1e-6)
+
+
+def test_the_real_force_stays_near_the_target_with_a_far_off_scale():
+    """The old scale was 1.64x too low on the printer, and "1000 g" became 1.9 kg. The scale values
+    entered so far steer the press, so the real force stays near each target."""
+    hw = SimHardware(np.random.default_rng(4), true_scale=0.902)     # the old 0.55 is 1.64x too low
+    real = []
+
+    def ask(q):
+        real.append(hw.force)
+        q.answer(round(hw.force, 1))
+    points = lc.run(hw, ask, on_status=lambda m: None, max_g=1000, n=10)
+    assert len(points) == 10
+    assert max(real) <= 1000 * 1.05                          # not 1.64 kg
+    assert real[0] == pytest.approx(100 * 0.902 / 0.55, rel=0.01)   # only the first point uses the old scale

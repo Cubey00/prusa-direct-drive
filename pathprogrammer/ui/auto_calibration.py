@@ -34,7 +34,7 @@ FAST_SPEED = 3.0          # mm/s over the known-free part
 SLOW_SPEED = 0.5          # mm/s near the tip: quick, Z accuracy is not important here
 PRESS_MM = 0.3            # deeper after the contact, for a clear imprint
 PRESS_G = 150.0           # ...but stop at this force
-TOL_MM = 0.1              # centred when the correction is smaller than this
+TOL_MM = 0.3              # centred when the correction is smaller than this (0.1 was too strict on the printer)
 MAX_TOUCHES = 8           # touches per cone before giving up (scale touches not counted)
 DAMP = 0.85               # move this part of the computed correction: no overshoot, no swinging
 SCALE_STEP_MM = 1.0       # head shift for measuring the camera scale
@@ -284,7 +284,8 @@ class AutoCalibration(QObject):
         dx, dy = autocal.correction_mm(self.j, (c.x, c.y), centre)
         entry["correction_mm"] = [round(dx, 4), round(dy, 4)]
         if np.hypot(dx, dy) < TOL_MM:
-            return self._cone_done(self.at[0], self.at[1], reached=True)
+            # close enough to stop touching; the photo still says exactly where the centre is
+            return self._cone_done(self.at[0] + dx, self.at[1] + dy, reached=True)
         if not self._reachable(self.at[0] + dx, self.at[1] + dy) and self.touches >= 3:
             # the head can't go there (spacer blocks): the photo gives the centre all the same
             return self._cone_done(self.at[0] + dx, self.at[1] + dy, reached=False)
@@ -322,7 +323,7 @@ class AutoCalibration(QObject):
         self.prev = (self.at, (c.x, c.y))
         dx, dy = autocal.correction_mm(self.j, (c.x, c.y), centre)
         if np.hypot(dx, dy) < TOL_MM:
-            return self._cone_done(*self.at, reached=True)
+            return self._cone_done(self.at[0] + dx, self.at[1] + dy, reached=True)
         nx, ny = self._clamp(self.at[0] + DAMP * dx, self.at[1] + DAMP * dy)
         self._goto((nx, ny), travel=False, hover=RETOUCH_HOVER_MM)
 

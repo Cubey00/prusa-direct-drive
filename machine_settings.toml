@@ -86,7 +86,7 @@ height = 5.0                       # tip height above the bed
 mount = "side mount"               # which bracket is fitted (side mount / fan mount V2)
 offset_x = 0.0
 offset_y = -40.0
-offset_z = -62.15
+offset_z = -62.3
 measured = false
 hover_clearance = 10.0             # mm the sensor stays above the plate (cones, parts) when it travels
 # Size of the sensor housing, for clearance checks between neighbouring parts. TODO measure.
@@ -129,8 +129,8 @@ residual_tol = 0.5                 # mm: warn if a point is further than this of
 # next calibration drives straight there, [sensor] hover_clearance higher, instead of predicting
 # it from the offset. [] = not known yet. They hold as long as the cones stay where they are
 # ([work_area], [fiducials]); clear them after changing those.
-cone_F1 = []
-cone_F2 = [177.830, 106.650, 67.150]
+cone_F1 = [-1.019, 104.316, 67.175]
+cone_F2 = [176.959, 104.863, 67.425]
 cone_F3 = []
 
 [focusfield]
