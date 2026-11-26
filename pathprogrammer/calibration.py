@@ -157,3 +157,15 @@ def face_points_from_manifest(manifest, mesh_bounds):
     lo, hi = mesh_bounds
     return {f["name"]: (float(f["x"] - lo[0]), float(hi[1] - f["y"]))
             for f in manifest["fiducials"] if f["name"] in POINTS}
+
+
+def predict_cone(name, fiducials, known, prefer=("F2", "F1", "F3")):
+    """Head (x, y, z) over cone `name` from a cone whose head position is known (measured this
+    session or saved): that position plus the distance between the two cones on the plate.
+    fiducials: name -> {"x", "y", "z"} (bed); known: name -> (x, y, z). Returns ((x, y, z), source
+    name) or (None, None). Much better than the sensor offset while that is still a guess."""
+    for ref in [p for p in prefer if p in known and known[p] and p != name] +                [p for p in known if p not in prefer and known[p] and p != name]:
+        if ref in fiducials and name in fiducials:
+            r, f, g = known[ref], fiducials[name], fiducials[ref]
+            return (r[0] + f["x"] - g["x"], r[1] + f["y"] - g["y"], r[2] + f["z"] - g["z"]), ref
+    return None, None

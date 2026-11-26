@@ -170,7 +170,9 @@ Per cone, one step at a time:
 1. **Go to cone N**: the bed lowers to a safe height, then the head drives to the cone. The first
    cone homes X and Y first. **Z is never homed** with the sensor on (the nozzle would push the
    sensor into the bed); the printer keeps its Z from printing. With a saved position it stops
-   1 cm above the cone.
+   1 cm above the cone. A cone without a saved position is predicted from a known cone
+   (preferably cone 2, saved or just measured) plus their distance on the plate; only when no cone
+   is known at all does it use the sensor offset, which is a guess until it has been measured.
 2. Jog with the buttons (step 5 / 1 / 0.5 / 0.1 / 0.05 mm) until the centre of the sensor is
    exactly on the cone tip. **Bed up** is refused once the sensor feels more than 100 g.
 3. **Send position of cone N**.
@@ -194,12 +196,17 @@ Per cone it:
    until it touches the tip, then presses 0.3 mm deeper (at most 150 g) so the tip leaves a clear
    imprint in the gel;
 4. takes a photo **after** touching. The difference between the two photos is the imprint; its
-   centre is compared with the centre of the image;
-5. lifts, moves the head by that difference and touches again, until the cone is **exactly in the
-   centre** (within 0.05 mm, usually after 2 touches).
+   centre is compared with the centre of the round sensor window (found in the photo; it need not
+   be the centre of the camera frame). Only the inside of the window counts, and a fading imprint
+   of the previous touch is ignored;
+5. lifts, moves the head by that difference (85% of it, so it never overshoots) and touches again,
+   until the cone is **in the centre** within 0.1 mm (at most 8 touches).
 
 On the first cone it also measures the camera scale (how many pixels per mm, and how the image is
-turned) with two extra touches 1 mm apart. A cone whose centre lies just beyond the head's reach
+turned) with two extra touches 1 mm apart, and refines it with every touch. A cone with a saved
+position is done first; the other cone is then predicted from it and their distance on the plate
+(so a not-yet-measured sensor offset can't send the head next to the cone). If the window isn't found
+in the photo it aims at the centre of the frame instead. A cone whose centre lies just beyond the head's reach
 (cones at bed X 10 can be 0.2 mm past the spacer-block limit) gets its exact centre computed from
 the photo. With the two cones the plate's shift and rotation are known; the cone positions and the
 sensor offset are saved like a manual calibration, and Measure uses them. Every before / after /

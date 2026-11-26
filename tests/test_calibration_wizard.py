@@ -335,3 +335,21 @@ def test_home_only_failure_is_shown(win, plate):
     wiz.go_btn.click()
     msg(win, "goto_done", label="home", ok=False, message="Homing X/Y failed: boom")
     assert wiz.state == "goto" and "boom" in wiz.link_label.text() and win._needs_home
+
+
+def test_unsaved_cones_are_predicted_from_saved_cone_2(win, plate):
+    """Only cone 2 saved, and the sensor offset is still the default guess (12 mm off in X on the
+    printer): "Go to cone 1" and "Go to cone 3" must aim at cone 2 + their distance on the plate."""
+    fids = fiducials(plate)
+    f2 = [fids["F2"]["x"] - 12.17, fids["F2"]["y"] + 40.65, 67.15]
+    machine_settings.save_values("calibration", {"cone_F2": f2})
+    win.open_model(plate)
+    win.start_calibration()
+    wiz = win.wizard
+    for p in ("F1", "F3"):
+        x, y, _z, z_final, known = wiz.target(p)
+        expect_x = max(f2[0] + fids[p]["x"] - fids["F2"]["x"], wiz.settings.printer.travel[0][0])
+        assert known and (x, y) == pytest.approx((expect_x, f2[1] + fids[p]["y"] - fids["F2"]["y"]))
+        assert z_final == pytest.approx(f2[2] + fids[p]["z"] - fids["F2"]["z"] + 10.0)
+    wiz.go_btn.click()
+    assert "predicted from cone 2" in wiz.text_label.text() or win.server.gotos

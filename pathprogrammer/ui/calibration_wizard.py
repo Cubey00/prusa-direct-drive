@@ -207,10 +207,17 @@ class CalibrationWizard(QDialog):
         return self.settings.calibration.cone_position(name)
 
     def target(self, name):
-        """(x, y, travel z, final z or None, saved?) for fiducial `name`: the saved head position
-        hover_clearance higher if there is one, else predicted from the sensor offset at the
-        travel height."""
+        """(x, y, travel z, final z or None, known?) for fiducial `name`: the saved head position
+        hover_clearance higher if there is one; else predicted from a cone measured in this session
+        or saved (preferably cone 2) plus the distance between them on the plate; only without any
+        known cone from the sensor offset (a guess until measured), at the travel height."""
         pos = self.saved(name)
+        self.source = "saved" if pos else None
+        if not pos:
+            known = {p: self.saved(p) for p in calibration.POINTS}
+            known.update({p: v for p, v in self.sent.items() if p in calibration.POINTS})
+            pos, ref = calibration.predict_cone(name, self.fiducials(), known)
+            self.source = f"cone {ref[1]}" if pos else None
         if pos:
             z_final = pos[2] + self.settings.sensor.hover_clearance
             (x0, x1), (y0, y1) = self.settings.printer.travel
@@ -263,7 +270,10 @@ class CalibrationWizard(QDialog):
             self.step_label.setText(f"Cone {n} ({p}, {PLACE[p]})" if total == 1 else
                                     f"Cone {n} of {total} ({p}, {PLACE[p]})")
             x, y, z, z_final, from_saved = self.target(p)
-            where = ("It goes to the spot of the previous calibration, 1 cm above it." if from_saved else
+            where = ("It goes to the spot of the previous calibration, 1 cm above it."
+                     if from_saved and self.source == "saved" else
+                     f"It goes to the spot predicted from {self.source} (their distance on the plate), "
+                     "1 cm above it." if from_saved else
                      "It goes to the spot the sensor offset predicts (no saved spot yet).")
             if not self.reachable(x, y, z, *([z_final] if z_final is not None else [])):
                 self.go_btn.setEnabled(False)

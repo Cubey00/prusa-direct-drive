@@ -34,8 +34,9 @@ FAST_SPEED = 3.0          # mm/s over the known-free part
 SLOW_SPEED = 0.5          # mm/s near the tip: quick, Z accuracy is not important here
 PRESS_MM = 0.3            # deeper after the contact, for a clear imprint
 PRESS_G = 150.0           # ...but stop at this force
-TOL_MM = 0.05             # centred when the correction is smaller than this
-MAX_TOUCHES = 6           # touches per cone before giving up (scale touches not counted)
+TOL_MM = 0.1              # centred when the correction is smaller than this
+MAX_TOUCHES = 8           # touches per cone before giving up (scale touches not counted)
+DAMP = 0.85               # move this part of the computed correction: no overshoot, no swinging
 SCALE_STEP_MM = 1.0       # head shift for measuring the camera scale
 SETTLE_MS = 400           # bed standing still before a photo
 ANSWER_MS = 120000        # no answer from the calibrator within this: stop
@@ -70,9 +71,13 @@ class AutoCalibration(QObject):
         self.fids = {f["name"]: f for f in manifest["fiducials"]}
         tallest = max([f["z"] for f in manifest["fiducials"]] + [p["size"][2] for p in manifest["parts"]])
         self.travel_z = tallest + self.settings.sensor.hover_clearance - self.settings.sensor.offset[2]
-        self.queue = list(cones)
+        # a cone with a saved position first: the other one is then predicted from it
+        self.queue = sorted(cones, key=lambda c: self.settings.calibration.cone_position(c) is None)
         self.results = {}                 # cone -> dict(x, y, z, touches, reached)
         self.j = None                     # pixels per mm of head movement (2x2)
+        self.disc = None                  # the sensor window in the photos (its centre = the target)
+        self.centre = None
+        self.polarity = None              # does an imprint brighten (+1) or darken (-1) the image
         start = datetime.now()
         self.folder = Path(m.photo.folder()) / f"autocal_{start:%Y-%m-%d_%H-%M-%S}"
         self.log = {"start": start.isoformat(timespec="seconds"), "cones": cones, "touches": []}
@@ -114,10 +119,18 @@ class AutoCalibration(QObject):
 
     # ---------------- per cone ----------------
     def _expected(self, name):
-        """(x, y, contact z) where the sensor should meet this cone's tip."""
+        """(x, y, contact z) where the sensor should meet this cone's tip: the saved position, else
+        from a cone measured in this run plus the distance between the two on the plate, else from
+        the sensor offset (a guess until it has been measured)."""
         pos = self.settings.calibration.cone_position(name)
         if pos:
             return pos
+        known = {p: self.settings.calibration.cone_position(p) for p in calibration.POINTS}
+        known.update({p: (r["x"], r["y"], r["z"]) for p, r in self.results.items()})   # this run first
+        pred, _ = calibration.predict_cone(name, self.fids, known,
+                                           prefer=tuple(self.results) + ("F2", "F1", "F3"))
+        if pred:
+            return pred
         f = self.fids[name]
         ox, oy, oz = self.settings.sensor.offset
         return f["x"] - ox, f["y"] - oy, f["z"] - oz
@@ -140,6 +153,7 @@ class AutoCalibration(QObject):
         self.touches = 0
         self.scale = 0 if self.j is None else None   # 0, 1, 2: measuring the camera scale
         self.c0 = self.origin = None
+        self.prev = None                  # (head xy, imprint px) of the last touch on this cone
         self._goto(self.target, travel=True, hover=HOVER_MM)
 
     def _goto(self, xy, travel, hover):
@@ -214,6 +228,25 @@ class AutoCalibration(QObject):
         self._token += 1
         if which == "before":
             self.before = frame
+            if self.centre is None:
+                # the target: [camera] centre_px if set, else the centre of the round sensor window
+                # found in this photo, else (window not found) the centre of the frame
+                self.disc = autocal.sensor_disc(frame)
+                cp = self.settings.camera.centre_px
+                if cp and (cp[0] or cp[1]):
+                    self.centre = (float(cp[0]), float(cp[1]))
+                elif self.disc is not None:
+                    self.centre = (self.disc.x, self.disc.y)
+                else:
+                    self.centre = autocal.image_centre(np.asarray(frame).shape)
+                self.log["sensor_disc_px"] = (None if self.disc is None else
+                                              [round(self.disc.x, 1), round(self.disc.y, 1), round(self.disc.r, 1)])
+                self.log["target_px"] = [round(self.centre[0], 1), round(self.centre[1], 1)]
+                try:                                 # a record of what the camera saw first
+                    self.folder.mkdir(parents=True, exist_ok=True)
+                    autocal.gray_png(frame, str(self.folder / "00_first_before.png"))
+                except Exception:                    # noqa: BLE001
+                    pass
             self.phase = "touch"
             fast = max(0.0, (self.hover_z - self.contact_z) - SAFE_MM)
             if not self.main.server.creep(fast, (self.hover_z - self.contact_z) + 5.0, FAST_SPEED, SLOW_SPEED):
@@ -227,11 +260,14 @@ class AutoCalibration(QObject):
     def _analyse(self, after):
         k = len(self.log["touches"]) + 1
         try:
-            c = autocal.contact_centre(self.before, after)
+            c = autocal.contact_centre(self.before, after, disc=self.disc, polarity=self.polarity)
         except autocal.AutoCalError as e:
             self._save_images(k, after, None)
             return self._end(False, f"Automatic calibration stopped at cone {self.cone[1]}: {e}", "error")
-        centre = autocal.image_centre(np.asarray(after).shape, self.settings.camera.centre_px)
+        if self.polarity is None:
+            self.polarity = c.polarity            # learned on a clean gel: the first touch
+            self.log["imprint_polarity"] = c.polarity
+        centre = self.centre
         self._save_images(k, after, c, centre)
         entry = {"cone": self.cone, "head_x": self.at[0], "head_y": self.at[1], "contact_z": self.contact_z,
                  "imprint_px": [round(c.x, 1), round(c.y, 1)], "contrast": round(c.strength, 1)}
@@ -240,14 +276,18 @@ class AutoCalibration(QObject):
         if self.scale is not None:                       # measuring the camera scale on this cone
             return self._scale_step(c, centre)
         self.touches += 1
+        if self.prev is not None:                 # learn from this move: the scale gets better each touch
+            (hx, hy), (px, py) = self.prev
+            self.j = autocal.broyden(self.j, (self.at[0] - hx, self.at[1] - hy), (c.x - px, c.y - py))
+        self.prev = (self.at, (c.x, c.y))
         dx, dy = autocal.correction_mm(self.j, (c.x, c.y), centre)
         entry["correction_mm"] = [round(dx, 4), round(dy, 4)]
-        nx, ny = self.at[0] + dx, self.at[1] + dy
         if np.hypot(dx, dy) < TOL_MM:
             return self._cone_done(self.at[0], self.at[1], reached=True)
-        if not self._reachable(nx, ny):
+        if not self._reachable(self.at[0] + dx, self.at[1] + dy) and self.touches >= 3:
             # the head can't go there (spacer blocks): the photo gives the centre all the same
-            return self._cone_done(nx, ny, reached=False)
+            return self._cone_done(self.at[0] + dx, self.at[1] + dy, reached=False)
+        nx, ny = self._clamp(self.at[0] + DAMP * dx, self.at[1] + DAMP * dy)
         if self.touches >= MAX_TOUCHES:
             return self._end(False, f"Automatic calibration stopped: cone {self.cone[1]} not centred after "
                                     f"{MAX_TOUCHES} touches (still {np.hypot(dx, dy):.2f} mm off).", "error")
@@ -275,16 +315,14 @@ class AutoCalibration(QObject):
         except autocal.AutoCalError as e:
             return self._end(False, f"Automatic calibration stopped: {e}", "error")
         self.scale = None
-        self.log["camera_px_per_mm"] = self.j.round(3).tolist()
-        self.log["camera_mm_per_px"] = round(autocal.mm_per_px(self.j), 5)
-        # correct from the first touch
+        self.log["camera_px_per_mm_first"] = self.j.round(3).tolist()
+        # correct from the last touch (the gel there is the freshest), learning from it next time
         self.touches = 1
-        dx, dy = autocal.correction_mm(self.j, self.c0, centre)
-        nx, ny = self.origin[0] + dx, self.origin[1] + dy
+        self.prev = (self.at, (c.x, c.y))
+        dx, dy = autocal.correction_mm(self.j, (c.x, c.y), centre)
         if np.hypot(dx, dy) < TOL_MM:
-            return self._cone_done(*self.origin, reached=True)
-        if not self._reachable(nx, ny):
-            return self._cone_done(nx, ny, reached=False)
+            return self._cone_done(*self.at, reached=True)
+        nx, ny = self._clamp(self.at[0] + DAMP * dx, self.at[1] + DAMP * dy)
         self._goto((nx, ny), travel=False, hover=RETOUCH_HOVER_MM)
 
     def _cone_done(self, x, y, reached):
@@ -322,6 +360,9 @@ class AutoCalibration(QObject):
         except machine_settings.SettingsError as e:
             return self._end(False, f"Automatic calibration done but not saved: {e}", "error")
         self.log.update(result=self.results, third=c, offset=[off_x, off_y, off_z])
+        if self.j is not None:
+            self.log["camera_px_per_mm"] = self.j.round(3).tolist()
+            self.log["camera_mm_per_px"] = round(autocal.mm_per_px(self.j), 5)
         cal = m.left.cal_points()
         rot = ""
         try:

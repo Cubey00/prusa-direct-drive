@@ -38,20 +38,72 @@ def small(gray, factor=DOWNSAMPLE):
 
 
 @dataclass
+class Disc:
+    x: float                 # centre of the sensor's round window, full-resolution pixels
+    y: float
+    r: float                 # radius, full-resolution pixels
+
+
+def sensor_disc(frame, factor=DOWNSAMPLE):
+    """The round, lit sensor window in a photo (bright disc on a dark surround). Its centre is where
+    the sensor's centre is in the image (the camera need not be centred on it). The centre comes
+    from chord midpoints: in every row the middle of the lit stretch has x = cx, in every column
+    y = cy; chords cut by the frame edge are left out. None when no disc is found."""
+    g = ndimage.gaussian_filter(small(to_gray(frame), factor), 2.0)
+    lo, hi = np.percentile(g, (2, 98))
+    lit = g > lo + 0.4 * (hi - lo)
+    labels, n = ndimage.label(lit)
+    if n == 0:
+        return None
+    sizes = ndimage.sum(lit, labels, range(1, n + 1))
+    disc = ndimage.binary_fill_holes(labels == 1 + int(np.argmax(sizes)))
+    h, w = disc.shape
+    if disc.mean() < 0.15:
+        return None
+
+    def mids(mask):
+        out = []
+        for i in range(mask.shape[0]):
+            idx = np.flatnonzero(mask[i])
+            if len(idx) > 10 and idx[0] > 0 and idx[-1] < mask.shape[1] - 1:
+                out.append(((idx[0] + idx[-1]) / 2.0, idx[-1] - idx[0]))
+        return out
+    rows, cols = mids(disc), mids(disc.T)
+    if len(rows) < 10 or len(cols) < 10:
+        return None
+    cx = float(np.median([m for m, _ in rows]))
+    cy = float(np.median([m for m, _ in cols]))
+    r = max(max(c for _, c in rows), max(c for _, c in cols)) / 2.0
+    return Disc((cx + 0.5) * factor - 0.5, (cy + 0.5) * factor - 0.5, r * factor)
+
+
+@dataclass
 class Contact:
     x: float                 # blob centre, full-resolution pixels
     y: float
     strength: float          # peak / noise
+    polarity: float = 1.0    # +1: the imprint makes the image brighter, -1: darker
     diff: np.ndarray = field(repr=False, default=None)   # the smoothed |after - before| (downsampled)
 
 
-def contact_centre(before, after, factor=DOWNSAMPLE, blur=BLUR_PX, min_strength=MIN_STRENGTH):
-    """Centre of the imprint: where after differs from before. Raises AutoCalError when there is
-    no clear imprint (nothing touched, or the light changed everywhere)."""
+def contact_centre(before, after, factor=DOWNSAMPLE, blur=BLUR_PX, min_strength=MIN_STRENGTH,
+                   disc=None, polarity=None, inner=0.85):
+    """Centre of the imprint: where after differs from before. disc: only look inside the sensor's
+    window (inner x its radius: the rim is no imprint). polarity (+1 / -1, learned from a first
+    clean touch): count only that sign, so what is left of an earlier imprint (fading: the other
+    sign) is ignored. Raises AutoCalError when there is no clear imprint."""
     b, a = small(to_gray(before), factor), small(to_gray(after), factor)
     if b.shape != a.shape:
         raise AutoCalError("The two photos have a different size")
-    d = ndimage.gaussian_filter(np.abs(a - b), blur)
+    signed = ndimage.gaussian_filter(a - b, blur)
+    if polarity is None:
+        d = np.abs(signed)
+    else:
+        d = np.clip(polarity * signed, 0, None)
+    if disc is not None:
+        yy, xx = np.mgrid[0:d.shape[0], 0:d.shape[1]]
+        cx, cy, r = (disc.x + 0.5) / factor - 0.5, (disc.y + 0.5) / factor - 0.5, disc.r / factor
+        d = np.where((xx - cx) ** 2 + (yy - cy) ** 2 <= (inner * r) ** 2, d, 0.0)
     med = float(np.median(d))
     noise = float(np.median(np.abs(d - med))) * 1.4826 + 1e-6
     peak = float(d.max())
@@ -66,7 +118,8 @@ def contact_centre(before, after, factor=DOWNSAMPLE, blur=BLUR_PX, min_strength=
     blob = labels == labels[py, px]            # only the region around the peak
     w = np.where(blob, d - level, 0.0)
     cy, cx = ndimage.center_of_mass(w)
-    return Contact((cx + 0.5) * factor - 0.5, (cy + 0.5) * factor - 0.5, strength, d)
+    sign = 1.0 if signed[py, px] >= 0 else -1.0
+    return Contact((cx + 0.5) * factor - 0.5, (cy + 0.5) * factor - 0.5, strength, sign, d)
 
 
 def image_centre(shape, centre_px=(0.0, 0.0)):
@@ -93,6 +146,17 @@ def correction_mm(j, contact_px, centre_px):
     err = np.array([centre_px[0] - contact_px[0], centre_px[1] - contact_px[1]], dtype=float)
     d = np.linalg.solve(j, err)
     return float(d[0]), float(d[1])
+
+
+def broyden(j, dh_mm, dc_px):
+    """J corrected with one more observation: the head moved dh_mm and the imprint moved dc_px
+    (Broyden's update: the smallest change to J that explains this move)."""
+    dh, dc = np.asarray(dh_mm, float), np.asarray(dc_px, float)
+    n = float(dh @ dh)
+    if n < 1e-6:
+        return j
+    new = j + np.outer(dc - j @ dh, dh) / n
+    return new if abs(np.linalg.det(new)) > 1e-6 else j
 
 
 def mm_per_px(j):
